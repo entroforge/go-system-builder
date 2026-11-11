@@ -14,7 +14,7 @@ func TaskAnalysisInputs(root string, p Packet) (map[string]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	inputs[p.TaskAnalysis.Path] = p.TaskAnalysis.SHA256
+	inputs[p.TaskAnalysis.Path] = ""
 	behaviorSources, err := taskBehaviorSources(artifact, p)
 	if err != nil {
 		return nil, err
@@ -23,11 +23,8 @@ func TaskAnalysisInputs(root string, p Packet) (map[string]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	for path, hash := range conventionSources {
-		if prior, ok := behaviorSources[path]; ok && prior != hash {
-			return nil, fmt.Errorf("analysis source hashes conflict")
-		}
-		behaviorSources[path] = hash
+	for path := range conventionSources {
+		behaviorSources[path] = ""
 	}
 	for path, hash := range behaviorSources {
 		inputs[path] = hash
@@ -35,7 +32,6 @@ func TaskAnalysisInputs(root string, p Packet) (map[string]string, error) {
 	var tasks []struct {
 		Reading []struct {
 			Path   string `json:"path"`
-			SHA    string `json:"sha256"`
 			Status string `json:"status"`
 		} `json:"reading"`
 	}
@@ -45,13 +41,10 @@ func TaskAnalysisInputs(root string, p Packet) (map[string]string, error) {
 	for _, task := range tasks {
 		for _, ref := range task.Reading {
 			if ref.Status == "readable" {
-				if !safeRelative(ref.Path) || !digestPattern.MatchString(ref.SHA) {
+				if !safeRelative(ref.Path) {
 					return nil, fmt.Errorf("invalid frozen analysis input")
 				}
-				if prior, ok := inputs[ref.Path]; ok && prior != ref.SHA {
-					return nil, fmt.Errorf("conflicting analysis input")
-				}
-				inputs[ref.Path] = ref.SHA
+				inputs[ref.Path] = ""
 			}
 		}
 	}

@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/entroforge/go-system-builder/internal/cli"
+	"github.com/entroforge/go-system-builder/internal/review"
 	"github.com/entroforge/go-system-builder/internal/workpacket"
 	"github.com/entroforge/go-system-builder/internal/workstate"
 	fixtures "github.com/entroforge/go-system-builder/tests/fixtures/req039"
@@ -28,10 +29,27 @@ func TestS7RecoveryDescribesOriginalNativeResultState(t *testing.T) {
 			state := fixtures.BaseState(t, root, "verification", "planned", 1)
 			state["schema_version"] = "1.2.0"
 			state["configuration"].(map[string]any)["optimization"] = map[string]any{"packet": true}
+			state["review"].(map[string]any)["round_entry"] = map[string]any{"plan_id": "review-plan-native-recovery", "transition_id": "TR-006", "baseline_generation": 1, "change_impact_ref": nil}
 			planPath := minimalReviewPlan(t, root, "review-plan-native-recovery")
 			fixtures.WriteState(t, root, state)
 			stageCLI(t, "runtime", "workspace", "bind", "--root", root)
-			stageCLI(t, "runtime", "review-plan", "--root", root, "--file", planPath)
+			// The plan reaches the original consumer through the natural save
+			// event. There is no separate plan registration or submission command.
+			questionnaire := review.PlanQuestionnairePath(root, stageSnapshot(t, root).State)
+			if questionnaire == "" {
+				t.Fatal("no original ReviewPlan questionnaire path")
+			}
+			entryQuestionnaireHook(t, root, "PreToolUse", questionnaire)
+			planBytes, err := os.ReadFile(planPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(questionnaire, planBytes, 0600); err != nil {
+				t.Fatal(err)
+			}
+			if out := entryQuestionnaireHook(t, root, "PostToolUse", questionnaire); !strings.Contains(out, "review-plan: registered") {
+				t.Fatalf("original Main plan not received: %s", out)
+			}
 			markAssignmentDispatched(t, root, "assignment-dv-1", "reviewer-recovery")
 			current := stageSnapshot(t, root)
 			for _, raw := range current.State["entities"].(map[string]any)["agents"].([]any) {
@@ -81,8 +99,12 @@ func TestS7RecoveryDescribesOriginalNativeResultState(t *testing.T) {
 			}
 			packet.Draft.Answer, _ = json.Marshal(answer)
 			stageJSON(t, root, packet.AnswerPath, packet.Draft)
-			if code, _, diagnostic := nativeReviewEvent(t, root, "SubagentStop", "native-recovery-actor", filepath.Join(root, packet.AnswerPath)); code != 0 {
-				t.Fatalf("native result handoff: %d %s", code, diagnostic)
+			// The original consumer observes the saved answer on the natural
+			// successful tool event. SubagentStop stays the final fallback.
+			payload := s7ListenerPayload(t, "native-recovery-actor", "Review "+filepath.Join(root, packet.ViewPath))
+			_, diagnostic := s7ListenerEvent(t, root, "PostToolUse", payload)
+			if !strings.Contains(diagnostic, "original consumer") {
+				t.Fatalf("native result handoff: %s", diagnostic)
 			}
 			after := stageSnapshot(t, root)
 			reviewState := after.State["review"].(map[string]any)
@@ -90,12 +112,18 @@ func TestS7RecoveryDescribesOriginalNativeResultState(t *testing.T) {
 			if reviewState["observation_batch"] != nil {
 				t.Fatal("a pending peer Claim must prevent ordinary sealing")
 			}
-			if lost {
-				if workstate.ReviewAssignmentActivity(row) != "blocked" || row["result_ref"] != nil {
-					t.Fatalf("site_lost must block without consuming: %v", row)
-				}
-			} else if workstate.ReviewAssignmentActivity(row) != "consumed" || reviewState["plan"].(map[string]any)["status"] != "cannot_clean" {
-				t.Fatalf("ordinary result did not enter actual drain state: %v", reviewState)
+			// The original result reaches the drain state through the original
+			// consumer. A site_lost explanation keeps the actual finding and the
+			// unknowns; it must not, on its own, forbid the handover.
+			if workstate.ReviewAssignmentActivity(row) != "consumed" {
+				t.Fatalf("original result did not enter actual drain state: %v", row)
+			}
+			if row["result_ref"] == nil || row["result_receipt"] == nil {
+				t.Fatalf("original result receipt missing: %v", row)
+			}
+			claim := reviewState["claims"].(map[string]any)["claim-dv-1"].(map[string]any)
+			if claim["disposition"] != "finding" {
+				t.Fatalf("actual finding was not preserved: %v", claim)
 			}
 			observe := func(event string) string {
 				t.Helper()
@@ -122,13 +150,15 @@ func TestS7RecoveryDescribesOriginalNativeResultState(t *testing.T) {
 					}
 				}
 				if lost {
-					for _, want := range []string{"reviewer-recovery", "assignment-dv-1", row["blocker_ref"].(string), "blocker_resolved"} {
+					// The site_lost explanation does not by itself forbid the
+					// handover. The actual finding must still be visible.
+					for _, want := range []string{"finding-recovery"} {
 						if !strings.Contains(message, want) {
-							t.Fatalf("%s loses original blocked recovery %q: %s", event, want, message)
+							t.Fatalf("%s loses the actual finding %q: %s", event, want, message)
 						}
 					}
 					if strings.Contains(message, "S7 assignments blocked: none") {
-						t.Fatalf("%s hides actual blocked Assignment: %s", event, message)
+						t.Fatalf("%s hides the actual state: %s", event, message)
 					}
 				}
 			}

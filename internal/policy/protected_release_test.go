@@ -173,7 +173,7 @@ func TestReworkUnknownKindDoesNotInventDirectory(t *testing.T) {
 }
 
 func TestLockedArchitectureReworkUsesArchitectureRoot(t *testing.T) {
-	d, err := loadRepositoryPolicy(t).Evaluate(policy.Input{Event: "PreToolUse", ToolName: "Edit", ToolInput: map[string]any{"file_path": "docs/architecture/ARCHITECTURE-001.md"}, Runtime: policy.RuntimeContext{BoundREQID: "REQ-001", CurrentState: "planning", CurrentPhase: "design", LockedArtifacts: []policy.LockedArtifact{{ID: "ARCH-001", Kind: "design", Path: "docs/architecture/ARCHITECTURE-001.md", Version: "v1", SHA256: strings.Repeat("a", 64), LockedFromStage: "S5", BaselineGeneration: 1}}}})
+	d, err := loadRepositoryPolicy(t).Evaluate(policy.Input{Event: "PreToolUse", ToolName: "Edit", ToolInput: map[string]any{"file_path": "docs/architecture/ARCHITECTURE-001.md"}, Runtime: policy.RuntimeContext{BoundREQID: "REQ-001", CurrentState: "planning", CurrentPhase: "design", LockedArtifacts: []policy.LockedArtifact{{ID: "ARCH-001", Kind: "design", Path: "docs/architecture/ARCHITECTURE-001.md", Version: "v1", LockedFromStage: "S5", BaselineGeneration: 1}}}})
 	if err != nil {
 		t.Fatal(err)
 	}

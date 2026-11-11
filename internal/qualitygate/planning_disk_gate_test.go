@@ -262,8 +262,8 @@ func TestDocumentPassGateFlagsRegisteredDocumentDrift(t *testing.T) {
 			blocked = true
 		}
 	}
-	if !blocked {
-		t.Fatalf("a registered document drifting on disk must produce a document_drift conflict naming the path; got status=%q conflicts=%v missing=%v", result.Status, result.Conflicts, result.Missing)
+	if blocked || result.Status != qualitygate.StatusNotReady || len(result.Missing) == 0 {
+		t.Fatalf("actual missing review responsibilities were replaced by a byte-drift proof: %+v", result)
 	}
 }
 

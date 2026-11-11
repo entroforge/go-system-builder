@@ -1,0 +1,119 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vibe-coding.local/schemas/review-result-reception.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "execution_root": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "work_complete": {
+      "type": "boolean"
+    },
+    "receipt": {
+      "type": "object",
+      "additionalProperties": true,
+      "dependentRequired": {
+        "packet_id": [
+          "execution_root"
+        ],
+        "execution_root": [
+          "packet_id"
+        ]
+      },
+      "required": [
+        "contract",
+        "submission_key",
+        "runtime_id",
+        "baseline_generation",
+        "review_plan_id",
+        "review_plan_ref",
+        "review_plan_revision",
+        "assignment_id",
+        "assignment_revision",
+        "producer_agent_id",
+        "result_ref",
+        "event_id",
+        "idempotency_key",
+        "accepted_after_revision",
+        "accepted_sequence"
+      ],
+      "properties": {
+        "contract": {
+          "const": "s7-review-result-receipt-v1"
+        },
+        "submission_key": {
+          "type": "string",
+          "pattern": "^review-result-[A-Za-z0-9._-]+$"
+        },
+        "runtime_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "baseline_generation": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "review_plan_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "review_plan_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "review_plan_revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "review_round": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "assignment_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "assignment_revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "producer_agent_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "packet_id": {
+          "type": "string",
+          "pattern": "^packet-[A-Za-z0-9._-]+$"
+        },
+        "execution_root": {
+          "type": "string",
+          "minLength": 1
+        },
+        "result_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "event_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "idempotency_key": {
+          "type": "string",
+          "minLength": 1
+        },
+        "accepted_after_revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "accepted_sequence": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    }
+  }
+}

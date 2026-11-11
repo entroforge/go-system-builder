@@ -17,6 +17,7 @@ import (
 	"github.com/entroforge/go-system-builder/internal/integration"
 	"github.com/entroforge/go-system-builder/internal/workpacket"
 	"github.com/entroforge/go-system-builder/internal/workspace"
+	"github.com/entroforge/go-system-builder/tests/fixtures/factory"
 )
 
 // This opt-in test spends real model requests. The subprocess is the native
@@ -68,12 +69,6 @@ func runClaudeNativeS6Live(t *testing.T, name string, background bool) {
 	}
 	state := stageSnapshot(t, root).State
 	state["schema_version"] = "1.3.0"
-	for _, raw := range state["documents"].([]any) {
-		row := raw.(map[string]any)
-		if row["path"] == taskPath {
-			row["sha256"] = workpacket.Digest(taskBytes)
-		}
-	}
 	stageJSON(t, root, ".claude/loop-state.json", state)
 	if _, err := workspace.Git(t.Context(), root, "add", taskPath); err != nil {
 		t.Fatal(err)
@@ -92,12 +87,9 @@ func runClaudeNativeS6Live(t *testing.T, name string, background bool) {
 	if err := os.MkdirAll(filepath.Dir(binary), 0700); err != nil {
 		t.Fatal(err)
 	}
-	build := exec.CommandContext(t.Context(), "go", "build", "-o", binary, "./cmd/loop-harness")
-	build.Dir = filepath.Clean(filepath.Join("..", ".."))
-	if output, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build actual Hook binary: %v %s", err, output)
-	}
-	settingsData, err := os.ReadFile(filepath.Join(build.Dir, "settings.json"))
+	repo := filepath.Clean(filepath.Join("..", ".."))
+	factory.InstallHarness(t, binary, repo)
+	settingsData, err := os.ReadFile(filepath.Join(repo, "settings.json"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -184,9 +184,8 @@ func seedReviewPlan(t *testing.T, repoRoot string, dir string, state map[string]
 			"status": "running", "e2e_coverage_state": "not_applicable",
 			"verification_artifact_workspace": nil, "submitted_at": "2026-01-01T00:00:00Z",
 		},
-		"claims":            map[string]any{},
-		"assignments":       map[string]any{},
-		"observation_batch": nil,
+		"claims":      map[string]any{},
+		"assignments": map[string]any{},
 	}
 	claimsProjection := reviewMap["claims"].(map[string]any)
 	assignmentsProjection := reviewMap["assignments"].(map[string]any)
@@ -282,7 +281,7 @@ func TestRegisterRepairBindingRejectsManifestOwnerDrift(t *testing.T) {
 	}
 }
 
-func TestRegisterWorkgroupCleansActivationEnvelopesWhenApplyFails(t *testing.T) {
+func TestRegisterWorkgroupPreservesUnknownActivationCandidatesWhenApplyFails(t *testing.T) {
 	root := assignmentTestRoot(t)
 	dir := t.TempDir()
 	statePath := filepath.Join(dir, "loop-state.json")
@@ -302,9 +301,9 @@ func TestRegisterWorkgroupCleansActivationEnvelopesWhenApplyFails(t *testing.T) 
 		t.Fatal(err)
 	}
 	// The manifest remains semantically valid: two assignments may share an
-	// Agent when no separation edge forbids it. Register's Apply then reaches
-	// the third row and rejects the duplicate after the first two activation
-	// envelopes have already been staged.
+	// Agent when no separation edge forbids it. Register's Apply rejects the
+	// duplicate while constructing agents, before activation publication.
+	// Unknown unregistered files already at candidate paths remain untouched.
 	assignments := manifest["assignments"].([]any)
 	assignments[1].(map[string]any)["agent_id"] = assignments[2].(map[string]any)["agent_id"]
 	manifest["planned_agent_count"] = float64(4)
@@ -320,6 +319,16 @@ func TestRegisterWorkgroupCleansActivationEnvelopesWhenApplyFails(t *testing.T) 
 	if err := os.WriteFile(taskPath, []byte("# TASK-013-CLEANUP\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	unknown := []byte("unknown unregistered activation candidate\n")
+	for _, agentID := range []string{"agent-ver-req-gap", "agent-ver-module-complete"} {
+		path := filepath.Join(root, ".claude", "evidence", "workgroup-delivery-round-1", "TASK-013-CLEANUP", "activation-"+agentID+".json")
+		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, unknown, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	_, err = assignment.Register(root, statePath, journalPath, assignment.Request{
 		ExpectedRevision: 6,
 		ManifestPath:     manifestPath,
@@ -332,8 +341,9 @@ func TestRegisterWorkgroupCleansActivationEnvelopesWhenApplyFails(t *testing.T) 
 
 	for _, agentID := range []string{"agent-ver-req-gap", "agent-ver-module-complete"} {
 		activationPath := filepath.Join(root, ".claude", "evidence", "workgroup-delivery-round-1", "TASK-013-CLEANUP", "activation-"+agentID+".json")
-		if _, statErr := os.Stat(activationPath); !os.IsNotExist(statErr) {
-			t.Fatalf("failed registration left activation envelope %s (stat err=%v)", activationPath, statErr)
+		data, readErr := os.ReadFile(activationPath)
+		if readErr != nil || string(data) != string(unknown) {
+			t.Fatalf("failed registration changed unknown candidate %s: %q %v", activationPath, data, readErr)
 		}
 	}
 	finalState, readErr := os.ReadFile(statePath)

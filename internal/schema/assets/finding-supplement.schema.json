@@ -4,15 +4,14 @@
   "title": "S7/S8 Finding Supplement",
   "description": "One append-only supplement to an immutable Finding (L3-S7 §3.6, L3-S8 §2.2). The original finder (or a scheduler-authorized replacement) adds new observation/evidence/correlation refs — typically answering an S8 discriminator-bound follow-up observation or clarification request. A supplement never rewrites the original Finding or its encounter, never re-does the base capture S7 owed, and never carries root cause or repair content; causal judgment belongs to S8. Discriminator gate (L3-S7 §14.1): an S8 follow-up observation must carry hypothesis_id + discriminator + expected_outcomes; an S7 in-round note from the original finder carries none of them and is declared with `runtime finding-supplement --in-round-note`. Everything else is rejected.",
   "type": "object",
-  "additionalProperties": false,
+  "additionalProperties": true,
   "required": [
     "schema_version",
     "supplement_id",
     "supplements_finding_id",
     "author",
     "new_observation",
-    "created_at",
-    "hash"
+    "created_at"
   ],
   "properties": {
     "schema_version": {
@@ -40,12 +39,18 @@
     "evidence_refs": {
       "type": "array",
       "description": "Fresh typed evidence refs produced by the controlled observation.",
-      "items": {"type": "string", "minLength": 1}
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
     },
     "correlation_refs": {
       "type": "array",
       "description": "New correlation refs (traces, logs, related findings) tying the observation into the investigation.",
-      "items": {"type": "string", "minLength": 1}
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
     },
     "discriminator": {
       "type": "string",
@@ -58,16 +63,14 @@
     "expected_outcomes": {
       "type": "array",
       "description": "The expected distinguishing outcomes of the controlled follow-up observation: which observable result supports vs refutes the hypothesis (L3-S8 §2.2). Required for S8 follow-up — together with hypothesis_id and discriminator — and required for the S8 discriminator-bound follow-up observation. Omitted only on S7 in-round notes (declared with --in-round-note).",
-      "items": {"type": "string", "minLength": 1}
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
     },
     "created_at": {
       "type": "string",
       "format": "date-time"
-    },
-    "hash": {
-      "type": "string",
-      "pattern": "^[a-f0-9]{64}$",
-      "description": "Independent content hash: sha256 hex of the canonical JSON (compact, sorted keys) of this document with the hash field omitted. Lets consumers fingerprint the supplement without trusting the writer."
     }
   }
 }

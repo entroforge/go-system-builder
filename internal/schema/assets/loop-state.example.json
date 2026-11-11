@@ -3,8 +3,7 @@
   "runtime_id": "loop-REQ-002-example",
   "definition": {
     "path": "docs/control/loop-definition.json",
-    "version": "1.1.0",
-    "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    "version": "1.1.0"
   },
   "revision": 1,
   "lifecycle": {
@@ -41,7 +40,7 @@
       "gate_id": "GATE-PLANNING-DESIGN-COMPLETE",
       "candidate_transition": "PTR-PLAN-01",
       "observed_revision": 1,
-      "fingerprint": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+
       "missing": ["architecture_record"],
       "evidence_refs": [],
       "transition_committed": false,
@@ -57,7 +56,7 @@
   "bound_req": {
     "path": "docs/requirements/REQ-002-loop-engineering-self-evolution.md",
     "version": "v1.0.0",
-    "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+
     "id": "REQ-002",
     "status": "locked",
     "approved_by": "user",
@@ -83,8 +82,7 @@
   "hook_control": {
     "policy_ref": {
       "path": "docs/control/hook-policy.json",
-      "version": "v1.3.0",
-      "sha256": "7777777777777777777777777777777777777777777777777777777777777777"
+      "version": "v1.3.0"
     },
     "mode": "audit",
     "health": "healthy",

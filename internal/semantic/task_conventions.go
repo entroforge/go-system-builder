@@ -11,7 +11,7 @@ func ProjectTaskConventions(root string, files fileview.Reader, tasks []TaskCont
 		refs := []projectconventions.Reference{}
 		for _, r := range task.Reading {
 			if r.Path != "" {
-				refs = append(refs, projectconventions.Reference{Path: r.Path, Anchor: r.Anchor, SHA256: r.SHA256})
+				refs = append(refs, projectconventions.Reference{Path: r.Path, Anchor: r.Anchor})
 			}
 		}
 		requests = append(requests, projectconventions.Request{TaskID: task.TaskID, TaskRef: task.TaskRef, Scope: task.Writes, Reading: refs, ApprovedRefs: approved})

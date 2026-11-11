@@ -24,7 +24,6 @@ func TestLockedArtifactExactPathBlocksEdit(t *testing.T) {
 				"kind": "contracts",
 				"path": "docs/dev/contracts/BE-039-loop-controller.md",
 				"version": "v1.0.2",
-				"sha256": "fbd5f1df",
 				"locked_from_stage": "S6",
 				"baseline_generation": 1
 			}]
@@ -82,7 +81,6 @@ func TestIncompleteManifestIdentityAllowsEdit(t *testing.T) {
 				ID:                 "BE-039",
 				Kind:               "contracts",
 				Path:               "docs/dev/contracts/BE-039-loop-controller.md",
-				Version:            "v1.0.2",
 				LockedFromStage:    "S6",
 				BaselineGeneration: 1,
 			}},
@@ -113,7 +111,6 @@ func TestProvenBashMutationOfLockedArtifactBlocks(t *testing.T) {
 				Kind:               "contracts",
 				Path:               lockedPath,
 				Version:            "v1.0.2",
-				SHA256:             "fbd5f1df",
 				LockedFromStage:    "S6",
 				BaselineGeneration: 1,
 			}},
@@ -144,7 +141,6 @@ func TestUnknownBashWithoutProvenLockedMutationAllows(t *testing.T) {
 				Kind:               "contracts",
 				Path:               "docs/dev/contracts/BE-039-loop-controller.md",
 				Version:            "v1.0.2",
-				SHA256:             "fbd5f1df",
 				LockedFromStage:    "S6",
 				BaselineGeneration: 1,
 			}},
@@ -213,7 +209,6 @@ func TestLockedArtifactRecoveryUsesNextGenerationPath(t *testing.T) {
 				"kind": "contracts",
 				"path": "docs/dev/contracts/BE-039-loop-controller.md",
 				"version": "v1.0.2",
-				"sha256": "fbd5f1df",
 				"locked_from_stage": "S6",
 				"baseline_generation": 1
 			}]
@@ -248,7 +243,6 @@ func TestLockedArtifactBlockCarriesExactPath(t *testing.T) {
 				Kind:               "contracts",
 				Path:               lockedPath,
 				Version:            "v1.0.2",
-				SHA256:             "fbd5f1df",
 				LockedFromStage:    "S6",
 				BaselineGeneration: 1,
 			}},
@@ -313,7 +307,6 @@ func TestLockedArtifactBlockCarriesCurrentStage(t *testing.T) {
 				Kind:               "contracts",
 				Path:               lockedPath,
 				Version:            "v1.0.2",
-				SHA256:             "fbd5f1df",
 				LockedFromStage:    "S6",
 				BaselineGeneration: 1,
 			}},
@@ -343,7 +336,6 @@ func TestLockedArtifactDirectMutationToolsBlock(t *testing.T) {
 		Kind:               "contracts",
 		Path:               lockedPath,
 		Version:            "v1.0.2",
-		SHA256:             "fbd5f1df",
 		LockedFromStage:    "S6",
 		BaselineGeneration: 1,
 	}
@@ -383,7 +375,6 @@ func TestUnlockedSiblingAndGenerationBehavior(t *testing.T) {
 		Kind:               "contracts",
 		Path:               oldPath,
 		Version:            "v1.0.2",
-		SHA256:             "generation-one-sha",
 		LockedFromStage:    "S6",
 		BaselineGeneration: 1,
 	}
@@ -392,7 +383,6 @@ func TestUnlockedSiblingAndGenerationBehavior(t *testing.T) {
 		Kind:               "contracts",
 		Path:               candidatePath,
 		Version:            "v2.0.0",
-		SHA256:             "generation-two-sha",
 		LockedFromStage:    "S6",
 		BaselineGeneration: 2,
 	}
@@ -469,7 +459,6 @@ func TestEnforceBlockReasonsAreExactlyRetainedReasons(t *testing.T) {
 					Kind:               "contracts",
 					Path:               lockedPath,
 					Version:            "v1.0.2",
-					SHA256:             "fbd5f1df",
 					LockedFromStage:    "S6",
 					BaselineGeneration: 1,
 				}},
@@ -508,7 +497,6 @@ func TestOldGenerationRemainsImmutableDuringRework(t *testing.T) {
 				Kind:               "contracts",
 				Path:               oldPath,
 				Version:            "v1.0.2",
-				SHA256:             "generation-one-sha",
 				LockedFromStage:    "S6",
 				BaselineGeneration: 1,
 			}},

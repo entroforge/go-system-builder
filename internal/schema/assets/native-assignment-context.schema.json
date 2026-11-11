@@ -159,10 +159,6 @@
             }
           }
         },
-        "assignment_record_sha256": {
-          "type": "string",
-          "pattern": "^[a-f0-9]{64}$"
-        },
         "assignment_revision": {
           "type": "integer",
           "minimum": 1
@@ -188,7 +184,6 @@
       "additionalProperties": false,
       "required": [
         "profile_version",
-        "profile_sha256",
         "mode",
         "role",
         "selected",
@@ -198,10 +193,6 @@
       "properties": {
         "profile_version": {
           "const": "1.0.0"
-        },
-        "profile_sha256": {
-          "type": "string",
-          "pattern": "^[a-f0-9]{64}$"
         },
         "mode": {
           "enum": [
@@ -233,7 +224,6 @@
             "required": [
               "name",
               "source",
-              "sha256",
               "reasons"
             ],
             "properties": {
@@ -244,10 +234,6 @@
               "source": {
                 "type": "string",
                 "minLength": 1
-              },
-              "sha256": {
-                "type": "string",
-                "pattern": "^[a-f0-9]{64}$"
               },
               "reasons": {
                 "type": "array",
@@ -263,10 +249,8 @@
     },
     "frozen_inputs": {
       "type": "object",
-      "minProperties": 1,
       "additionalProperties": {
-        "type": "string",
-        "pattern": "^[a-f0-9]{64}$"
+        "type": "string"
       }
     },
     "input_read_order": {
@@ -291,17 +275,12 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "path",
-        "sha256"
+        "path"
       ],
       "properties": {
         "path": {
           "type": "string",
           "minLength": 1
-        },
-        "sha256": {
-          "type": "string",
-          "pattern": "^[a-f0-9]{64}$"
         }
       }
     },
@@ -359,8 +338,7 @@
     },
     "result_path": {
       "type": "string",
-      "minLength": 1,
-      "pattern": "^\\.claude/evidence/loop-[A-Za-z0-9._-]+/g[1-9][0-9]*/assignments/[A-Za-z0-9._-]+/a[1-9][0-9]*/completion\\.json$"
+      "minLength": 1
     },
     "result_draft_editable": {
       "const": true
@@ -643,7 +621,6 @@
         "assignment_id",
         "assignment_revision",
         "assignment_record_contract",
-        "assignment_record_sha256",
         "summary",
         "assertion_evidence",
         "risks_blockers",
@@ -704,11 +681,10 @@
           "minimum": 1
         },
         "assignment_record_contract": {
-          "enum": ["s6-v1.2", "s6-native-v1"]
-        },
-        "assignment_record_sha256": {
-          "type": "string",
-          "pattern": "^[a-f0-9]{64}$"
+          "enum": [
+            "s6-v1.2",
+            "s6-native-v1"
+          ]
         },
         "summary": {
           "type": "null"
@@ -733,8 +709,7 @@
       "required": [
         "kind",
         "id",
-        "path",
-        "sha256"
+        "path"
       ],
       "properties": {
         "kind": {
@@ -760,10 +735,6 @@
         "version": {
           "type": "string",
           "minLength": 1
-        },
-        "sha256": {
-          "type": "string",
-          "pattern": "^[a-f0-9]{64}$"
         }
       },
       "allOf": [
@@ -790,18 +761,13 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "path",
-        "sha256"
+        "path"
       ],
       "properties": {
         "path": {
           "type": "string",
           "minLength": 1,
           "pattern": "^[^\\\\:\\x00]+$"
-        },
-        "sha256": {
-          "type": "string",
-          "pattern": "^[a-f0-9]{64}$"
         }
       }
     },
@@ -937,10 +903,6 @@
                 "type": "string",
                 "minLength": 1
               },
-              "sha256": {
-                "type": "string",
-                "pattern": "^[a-f0-9]{64}$"
-              },
               "source_mode": {
                 "enum": [
                   "disk",
@@ -967,9 +929,7 @@
                   }
                 },
                 "then": {
-                  "required": [
-                    "sha256"
-                  ]
+                  "required": []
                 }
               }
             ]
@@ -1020,17 +980,12 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "path",
-        "sha256"
+        "path"
       ],
       "properties": {
         "path": {
           "type": "string",
           "minLength": 1
-        },
-        "sha256": {
-          "type": "string",
-          "pattern": "^[a-f0-9]{64}$"
         }
       }
     },

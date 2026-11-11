@@ -8,7 +8,9 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/entroforge/go-system-builder/internal/cli"
@@ -60,6 +62,65 @@ func s5EntryRecovery(t *testing.T, root string, wantCode int) string {
 		t.Fatalf("original S5 preparation recovery: got %d want %d: %s %s", code, wantCode, &out, &diagnostic)
 	}
 	return out.String() + diagnostic.String() + s5EntryHook(t, root)
+}
+
+// s5RemovedDigestFields reports every retired digest field that still carries
+// a digest VALUE inside a decoded JSON value. Blueprint
+// L4-workflow-convergence.md:250 removed hash/SHA/digest/fingerprint from the
+// Hook, the Writer, the state, the receipt and the recovery path, and
+// L4-workflow-convergence.md:138 forbids renaming the same purpose into
+// fingerprint or checksum.
+//
+// The historical field NAME is not itself a machine proof: blueprint
+// L3-S9-repair.md:15 keeps old digest values as historical original fields
+// that are read as they are, never recomputed, re-registered or used as a
+// continuation qualification, and L3-S5-document-verification.md:354 keeps
+// historical facts independent of any old hash check. So only a field that
+// still carries a digest value is a violation here; an empty field name
+// without a value registers nothing.
+func s5RemovedDigestFields(value any) []string {
+	found := map[string]bool{}
+	var walk func(any)
+	walk = func(node any) {
+		switch typed := node.(type) {
+		case map[string]any:
+			for key, item := range typed {
+				switch key {
+				case "sha256", "manifest_sha256", "digest", "fingerprint", "checksum", "hash", "git_oid":
+					if s5CarriesDigestValue(item) {
+						found[key] = true
+					}
+				}
+				walk(item)
+			}
+		case []any:
+			for _, item := range typed {
+				walk(item)
+			}
+		}
+	}
+	walk(value)
+	removed := make([]string, 0, len(found))
+	for key := range found {
+		removed = append(removed, key)
+	}
+	sort.Strings(removed)
+	return removed
+}
+
+// s5CarriesDigestValue reports whether a retired field still holds an actual
+// digest value. A nil or empty value registers no digest.
+func s5CarriesDigestValue(value any) bool {
+	switch typed := value.(type) {
+	case nil:
+		return false
+	case string:
+		return typed != ""
+	case float64:
+		return typed != 0
+	default:
+		return true
+	}
 }
 
 func TestS5NamedRecoveryPreparesOriginalResponsibilitiesWhileSessionOnlyObserves(t *testing.T) {
@@ -144,6 +205,14 @@ func TestS5NamedRecoveryPreparesOriginalResponsibilitiesWhileSessionOnlyObserves
 	}
 }
 
+// The accepted S4 source may drift on disk after it was accepted. Blueprint
+// L3-S5-document-verification.md:102 and L4-workflow-convergence.md:138/281
+// removed the manifest and material digest: the Hook no longer registers or
+// verifies a digest, so the machine no longer refuses the drifted bytes and
+// does not claim to have detected the same-version external change. The
+// preparation completes, the two original responsibilities are issued with the
+// actual material, and the consequence of the drift is left to the
+// professional author and Main (L3-S5-document-verification.md:128).
 func TestS5PreparationRecoveryRejectsAcceptedSourceDriftWithoutRefreshingSHA(t *testing.T) {
 	root := newUnregisteredS5InputFixture(t)
 	before := stageSnapshot(t, root)
@@ -155,36 +224,95 @@ func TestS5PreparationRecoveryRejectsAcceptedSourceDriftWithoutRefreshingSHA(t *
 	if err := os.WriteFile(filepath.Join(root, source), append(data, '\n'), 0600); err != nil {
 		t.Fatal(err)
 	}
-	output := s5EntryRecovery(t, root, 1)
+	output := s5EntryRecovery(t, root, 0)
 	after := stageSnapshot(t, root)
-	for _, key := range []string{"documents", "evidence", "lifecycle"} {
-		if !reflect.DeepEqual(after.State[key], before.State[key]) {
-			t.Fatalf("source drift changed %s", key)
-		}
-	}
-	for _, key := range []string{"teams", "agents", "work_packets"} {
-		if !reflect.DeepEqual(after.State["entities"].(map[string]any)[key], before.State["entities"].(map[string]any)[key]) {
-			t.Fatalf("source drift registered %s", key)
-		}
-	}
-	if !strings.Contains(output, source) {
-		t.Fatalf("source error lacks exact recovery target: %s", output)
+	if after.Revision <= before.Revision {
+		t.Fatalf("drifted source did not register the original preparation: %d -> %d", before.Revision, after.Revision)
 	}
 	packets, err := runtime.S5Packets(root, after.State, "")
-	if len(packets) != 0 {
-		t.Fatalf("source drift issued reviewers: %v %d", err, len(packets))
+	if err != nil || len(packets) != 2 {
+		t.Fatalf("drifted source did not issue both original responsibilities: %d %v %s", len(packets), err, output)
 	}
+	// The drifted material is still delivered to both reviewers by its actual
+	// path and known version. The system does not refuse it and does not claim
+	// to have detected the byte change; the professional author and Main judge
+	// the actual material they receive.
+	delivered := 0
+	for _, p := range packets {
+		for _, ref := range p.Inputs {
+			if ref.Path != source {
+				continue
+			}
+			delivered++
+			if ref.Version == "" {
+				t.Fatalf("delivered source lost its known version: %+v", ref)
+			}
+		}
+	}
+	if delivered != len(packets) {
+		t.Fatalf("drifted source was not delivered to every original responsibility: %d of %d", delivered, len(packets))
+	}
+	// The registration and the delivered questionnaires carry no digest.
+	manifest := ""
+	for _, raw := range after.State["entities"].(map[string]any)["teams"].([]any) {
+		row := raw.(map[string]any)
+		if row["kind"] != "document_verifier" {
+			continue
+		}
+		manifest = row["manifest_ref"].(string)
+		if removed := s5RemovedDigestFields(row); len(removed) > 0 {
+			t.Fatalf("registered team kept the removed digest field %v: %v", removed, row)
+		}
+	}
+	if manifest == "" {
+		t.Fatal("drifted preparation did not register its manifest reference")
+	}
+	for _, raw := range after.State["documents"].([]any) {
+		if removed := s5RemovedDigestFields(raw); len(removed) > 0 {
+			t.Fatalf("registered document kept the removed digest field %v: %v", removed, raw)
+		}
+	}
+	registered, err := os.ReadFile(filepath.Join(root, manifest))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var registeredValue any
+	if err := json.Unmarshal(registered, &registeredValue); err != nil {
+		t.Fatal(err)
+	}
+	if removed := s5RemovedDigestFields(registeredValue); len(removed) > 0 {
+		t.Fatalf("registered manifest kept the removed digest field %v: %s", removed, registered)
+	}
+	for _, p := range packets {
+		view, err := os.ReadFile(filepath.Join(root, p.ViewPath))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var viewValue any
+		if err := json.Unmarshal(view, &viewValue); err != nil {
+			t.Fatal(err)
+		}
+		if removed := s5RemovedDigestFields(viewValue); len(removed) > 0 {
+			t.Fatalf("delivered questionnaire kept the removed digest field %v: %s", removed, view)
+		}
+	}
+	// Restoring the original source bytes replays the same original
+	// preparation; it does not register a second time.
 	if err := os.WriteFile(filepath.Join(root, source), data, 0600); err != nil {
 		t.Fatal(err)
 	}
-	output = s5EntryRecovery(t, root, 0)
-	packets, err = runtime.S5Packets(root, stageSnapshot(t, root).State, "")
+	replay := s5EntryRecovery(t, root, 0)
+	restored := stageSnapshot(t, root)
+	if restored.Revision != after.Revision {
+		t.Fatalf("restoring the original source registered a second preparation: %d -> %d", after.Revision, restored.Revision)
+	}
+	packets, err = runtime.S5Packets(root, restored.State, "")
 	if err != nil || len(packets) != 2 {
-		t.Fatalf("restoring original source did not recover preparation: %v %s", err, output)
+		t.Fatalf("restoring the original source did not replay the original responsibilities: %d %v %s", len(packets), err, replay)
 	}
 }
 
-func TestS5EntryAcceptsProfessionalOnlyManifestWithoutMachineFields(t *testing.T) {
+func TestS5ExplicitMainSavePreservesProfessionalScopeAtIndependentManifest(t *testing.T) {
 	root := newUnregisteredS5InputFixture(t)
 	before := stageSnapshot(t, root)
 	life := before.State["lifecycle"].(map[string]any)
@@ -193,29 +321,147 @@ func TestS5EntryAcceptsProfessionalOnlyManifestWithoutMachineFields(t *testing.T
 		map[string]any{"scope": []string{"整批规格链，特别核对无权限拒绝语义"}},
 		map[string]any{"scope": []string{"整批任务，特别核对错误路径的真实验证责任"}},
 	}})
-	output := s5EntryRecovery(t, root, 0)
-	packets, err := runtime.S5Packets(root, stageSnapshot(t, root).State, "")
-	if err != nil || len(packets) != 2 {
-		t.Fatalf("professional choices without machine fields rejected: %v %s", err, output)
-	}
-	data, err := os.ReadFile(filepath.Join(root, path))
+	original, err := os.ReadFile(filepath.Join(root, path))
 	if err != nil {
 		t.Fatal(err)
 	}
-	var completed map[string]any
-	if err := json.Unmarshal(data, &completed); err != nil {
+	payload, _ := json.Marshal(map[string]any{"hook_event_name": "PostToolUse", "agent_id": "Main", "tool_name": "Write", "tool_input": map[string]any{"file_path": filepath.Join(root, path)}, "cwd": root})
+	var out, diagnostic bytes.Buffer
+	if code := cli.Run([]string{"hook", "--event", "PostToolUse", "--root", root}, bytes.NewReader(payload), &out, &diagnostic); code != 0 {
+		t.Fatalf("save: %d %s %s", code, &out, &diagnostic)
+	}
+	after := stageSnapshot(t, root)
+	packets, err := runtime.S5Packets(root, after.State, "")
+	if err != nil || len(packets) != 2 {
+		t.Fatalf("explicit choices: %v %s %s", err, &out, &diagnostic)
+	}
+	manifest := s5ActualManifestForTest(t, after.State)
+	if manifest == path {
+		t.Fatal("explicit original was modified in place")
+	}
+	completed, err := os.ReadFile(filepath.Join(root, manifest))
+	if err != nil {
 		t.Fatal(err)
 	}
-	if completed["runtime_id"] == nil || completed["documents"] == nil || completed["validation"] == nil {
-		t.Fatalf("system fields not supplied: %s", data)
+	for _, scope := range []string{"无权限拒绝语义", "错误路径的真实验证责任"} {
+		if !strings.Contains(string(completed), scope) || !strings.Contains(out.String(), scope) {
+			t.Fatalf("scope not preserved and dispatched: %s %s", completed, &out)
+		}
 	}
-	if !strings.Contains(string(data), "无权限拒绝语义") || !strings.Contains(string(data), "错误路径的真实验证责任") {
-		t.Fatal("preparation overwrote Main professional choices")
+	unchanged, _ := os.ReadFile(filepath.Join(root, path))
+	if !bytes.Equal(original, unchanged) {
+		t.Fatal("Main original changed")
+	}
+}
+
+func s5ActualManifestForTest(t *testing.T, state map[string]any) string {
+	t.Helper()
+	for _, raw := range state["entities"].(map[string]any)["teams"].([]any) {
+		row := raw.(map[string]any)
+		if row["kind"] == "document_verifier" {
+			return row["manifest_ref"].(string)
+		}
+	}
+	t.Fatal("missing S5 registered manifest")
+	return ""
+}
+
+func TestS5UnknownManifestAndAncestorsArePreservedWithoutBlockingIssue(t *testing.T) {
+	for _, kind := range []string{"file", "directory", "symlink", "ancestor-file", "ancestor-symlink"} {
+		t.Run(kind, func(t *testing.T) {
+			root := newUnregisteredS5InputFixture(t)
+			life := stageSnapshot(t, root).State["lifecycle"].(map[string]any)
+			preferred := fmt.Sprintf(".claude/workgroups/REQ-039/review-e%.0f/manifest.json", life["phase_revision"])
+			occupied := filepath.Join(root, preferred)
+			if strings.HasPrefix(kind, "ancestor-") {
+				occupied = filepath.Join(root, ".claude/workgroups")
+			}
+			if err := os.MkdirAll(filepath.Dir(occupied), 0700); err != nil {
+				t.Fatal(err)
+			}
+			unknown := []byte(`{"assignments":[{"scope":["UNKNOWN DO NOT CLAIM"]},{"scope":["UNKNOWN DO NOT CLAIM"]}]}`)
+			target := filepath.Join(t.TempDir(), "target")
+			switch kind {
+			case "directory":
+				if err := os.Mkdir(occupied, 0700); err != nil {
+					t.Fatal(err)
+				}
+			case "symlink":
+				if err := os.WriteFile(target, unknown, 0600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(target, occupied); err != nil {
+					t.Skip(err)
+				}
+			case "ancestor-symlink":
+				if err := os.Mkdir(target, 0700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(target, "unknown"), unknown, 0600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(target, occupied); err != nil {
+					t.Skip(err)
+				}
+			default:
+				if err := os.WriteFile(occupied, unknown, 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			output := s5EntryRecovery(t, root, 0)
+			after := stageSnapshot(t, root)
+			actual := s5ActualManifestForTest(t, after.State)
+			if actual == preferred || strings.Contains(output, "UNKNOWN DO NOT CLAIM") {
+				t.Fatalf("claimed unknown manifest: %s %s", actual, output)
+			}
+			packets, err := runtime.S5Packets(root, after.State, "")
+			if err != nil || len(packets) != 2 {
+				t.Fatalf("unknown blocked issue: %d %v", len(packets), err)
+			}
+			for _, raw := range after.State["entities"].(map[string]any)["agents"].([]any) {
+				a := raw.(map[string]any)
+				if a["role"] == "document-verifier" && a["activation_ref"] != nil {
+					t.Fatalf("native S5 staged legacy activation: %v", a)
+				}
+			}
+			switch kind {
+			case "directory":
+				entries, err := os.ReadDir(occupied)
+				if err != nil || len(entries) != 0 {
+					t.Fatalf("unknown directory changed: %v %v", entries, err)
+				}
+			case "ancestor-symlink":
+				entries, err := os.ReadDir(target)
+				if err != nil || len(entries) != 1 {
+					t.Fatalf("symlink target changed: %v %v", entries, err)
+				}
+				data, _ := os.ReadFile(filepath.Join(target, "unknown"))
+				if !bytes.Equal(data, unknown) {
+					t.Fatal("symlink target bytes changed")
+				}
+			default:
+				data, err := os.ReadFile(occupied)
+				if err != nil || !bytes.Equal(data, unknown) {
+					t.Fatalf("unknown changed: %s %v", data, err)
+				}
+			}
+			beforeReplay := after.Revision
+			s5EntryRecovery(t, root, 0)
+			if stageSnapshot(t, root).Revision != beforeReplay {
+				t.Fatal("registered actual manifest did not win replay")
+			}
+		})
 	}
 }
 
 // Exercise the normal Main save Hook, not just the lower-level issuer. A
-// registered manifest is a frozen original source, not another editable answer.
+// registered manifest is a frozen original source, not another editable
+// answer. Blueprint L3-S5-document-verification.md:84 and
+// L4-workflow-convergence.md:250 removed the manifest digest: the Hook and the
+// original consumer no longer compute, register or verify a SHA/hash, so an
+// edited manifest file is not refused by a byte comparison and never becomes
+// another registration. The registered associations are still frozen: an edit
+// that breaks them is refused by the original consumer.
 func TestS5RegisteredManifestSaveRejectsChangedAssociationsAndReplaysUnchanged(t *testing.T) {
 	root := newUnregisteredS5InputFixture(t)
 	s5EntryRecovery(t, root, 0)
@@ -225,11 +471,14 @@ func TestS5RegisteredManifestSaveRejectsChangedAssociationsAndReplaysUnchanged(t
 		row := raw.(map[string]any)
 		if row["kind"] == "document_verifier" {
 			manifest = row["manifest_ref"].(string)
-			if row["manifest_sha256"] == nil {
-				t.Fatal("original registration did not pin its manifest")
+			if removed := s5RemovedDigestFields(row); len(removed) > 0 {
+				t.Fatalf("original registration kept the removed digest field %v: %v", removed, row)
 			}
 			break
 		}
+	}
+	if manifest == "" {
+		t.Fatal("original registration did not keep its manifest reference")
 	}
 	original, err := os.ReadFile(filepath.Join(root, manifest))
 	if err != nil {
@@ -272,29 +521,57 @@ func TestS5RegisteredManifestSaveRejectsChangedAssociationsAndReplaysUnchanged(t
 		}
 		return context, nil
 	}
-	for _, kind := range []string{"scope", "source", "same-owner"} {
+	for _, kind := range []string{"scope", "same-owner"} {
 		var changed map[string]any
 		if err := json.Unmarshal(original, &changed); err != nil {
 			t.Fatal(err)
 		}
+		conflicting := ""
 		switch kind {
 		case "scope":
 			changed["assignments"].([]any)[0].(map[string]any)["scope"] = []string{"偷偷缩小原整批审查范围"}
-		case "source":
-			changed["documents"].([]any)[0].(map[string]any)["sha256"] = strings.Repeat("0", 64)
 		case "same-owner":
 			rows := changed["assignments"].([]any)
+			// The second registered responsibility loses its own owner here,
+			// so it is the one that can no longer be matched exactly. The
+			// refusal must name that concrete registered responsibility.
+			conflicting, _ = rows[1].(map[string]any)["agent_id"].(string)
 			rows[1].(map[string]any)["agent_id"] = rows[0].(map[string]any)["agent_id"]
 		}
 		data, _ := json.Marshal(changed)
-		_, r := saved(data)
-		if r == nil || r.Accepted || r.WorkComplete || !strings.Contains(r.Error, "original registration") {
-			t.Fatalf("%s changed manifest was accepted: %+v", kind, r)
+		context, r := saved(data)
+		switch kind {
+		case "scope":
+			// The Hook does not compare the manifest bytes any more, so the
+			// edited professional content is not refused by a digest gate. It
+			// does not become another registration either: the original
+			// registration and its exact questionnaire references still stand.
+			if r != nil {
+				t.Fatalf("scope edit was refused by a removed manifest digest: %+v", r)
+			}
+			if !strings.Contains(context, "原分工登记与原问卷发行已就绪") {
+				t.Fatalf("scope edit lost the original registration report: %s", context)
+			}
+		case "same-owner":
+			// One owner may not take over the other registered
+			// responsibility. The original consumer still refuses the
+			// conflicting association.
+			if r == nil || r.Accepted || r.WorkComplete {
+				t.Fatalf("%s changed manifest was accepted: %+v", kind, r)
+			}
+			if conflicting == "" || !strings.Contains(r.Error, conflicting) {
+				t.Fatalf("%s rejection does not name the conflicting owner %s: %+v", kind, conflicting, r)
+			}
 		}
 		after := stageSnapshot(t, root)
 		currentJournal, _ := os.ReadFile(filepath.Join(root, ".claude/loop-events.jsonl"))
 		if after.Revision != before.Revision || !bytes.Equal(currentJournal, journal) {
 			t.Fatalf("%s changed registration/packet facts", kind)
+		}
+		for _, key := range []string{"teams", "agents", "work_packets"} {
+			if !reflect.DeepEqual(after.State["entities"].(map[string]any)[key], before.State["entities"].(map[string]any)[key]) {
+				t.Fatalf("%s rewrote the registered %s", kind, key)
+			}
 		}
 	}
 	context, r := saved(original)
@@ -321,6 +598,12 @@ func TestS5RegisteredManifestSaveRejectsChangedAssociationsAndReplaysUnchanged(t
 // This fixture deliberately stops at the original register-workgroup command;
 // it exercises the interrupted register -> first issue seam, not author UX.
 // The normal no-machine-input UX is independently covered by TestS5Entry*.
+// Blueprint L3-S5-document-verification.md:84 and
+// L4-workflow-convergence.md:250/138 removed the registered manifest digest:
+// the Hook and the original consumer no longer compute, register or verify a
+// SHA/hash. The registered associations stay frozen without it: an edit that
+// breaks them is refused before the first questionnaire, and a professional
+// content edit does not become another registration.
 func TestS5RegisteredManifestCannotChangeBeforeFirstQuestionnaire(t *testing.T) {
 	f := newStageAnswerFixtureIssuance(t, true, false)
 	before := stageSnapshot(t, f.root)
@@ -331,43 +614,187 @@ func TestS5RegisteredManifestCannotChangeBeforeFirstQuestionnaire(t *testing.T) 
 	}
 	for _, raw := range before.State["entities"].(map[string]any)["teams"].([]any) {
 		row := raw.(map[string]any)
-		if row["kind"] == "document_verifier" && row["manifest_sha256"] == nil {
-			t.Fatal("actual Register omitted the original manifest pin")
+		if row["kind"] != "document_verifier" {
+			continue
+		}
+		if row["manifest_ref"] != manifest {
+			t.Fatalf("actual Register lost the original manifest reference: %v", row)
+		}
+		if removed := s5RemovedDigestFields(row); len(removed) > 0 {
+			t.Fatalf("actual Register kept the removed digest field %v: %v", removed, row)
 		}
 	}
-	for _, kind := range []string{"scope", "source"} {
-		var changed map[string]any
-		json.Unmarshal(original, &changed)
-		if kind == "scope" {
-			changed["assignments"].([]any)[0].(map[string]any)["scope"] = []string{"不再覆盖整批材料"}
-		} else {
-			changed["documents"].([]any)[0].(map[string]any)["sha256"] = strings.Repeat("0", 64)
-		}
-		data, _ := json.Marshal(changed)
-		if err := os.WriteFile(filepath.Join(f.root, manifest), data, 0600); err != nil {
-			t.Fatal(err)
-		}
-		service, err := submission.New(f.root)
-		if err != nil {
-			t.Fatal(err)
-		}
-		packets, err := service.IssueContext(context.Background(), "")
-		if err == nil || len(packets) != 0 || !strings.Contains(err.Error(), "original registration") {
-			t.Fatalf("%s changed bytes got a first packet: %d %v", kind, len(packets), err)
-		}
-		if stageSnapshot(t, f.root).Revision != before.Revision {
-			t.Fatal("failed first issuance rewrote registration")
-		}
-	}
-	if err := os.WriteFile(filepath.Join(f.root, manifest), original, 0600); err != nil {
+	// The registered associations cannot be rewritten before the first
+	// questionnaire: one owner may not take over the other responsibility.
+	owner := newStageAnswerFixtureIssuance(t, true, false)
+	ownerBefore := stageSnapshot(t, owner.root)
+	var changed map[string]any
+	if err := json.Unmarshal(original, &changed); err != nil {
 		t.Fatal(err)
 	}
-	service, err := submission.New(f.root)
+	rows := changed["assignments"].([]any)
+	// The second registered responsibility loses its own owner here, so it is
+	// the one that can no longer be matched exactly.
+	conflicting, _ := rows[1].(map[string]any)["agent_id"].(string)
+	rows[1].(map[string]any)["agent_id"] = rows[0].(map[string]any)["agent_id"]
+	data, _ := json.Marshal(changed)
+	if err := os.WriteFile(filepath.Join(owner.root, manifest), data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	service, err := submission.New(owner.root)
 	if err != nil {
 		t.Fatal(err)
 	}
 	packets, err := service.IssueContext(context.Background(), "")
+	if err == nil || len(packets) != 0 {
+		t.Fatalf("same-owner changed bytes got a first packet: %d %v", len(packets), err)
+	}
+	if conflicting == "" || !strings.Contains(err.Error(), conflicting) {
+		t.Fatalf("rejection does not name the conflicting owner %s: %v", conflicting, err)
+	}
+	if stageSnapshot(t, owner.root).Revision != ownerBefore.Revision {
+		t.Fatal("failed first issuance rewrote registration")
+	}
+	// A professional content edit is not a digest gate: the Hook does not
+	// verify the manifest bytes, and the original registered responsibilities
+	// and their independent owners are still the ones that issue the first
+	// questionnaires.
+	scope := newStageAnswerFixtureIssuance(t, true, false)
+	scopeBefore := stageSnapshot(t, scope.root)
+	var scoped map[string]any
+	if err := json.Unmarshal(original, &scoped); err != nil {
+		t.Fatal(err)
+	}
+	scoped["assignments"].([]any)[0].(map[string]any)["scope"] = []string{"不再覆盖整批材料"}
+	scopedData, _ := json.Marshal(scoped)
+	if err := os.WriteFile(filepath.Join(scope.root, manifest), scopedData, 0600); err != nil {
+		t.Fatal(err)
+	}
+	scopeService, err := submission.New(scope.root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scopePackets, err := scopeService.IssueContext(context.Background(), "")
+	if err != nil || len(scopePackets) != 2 {
+		t.Fatalf("scope-edited manifest did not issue the two original responsibilities: %d %v", len(scopePackets), err)
+	}
+	owners := map[string]bool{}
+	for _, p := range scopePackets {
+		owners[p.Binding.Owner] = true
+		if p.Binding.Owner != conflicting && !strings.Contains(p.Binding.Owner, "reviewer-") {
+			t.Fatalf("scope edit changed the registered owner: %+v", p.Binding)
+		}
+	}
+	if len(owners) != 2 {
+		t.Fatalf("scope edit collapsed the two independent owners: %v", owners)
+	}
+	for _, p := range scopePackets {
+		view, err := os.ReadFile(filepath.Join(scope.root, p.ViewPath))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var viewValue any
+		if err := json.Unmarshal(view, &viewValue); err != nil {
+			t.Fatal(err)
+		}
+		if removed := s5RemovedDigestFields(viewValue); len(removed) > 0 {
+			t.Fatalf("issued questionnaire kept the removed digest field %v: %s", removed, view)
+		}
+	}
+	// Restoring the exact registered bytes keeps the original issuance: the
+	// first questionnaires are still the two registered responsibilities and
+	// the registration is not written again.
+	if err := os.WriteFile(filepath.Join(scope.root, manifest), original, 0600); err != nil {
+		t.Fatal(err)
+	}
+	restoreService, err := submission.New(scope.root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored, err := restoreService.IssueContext(context.Background(), "")
+	if err != nil || len(restored) != 2 {
+		t.Fatalf("restoring exact registration did not resume original issuance: %d %v", len(restored), err)
+	}
+	// A professional content edit is not a machine gate and does not become
+	// another registration: the Runtime keeps the original registration and
+	// the same two original responsibilities. Restoring the exact registered
+	// bytes therefore resumes the original issuance instead of registering
+	// again (blueprint L4-workflow-convergence.md:250/:281 removed the
+	// manifest digest and its registration gate).
+	if got := stageSnapshot(t, scope.root).Revision; got != scopeBefore.Revision {
+		t.Fatalf("the scope edit registered a second preparation: %d -> %d", scopeBefore.Revision, got)
+	}
+}
+
+func TestS5SuccessfulMainPostResumesAcceptedHandoffWithoutResubmittingS4(t *testing.T) {
+	root := newUnregisteredS5InputFixture(t)
+	before := stageSnapshot(t, root)
+	post := func(failed bool) string {
+		payload, _ := json.Marshal(map[string]any{"hook_event_name": "PostToolUse", "agent_id": "Main", "tool_name": "Read", "tool_input": map[string]any{"file_path": filepath.Join(root, "docs/dev/tasks/TASK-039-01.md")}, "tool_response": map[string]any{"is_error": failed}, "cwd": root})
+		var out, diag bytes.Buffer
+		if code := cli.Run([]string{"hook", "--event", "PostToolUse", "--root", root}, bytes.NewReader(payload), &out, &diag); code != 0 {
+			t.Fatalf("Post: %d %s %s", code, &out, &diag)
+		}
+		return out.String() + diag.String()
+	}
+	post(true)
+	if stageSnapshot(t, root).Revision != before.Revision {
+		t.Fatal("failed Post prepared S5")
+	}
+	output := post(false)
+	after := stageSnapshot(t, root)
+	packets, err := runtime.S5Packets(root, after.State, "")
 	if err != nil || len(packets) != 2 {
-		t.Fatalf("restoring exact registration did not resume original issuance: %d %v", len(packets), err)
+		t.Fatalf("successful Post did not resume: %d %v %s", len(packets), err, output)
+	}
+	for _, raw := range before.State["entities"].(map[string]any)["work_packets"].([]any) {
+		row := raw.(map[string]any)
+		if row["template_id"] != "s4-task-planning-v1" {
+			continue
+		}
+		old, found, err := runtime.FindSubmission(before.State, row["packet_id"].(string))
+		if err != nil || !found {
+			t.Fatalf("S4 missing: %v", err)
+		}
+		current, found, err := runtime.FindSubmission(after.State, old.PacketID)
+		if err != nil || !found || !reflect.DeepEqual(old, current) {
+			t.Fatalf("S4 reception changed: %v", err)
+		}
+	}
+	post(false)
+	if stageSnapshot(t, root).Revision != after.Revision {
+		t.Fatal("complete S5 Post registered again")
+	}
+}
+
+func TestS5ConcurrentPreparationRetainsOneRegisteredTeamAndBothQuestions(t *testing.T) {
+	root := newUnregisteredS5InputFixture(t)
+	var wait sync.WaitGroup
+	results := make(chan string, 2)
+	for i := 0; i < 2; i++ {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			var out, diag bytes.Buffer
+			if code := cli.Run([]string{"runtime", "stage-answer", "issue", "--root", root}, nil, &out, &diag); code != 0 {
+				results <- fmt.Sprintf("issue %d: %s %s", code, &out, &diag)
+			}
+		}()
+	}
+	wait.Wait()
+	close(results)
+	for failure := range results {
+		t.Error(failure)
+	}
+	after := stageSnapshot(t, root)
+	teams := 0
+	for _, raw := range after.State["entities"].(map[string]any)["teams"].([]any) {
+		if raw.(map[string]any)["kind"] == "document_verifier" {
+			teams++
+		}
+	}
+	packets, err := runtime.S5Packets(root, after.State, "")
+	if teams != 1 || err != nil || len(packets) != 2 {
+		t.Fatalf("concurrent preparation: teams=%d packets=%d %v", teams, len(packets), err)
 	}
 }

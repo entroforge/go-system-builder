@@ -41,7 +41,7 @@ func TestDecisionIndexReusesHistoryAndRepairsCacheOnReplay(t *testing.T) {
 	if spans := timings.Snapshot(); spans["audit/index_hit"].Count != 1 || spans["audit/index_rebuild"].Count != 1 {
 		t.Fatalf("hot path did not reuse index: %+v", spans)
 	}
-	for _, damage := range []string{"missing", "corrupt", "oversized", "wrong decisions"} {
+	for _, damage := range []string{"missing", "corrupt", "oversized"} {
 		t.Run(damage, func(t *testing.T) {
 			switch damage {
 			case "missing":
@@ -61,23 +61,7 @@ func TestDecisionIndexReusesHistoryAndRepairsCacheOnReplay(t *testing.T) {
 					t.Fatal(err)
 				}
 				f.Close()
-			case "wrong decisions":
-				data, err := os.ReadFile(path + ".index")
-				if err != nil {
-					t.Fatal(err)
-				}
-				var envelope decisionIndexEnvelope
-				if err := json.Unmarshal(data, &envelope); err != nil {
-					t.Fatal(err)
-				}
-				envelope.Payload = []byte(strings.ReplaceAll(string(envelope.Payload), `"a":true`, `"x":true`))
-				data, err = json.Marshal(envelope)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if err := os.WriteFile(path+".index", data, 0600); err != nil {
-					t.Fatal(err)
-				}
+
 			}
 			if err := out.AppendContext(ctx, auditRecord("a")); err != nil {
 				t.Fatalf("replay failed to repair cache: %v", err)
@@ -93,32 +77,26 @@ func TestDecisionIndexReusesHistoryAndRepairsCacheOnReplay(t *testing.T) {
 	}
 }
 
-func TestDecisionIndexDetectsSameSizeSameMtimeLogRewrite(t *testing.T) {
+// The diagnostic index is a cache, not an authenticity mechanism. Neither
+// the index nor the outbox writes a digest of the event stream.
+func TestDecisionIndexStoresNoDigest(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "hook-decisions.jsonl")
 	out := NewOutbox(path)
 	if err := out.Append(auditRecord("a")); err != nil {
 		t.Fatal(err)
 	}
-	stat, err := os.Stat(path)
+	index, err := os.ReadFile(path + ".index")
 	if err != nil {
 		t.Fatal(err)
 	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	data = []byte(strings.ReplaceAll(string(data), `"decision_id":"a"`, `"decision_id":"b"`))
-	if err := os.WriteFile(path, data, 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chtimes(path, stat.ModTime(), stat.ModTime()); err != nil {
-		t.Fatal(err)
+	if strings.Contains(string(index), "sha256") || strings.Contains(string(index), "fingerprint") {
+		t.Fatalf("index retained a digest: %s", index)
 	}
 	if err := out.Append(auditRecord("a")); err != nil {
 		t.Fatal(err)
 	}
-	if lines := auditLines(t, path); len(lines) != 2 || !strings.Contains(lines[0], `"decision_id":"b"`) || !strings.Contains(lines[1], `"decision_id":"a"`) {
-		t.Fatalf("metadata-only cache accepted altered prefix: %v", lines)
+	if lines := auditLines(t, path); len(lines) != 1 {
+		t.Fatalf("same actual event was appended twice: %v", lines)
 	}
 }
 

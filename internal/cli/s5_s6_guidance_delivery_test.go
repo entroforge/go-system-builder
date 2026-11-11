@@ -1,17 +1,18 @@
 package cli_test
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/entroforge/go-system-builder/internal/assignmentrecord"
 	"github.com/entroforge/go-system-builder/internal/cli"
 	"github.com/entroforge/go-system-builder/internal/runtime"
-	"github.com/entroforge/go-system-builder/internal/workpacket"
 )
 
 func TestS5MainObservationIsReadOnlyAndRedeliversChangedResponsibility(t *testing.T) {
@@ -86,28 +87,6 @@ func TestS5MainObservationIsReadOnlyAndRedeliversChangedResponsibility(t *testin
 	}
 }
 
-func TestS5MainObservationPreservesFrozenExecutionRecovery(t *testing.T) {
-	f := newStageAnswerFixture(t)
-	p := f.packets[0]
-	e := f.prepare(t, p)
-	before := stageSnapshot(t, f.root).Revision
-	view := filepath.Join(e.Path, workpacket.WorkerViewPath)
-	current := designGuidanceEvent(t, f.root, "s5-frozen", "PreToolUse", "Read")
-	if !strings.Contains(current, view) || !strings.Contains(current, "continue the registered frozen execution") || strings.Contains(current, filepath.Join(f.root, p.ViewPath)) {
-		t.Fatalf("frozen responsibility was projected as a new Main/native source: %s", current)
-	}
-	if err := os.Remove(view); err != nil {
-		t.Fatal(err)
-	}
-	missing := designGuidanceEvent(t, f.root, "s5-frozen", "PreToolUse", "Read")
-	if !strings.Contains(missing, view) || !strings.Contains(missing, "frozen-execution.md") || !strings.Contains(missing, "does not restore a frozen execution copy") || strings.Contains(missing, "runtime stage-answer issue --root") {
-		t.Fatalf("frozen missing-file recovery fell back to Main issuance: %s", missing)
-	}
-	if stageSnapshot(t, f.root).Revision != before {
-		t.Fatal("frozen observation mutated Runtime")
-	}
-}
-
 func TestS5MainObservationOmitsSupersededReception(t *testing.T) {
 	f := newStageAnswerFixture(t)
 	p := f.packets[0]
@@ -159,6 +138,49 @@ func TestS5MainObservationNamesPartiallyIssuedResponsibility(t *testing.T) {
 	if _, found, err := runtime.FindWorkPacket(stageSnapshot(t, f.root).State, missing.ID); err != nil || !found {
 		t.Fatalf("named entry did not restore the original missing issuance: %v %v", found, err)
 	}
+	// The restored preparation is the questionnaire's own second preparation,
+	// not a duplicate of the first one: the Runtime journal already recorded
+	// the first preparation, so each preparation keeps its own identity. The
+	// attempt is the questionnaire's preparation count, never the Runtime write
+	// count.
+	issued := packetIssuanceEventIDs(t, f.root, missing.ID)
+	if len(issued) != 2 {
+		t.Fatalf("the responsibility was prepared %d times, want the original and the restored preparation: %v", len(issued), issued)
+	}
+	if issued[0] != "evt-packet-"+missing.ID+"-1" || issued[1] != "evt-packet-"+missing.ID+"-2" {
+		t.Fatalf("the prepared questionnaire did not keep one identity per preparation attempt: %v", issued)
+	}
+	if issued[1] == "evt-packet-"+missing.ID+"-"+strconv.Itoa(before+1) {
+		t.Fatalf("the preparation attempt follows the Runtime write count %d: %v", before+1, issued)
+	}
+}
+
+// packetIssuanceEventIDs lists the Runtime journal's issuance identities for
+// one questionnaire, in the order the Runtime recorded them.
+func packetIssuanceEventIDs(t *testing.T, root, packetID string) []string {
+	t.Helper()
+	file, err := os.Open(filepath.Join(root, ".claude/loop-events.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 4096), 2<<20)
+	ids := []string{}
+	for scanner.Scan() {
+		var event map[string]any
+		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
+			t.Fatal(err)
+		}
+		eventID, _ := event["event_id"].(string)
+		if strings.HasPrefix(eventID, "evt-packet-"+packetID+"-") {
+			ids = append(ids, eventID)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return ids
 }
 
 func TestS5ReturnToS6ProvidesPreparationInsteadOfWaitingForUnstartedBuilder(t *testing.T) {
@@ -175,12 +197,44 @@ func TestS5ReturnToS6ProvidesPreparationInsteadOfWaitingForUnstartedBuilder(t *t
 	}
 	p := f.packets[len(f.packets)-1]
 	body, _ := json.Marshal(map[string]any{"hook_event_name": "PostToolUse", "session_id": "s5-to-s6", "cwd": f.root, "tool_name": "Agent", "tool_input": map[string]any{"prompt": filepath.Join(f.root, p.ViewPath)}, "tool_response": map[string]any{"text": filepath.Join(f.root, p.AnswerPath)}})
+	statePath, journalPath := filepath.Join(f.root, ".claude/loop-state.json"), filepath.Join(f.root, ".claude/loop-events.jsonl")
+	stateBefore, _ := os.ReadFile(statePath)
+	journalBefore, _ := os.ReadFile(journalPath)
 	var returned, diagnostic bytes.Buffer
 	if code := cli.Run([]string{"hook", "--root", f.root, "--event", "PostToolUse"}, bytes.NewReader(body), &returned, &diagnostic); code != 0 {
 		t.Fatalf("Main return: %d %s", code, &diagnostic)
 	}
-	if !strings.Contains(returned.String(), "read-only") || !strings.Contains(returned.String(), "submission_key") || !strings.Contains(returned.String(), "S6") {
-		t.Fatalf("Main return lost reception after transition: %s", &returned)
+	// L4-workflow-convergence.md:195 requires Main return to express the
+	// original reception facts, the platform run/return state and the
+	// successor separately; L4-hook-platform-wiring.md:361 requires at least
+	// the original path, the accepted part, the real gap, the receiving owner
+	// and the exact next step. Assert those facts, not one retired wording.
+	returnedText := returned.String()
+	for _, want := range []string{
+		filepath.Join(f.root, p.ViewPath),
+		"submission_key", "accepted", "responsibility_status", "work_complete", "current_stage", "S6",
+		"establishes no supported execution completion state",
+		"does not establish product acceptance",
+		"Do not re-dispatch received work",
+	} {
+		if !strings.Contains(returnedText, want) {
+			t.Fatalf("Main return lost reception after transition (%q missing): %s", want, &returned)
+		}
+	}
+	// Reverse: an accepted responsibility must not be told to dispatch or
+	// wait for the Builder again.
+	for _, stale := range []string{"dispatch the Builder", "waits for each assigned Builder", "wait for its Result", "must be re-dispatched"} {
+		if strings.Contains(returnedText, stale) {
+			t.Fatalf("Main return pretended received work must be dispatched again (%q): %s", stale, &returned)
+		}
+	}
+	// Reverse: this Main return observation is read-only. The old wording
+	// token is retired, so the read-only fact is asserted on the bytes it
+	// must not change.
+	stateAfter, _ := os.ReadFile(statePath)
+	journalAfter, _ := os.ReadFile(journalPath)
+	if string(stateAfter) != string(stateBefore) || string(journalAfter) != string(journalBefore) {
+		t.Fatalf("Main return observation rewrote Runtime state or journal: %s", &returned)
 	}
 	next := designGuidanceEvent(t, f.root, "s5-to-s6", "PreToolUse", "Read")
 	for _, want := range []string{"s6 prepare", "s6 status --advice", "native Agent"} {

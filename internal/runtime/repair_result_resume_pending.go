@@ -24,7 +24,14 @@ func RepairResultResumePending(root string, state map[string]any, owner, assignm
 	}
 	for _, packet := range current {
 		if packet.Binding.Sources.RepairAssignmentID == assignment {
-			return false, nil
+			if packet.Binding.Resume != nil {
+				return false, nil
+			}
+			// The accepted predecessor remains current until the natural
+			// successor is issued. Its recorded resolution already indicates
+			// that this responsibility is waiting for continuation.
+			resume, err := RepairResultResumeBinding(root, state, packet.Binding)
+			return resume != nil, err
 		}
 	}
 	for _, packet := range packets {

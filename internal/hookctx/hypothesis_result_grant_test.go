@@ -1,8 +1,6 @@
 package hookctx
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -20,9 +18,7 @@ func TestS8FreshWriteNeedsOpenHypothesisAndNoPriorResult(t *testing.T) {
 	}
 	packet := workpacket.HypothesisResultPacket{Binding: workpacket.HypothesisResultBinding{
 		CaseID: "case-1", CaseRef: casePath, CaseRevision: 2, HypothesisID: "hypothesis-1", AssignmentID: "assignment-1",
-		HypothesisQuestionSHA256: "", SourceFindingIDs: []string{"finding-1"},
-		ObservationBatchID: "batch-1", ObservationBatchRef: ".claude/evidence/batch.json", ObservationBatchSHA256: "batch-sha",
-		BaselineDigest: "baseline-digest",
+		SourceFindingIDs: []string{"finding-1"},
 	}}
 	question := workpacket.HypothesisResultQuestion{
 		HypothesisID: "hypothesis-1", AssignmentID: "assignment-1", Statement: "registered statement",
@@ -30,11 +26,6 @@ func TestS8FreshWriteNeedsOpenHypothesisAndNoPriorResult(t *testing.T) {
 		ExpectedOutcomes: workpacket.HypothesisExpectedOutcomes{Support: "holds", Refute: "fails"},
 		SourceFindingIDs: []string{"finding-1"}, EvidenceRefs: []string{"evidence://finding-1"}, Status: "open",
 	}
-	questionDigest, err := workpacket.HypothesisQuestionDigest(question)
-	if err != nil {
-		t.Fatal(err)
-	}
-	packet.Binding.HypothesisQuestionSHA256 = questionDigest
 	writeCase := func(status string, results []map[string]any, want bool) {
 		t.Helper()
 		question.Status = status
@@ -50,13 +41,11 @@ func TestS8FreshWriteNeedsOpenHypothesisAndNoPriorResult(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		digest := sha256.Sum256(data)
-		packet.Binding.CaseSHA256 = hex.EncodeToString(digest[:])
 		if err := os.WriteFile(filepath.Join(root, filepath.FromSlash(casePath)), data, 0o600); err != nil {
 			t.Fatal(err)
 		}
 		state := map[string]any{"review": map[string]any{"investigation": map[string]any{
-			"case_id": "case-1", "path": casePath, "sha256": packet.Binding.CaseSHA256, "revision": caseRevision,
+			"case_id": "case-1", "path": casePath, "revision": caseRevision,
 		}}}
 		if got := s8HypothesisResultOpen(root, state, packet); got != want {
 			t.Fatalf("s8HypothesisResultOpen(status=%s, results=%v)=%v, want %v", status, results, got, want)

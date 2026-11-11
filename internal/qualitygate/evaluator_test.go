@@ -14,7 +14,6 @@ import (
 	"github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/schema"
 	"github.com/entroforge/go-system-builder/internal/transition"
-	"github.com/entroforge/go-system-builder/internal/verification"
 )
 
 type memoryFiles map[string][]byte
@@ -127,34 +126,45 @@ func TestPlanningGateAcceptsQualifiedSemanticEvidence(t *testing.T) {
 	if len(result.EvidenceRefs) != 1 || result.EvidenceRefs[0] != "ev-design" {
 		t.Fatalf("evidence refs = %#v", result.EvidenceRefs)
 	}
-	if len(result.Fingerprint) != len("sha256:")+64 || result.Fingerprint[:7] != "sha256:" {
-		t.Fatalf("fingerprint = %q", result.Fingerprint)
+	encoded, err := json.Marshal(result)
+	if err != nil || strings.Contains(string(encoded), `"fingerprint"`) {
+		t.Fatalf("gate output must not register fingerprint: %s (%v)", encoded, err)
 	}
 }
 
-func TestEvaluatorRequiresCurrentReviewRound(t *testing.T) {
+func TestEvaluatorAssociatesCurrentReviewPlanWithoutRound(t *testing.T) {
 	evaluator := newTestEvaluator(t)
-
-	stale, err := evaluator.Evaluate(context.Background(), reviewGateInput(t, 2))
-	if err != nil {
-		t.Fatalf("Evaluate stale round: %v", err)
+	for _, oldRound := range []int{0, 2, 9} {
+		input := reviewGateInput(t, oldRound)
+		input.Snapshot.State["review"] = map[string]any{"plan": map[string]any{"plan_id": "review-current"}}
+		index := input.Snapshot.State["evidence"].([]any)[0].(map[string]any)
+		index["review_plan_id"] = "review-current"
+		files := input.Files.(memoryFiles)
+		var envelope map[string]any
+		if err := json.Unmarshal(files["evidence/qa.json"], &envelope); err != nil {
+			t.Fatal(err)
+		}
+		envelope["review_plan_id"] = "review-current"
+		if oldRound == 0 {
+			delete(index, "review_round")
+			delete(envelope, "review_round")
+		}
+		data, err := json.Marshal(envelope)
+		if err != nil {
+			t.Fatal(err)
+		}
+		files["evidence/qa.json"] = data
+		result, err := evaluator.Evaluate(context.Background(), input)
+		if err != nil || result.Status != qualitygate.StatusSatisfied || len(result.EvidenceRefs) != 1 {
+			t.Fatalf("current Plan with old round %d: %+v %v", oldRound, result, err)
+		}
 	}
-	if stale.Status != qualitygate.StatusNotReady {
-		t.Fatalf("stale status = %q, want not_ready", stale.Status)
-	}
-	if len(stale.EvidenceRefs) != 0 {
-		t.Fatalf("stale evidence refs = %#v, want none", stale.EvidenceRefs)
-	}
-
-	current, err := evaluator.Evaluate(context.Background(), reviewGateInput(t, 3))
-	if err != nil {
-		t.Fatalf("Evaluate current round: %v", err)
-	}
-	if current.Status != qualitygate.StatusSatisfied {
-		t.Fatalf("current status = %q, want satisfied (error=%s conflicts=%v missing=%v)", current.Status, current.ErrorCode, current.Conflicts, current.Missing)
-	}
-	if len(current.EvidenceRefs) != 1 || current.EvidenceRefs[0] != "ev-qa" {
-		t.Fatalf("current evidence refs = %#v", current.EvidenceRefs)
+	foreign := reviewGateInput(t, 0)
+	foreign.Snapshot.State["review"] = map[string]any{"plan": map[string]any{"plan_id": "review-current"}}
+	foreign.Snapshot.State["evidence"].([]any)[0].(map[string]any)["review_plan_id"] = "review-previous"
+	result, err := evaluator.Evaluate(context.Background(), foreign)
+	if err != nil || result.Status != qualitygate.StatusNotReady || len(result.EvidenceRefs) != 0 {
+		t.Fatalf("different original Plan was treated as current: %+v %v", result, err)
 	}
 }
 
@@ -295,7 +305,7 @@ func TestPlanningGatesRequireCurrentArtifacts(t *testing.T) {
 	}
 }
 
-func TestBuilderBatchRequiresEveryActivatedTaskCompletion(t *testing.T) {
+func TestBuilderBatchRequiresOriginalTaskResponsibilities(t *testing.T) {
 	evaluator := newTestEvaluator(t)
 	input := builderBatchInput(t)
 
@@ -306,7 +316,7 @@ func TestBuilderBatchRequiresEveryActivatedTaskCompletion(t *testing.T) {
 	if result.Status != qualitygate.StatusNotReady {
 		t.Fatalf("status = %q, want not_ready", result.Status)
 	}
-	if !contains(result.Missing, "evidence:completion_report:TASK-TEST-02") {
+	if !contains(result.Missing, "builder_responsibility:TASK-TEST-02") {
 		t.Fatalf("missing = %#v", result.Missing)
 	}
 }
@@ -401,7 +411,7 @@ func TestEvaluationJSONUsesContractFieldNames(t *testing.T) {
 		t.Fatalf("Unmarshal: %v", err)
 	}
 	for _, key := range []string{
-		"status", "gate_id", "candidate_transition", "observed_revision", "fingerprint",
+		"status", "gate_id", "candidate_transition", "observed_revision",
 		"missing", "evidence_refs", "conflicts", "error_code", "transition_committed", "next_cursor",
 	} {
 		if _, ok := packet[key]; !ok {
@@ -416,39 +426,7 @@ func TestEvaluationJSONUsesContractFieldNames(t *testing.T) {
 	}
 }
 
-func TestFingerprintIgnoresRevisionAndTimestamp(t *testing.T) {
-	evaluator := newTestEvaluator(t)
-	firstInput := reviewGateInput(t, 3)
-	secondInput := reviewGateInput(t, 3)
-	secondInput.Snapshot.Revision = 999
-	files := secondInput.Files.(memoryFiles)
-	data := files["evidence/qa.json"]
-	var envelope map[string]any
-	if err := json.Unmarshal(data, &envelope); err != nil {
-		t.Fatalf("unmarshal evidence: %v", err)
-	}
-	envelope["created_at"] = "2030-01-01T00:00:00Z"
-	data, err := json.Marshal(envelope)
-	if err != nil {
-		t.Fatalf("marshal evidence: %v", err)
-	}
-	files["evidence/qa.json"] = data
-	secondInput.Snapshot.State["evidence"].([]any)[0].(map[string]any)["sha256"] = sha256Hex(data)
-
-	first, err := evaluator.Evaluate(context.Background(), firstInput)
-	if err != nil {
-		t.Fatalf("Evaluate first: %v", err)
-	}
-	second, err := evaluator.Evaluate(context.Background(), secondInput)
-	if err != nil {
-		t.Fatalf("Evaluate second: %v", err)
-	}
-	if first.Fingerprint == "" || first.Fingerprint != second.Fingerprint {
-		t.Fatalf("fingerprints differ: %q != %q", first.Fingerprint, second.Fingerprint)
-	}
-}
-
-func TestEvaluatorIgnoresStaleOrHashMismatchEvidence(t *testing.T) {
+func TestEvaluatorIgnoresStaleGenerationEvidence(t *testing.T) {
 	evaluator := newTestEvaluator(t)
 	tests := []struct {
 		name   string
@@ -458,12 +436,6 @@ func TestEvaluatorIgnoresStaleOrHashMismatchEvidence(t *testing.T) {
 			name: "stale generation",
 			mutate: func(input qualitygate.Input) {
 				input.Snapshot.State["evidence"].([]any)[0].(map[string]any)["baseline_generation"] = 2
-			},
-		},
-		{
-			name: "hash mismatch",
-			mutate: func(input qualitygate.Input) {
-				input.Snapshot.State["evidence"].([]any)[0].(map[string]any)["sha256"] = strings.Repeat("0", 64)
 			},
 		},
 	}
@@ -494,7 +466,7 @@ func TestMissingIsDeterministicallySorted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Evaluate: %v", err)
 	}
-	for _, prefix := range []string{"current acceptance professional report", "clean_round_snapshot_registered:", "review_plan_clean:"} {
+	for _, prefix := range []string{"current acceptance professional report"} {
 		if !containsPrefix(result.Missing, prefix) {
 			t.Fatalf("missing current responsibility %q: %v", prefix, result.Missing)
 		}
@@ -688,10 +660,10 @@ func TestReleaseAuditGateChecksReportedAreasWithoutMandatoryChecklist(t *testing
 	}
 }
 
-func TestReleaseAuditGateRequiresCurrentCleanRound(t *testing.T) {
+func TestReleaseAuditUsesAcceptedReportsWithoutRecheckingS7(t *testing.T) {
 	evaluator := newTestEvaluator(t)
-	acceptanceManifest := replaceManifestEvidenceRef(t, validS10Manifest(t, "acceptance"), "ev-clean", "ev-audit")
-	releaseManifest := replaceManifestEvidenceRef(t, validS10Manifest(t, "release_audit"), "ev-clean", "ev-acc")
+	acceptanceManifest := replaceManifestEvidenceRef(t, validS10Manifest(t, "acceptance"), "test://s7-observation", "ev-audit")
+	releaseManifest := replaceManifestEvidenceRef(t, validS10Manifest(t, "release_audit"), "test://s7-observation", "ev-acc")
 	input := s10GateInput(t, "GATE-RELEASE-AUDIT-APPROVED", "TR-017", "release_audit", map[string]any{
 		"audit_manifest_path":   "s10/release-audit-manifest.json",
 		"audit_manifest_sha256": sha256Hex(releaseManifest),
@@ -712,21 +684,15 @@ func TestReleaseAuditGateRequiresCurrentCleanRound(t *testing.T) {
 			entry["sha256"] = sha256Hex(data)
 		}
 	}
-	evidence := input.Snapshot.State["evidence"].([]any)
-	filtered := make([]any, 0, len(evidence)-1)
-	for _, raw := range evidence {
-		if raw.(map[string]any)["id"] != "ev-clean" {
-			filtered = append(filtered, raw)
-		}
-	}
-	input.Snapshot.State["evidence"] = filtered
+
+	input.Snapshot.State["review"].(map[string]any)["assignments"].(map[string]any)["assignment-qa-1"].(map[string]any)["result_verdict"] = "blocked"
 
 	result, err := evaluator.Evaluate(context.Background(), input)
 	if err != nil {
 		t.Fatalf("Evaluate: %v", err)
 	}
-	if result.Status != qualitygate.StatusNotReady || !containsPrefix(result.Missing, "clean_round_snapshot_registered:") {
-		t.Fatalf("status = %q missing=%v conflicts=%v, want not_ready with current clean round missing", result.Status, result.Missing, result.Conflicts)
+	if result.Status != qualitygate.StatusSatisfied {
+		t.Fatalf("accepted reports were blocked by extra S7 rechecking: status=%q missing=%v conflicts=%v", result.Status, result.Missing, result.Conflicts)
 	}
 }
 
@@ -935,7 +901,7 @@ func TestDocumentPassListsBothMissingResponsibilities(t *testing.T) {
 	}
 }
 
-func TestDocumentPassRejectsStaleReviewRound(t *testing.T) {
+func TestDocumentPassIgnoresUnrelatedReviewRound(t *testing.T) {
 	evaluator := newTestEvaluator(t)
 	input := documentPassInput(t, "reviewer-1", "reviewer-2", "")
 	input.Snapshot.State["review"].(map[string]any)["round"] = 2
@@ -944,8 +910,8 @@ func TestDocumentPassRejectsStaleReviewRound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Evaluate: %v", err)
 	}
-	if result.Status != qualitygate.StatusNotReady || len(result.EvidenceRefs) != 0 {
-		t.Fatalf("result = status %q refs %#v missing %#v", result.Status, result.EvidenceRefs, result.Missing)
+	if result.Status != qualitygate.StatusSatisfied {
+		t.Fatalf("unrelated numeric review round changed S5 outcome: %+v", result)
 	}
 }
 
@@ -1277,7 +1243,7 @@ func s10GateInput(t *testing.T, gateID, transitionID, lifecycleState string, ext
 			"kind":                    kind,
 			"runtime_id":              "loop-test",
 			"baseline_generation":     1,
-			"review_round":            2,
+			"review_plan_id":          "review-plan-test",
 			"producer_agent_id":       "s10-agent",
 			"producer_responsibility": responsibility,
 			"conclusion":              conclusion,
@@ -1292,32 +1258,29 @@ func s10GateInput(t *testing.T, gateID, transitionID, lifecycleState string, ext
 		}
 		return map[string]any{
 			"id": id, "kind": kind, "path": "evidence/" + id + ".json",
-			"sha256": sha256Hex(data), "status": "valid", "baseline_generation": 1,
-			"review_round": 2, "produced_by": []any{"s10-agent"}, "invalidated_by": nil,
+			"status": "valid", "baseline_generation": 1, "review_plan_id": "review-plan-test",
+			"produced_by": []any{"s10-agent"}, "invalidated_by": nil,
 			"responsibility_id": responsibility, "scope_refs": []any{},
 		}, data
 	}
 	files := memoryFiles{}
 	acceptance, acceptanceData := addEvidence("ev-acc", "acceptance", "Orchestrator", "pass")
 	files["evidence/ev-acc.json"] = acceptanceData
-	clean, cleanData := addEvidence("ev-clean", "clean_round", "Orchestrator", "pass")
-	files["evidence/ev-clean.json"] = cleanData
-	evidence := []any{acceptance, clean}
+	evidence := []any{acceptance}
 	if lifecycleState == "release_audit" {
 		audit, auditData := addEvidence("ev-audit", "release_audit", "Release Auditor", "approved")
 		files["evidence/ev-audit.json"] = auditData
-		evidence = []any{audit, acceptance, clean}
+		evidence = []any{audit, acceptance}
 	}
 	// This gate fixture starts after actual S7 reception. A bare clean-round
 	// envelope is insufficient: the original registered round facts must agree.
 	reviewState := map[string]any{
-		"round":  2,
-		"plan":   map[string]any{"plan_id": "review-plan-test", "path": ".claude/review/plans/review-plan-test.json", "sha256": strings.Repeat("a", 64), "revision": 1, "review_round": 2, "status": "clean"},
-		"claims": map[string]any{"claim-qa-1": map[string]any{"lens": "qa", "applicability": "required", "disposition": "pass", "assignment_id": "assignment-qa-1", "result_id": "result-qa-1", "finding_ids": []any{}}},
+		"assignments": map[string]any{"assignment-qa-1": map[string]any{"lens": "qa", "claim_ids": []any{"claim-qa-1"}, "status": "consumed", "result_verdict": "pass"}},
+		"round_entry": map[string]any{"plan_id": "review-plan-test"},
+		"plan":        map[string]any{"plan_id": "review-plan-test", "path": ".claude/review/plans/review-plan-test.json", "revision": 1, "status": "clean"},
+		"claims":      map[string]any{"claim-qa-1": map[string]any{"lens": "qa", "applicability": "required", "disposition": "pass", "assignment_id": "assignment-qa-1", "result_id": "result-qa-1", "finding_ids": []any{}}},
 	}
-	if clean := verification.EvaluateCleanRound(map[string]any{"review": reviewState, "baseline": map[string]any{"generation": 1}, "evidence": evidence}); !clean.Passed {
-		t.Fatalf("fixture did not establish its claimed completed S7 round: %v", clean.Reasons)
-	}
+
 	return qualitygate.Input{
 		Snapshot: runtime.Snapshot{Revision: 10, State: map[string]any{
 			"runtime_id": "loop-test",
@@ -1346,16 +1309,16 @@ func validS10Manifest(t *testing.T, kind string) []byte {
 		items = append(items, map[string]any{
 			"id": item.id, "category": item.category, "source_refs": []string{"source:" + item.id},
 			"expected": "expected " + item.id, "oracle": "oracle " + item.id, "owner": "S10 reviewer",
-			"evidence_refs": []string{"ev-clean"}, "disposition": "pass",
+			"evidence_refs": []string{"test://s7-observation"}, "disposition": "pass",
 		})
 		counterevidence = append(counterevidence, map[string]any{
 			"id": "CE-" + item.id, "inventory_id": item.id, "question": "what disproves " + item.id + "?",
-			"evidence_refs": []string{"ev-clean"}, "outcome": "pass",
+			"evidence_refs": []string{"test://s7-observation"}, "outcome": "pass",
 		})
 	}
 	manifest := map[string]any{
 		"schema_version": "1.0.0", "manifest_type": kind, "runtime_id": "loop-test",
-		"baseline_generation": 1, "review_round": 2, "coverage_inventory": items,
+		"baseline_generation": 1, "review_plan_id": "review-plan-test", "coverage_inventory": items,
 		"counterevidence":   counterevidence,
 		"risks":             []any{},
 		"technical_debt":    []any{},
@@ -1369,7 +1332,7 @@ func validS10Manifest(t *testing.T, kind string) []byte {
 	if kind == "release_audit" {
 		areas := []any{}
 		for _, id := range []string{"state_machine", "transaction_uow", "concurrency_idempotency", "data_migration", "call_sites_topology", "observability_errors", "verification_evidence", "docs_release_scope"} {
-			areas = append(areas, map[string]any{"id": id, "conclusion": "pass", "owner": "Release Auditor", "evidence_refs": []string{"ev-clean"}})
+			areas = append(areas, map[string]any{"id": id, "conclusion": "pass", "owner": "Release Auditor", "evidence_refs": []string{"test://s7-observation"}})
 		}
 		manifest["audit_areas"] = areas
 	}

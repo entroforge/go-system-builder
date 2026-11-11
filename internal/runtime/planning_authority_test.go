@@ -7,7 +7,6 @@ import (
 
 	"github.com/entroforge/go-system-builder/internal/fileview"
 	"github.com/entroforge/go-system-builder/internal/runtime"
-	"github.com/entroforge/go-system-builder/internal/workpacket"
 )
 
 func TestDesignAuthorityAssociatesCurrentEntryWithoutSourceProof(t *testing.T) {
@@ -16,7 +15,7 @@ func TestDesignAuthorityAssociatesCurrentEntryWithoutSourceProof(t *testing.T) {
 	bytes := []byte("# REQ-001\n> Status: locked\n> Version: v1.0.0\n")
 	os.MkdirAll(filepath.Join(root, "docs/requirements"), 0700)
 	os.WriteFile(filepath.Join(root, ref), bytes, 0600)
-	state := map[string]any{"schema_version": "1.2.0", "runtime_id": "loop-design", "configuration": map[string]any{"optimization": map[string]any{"packet": true}}, "baseline": map[string]any{"generation": 1}, "lifecycle": map[string]any{"state": "planning", "phase": "design", "phase_revision": 2}, "bound_req": map[string]any{"id": "REQ-001", "path": ref, "version": "v1.0.0", "sha256": workpacket.Digest(bytes), "status": "locked", "workspace": map[string]any{"project_root": root}}}
+	state := map[string]any{"schema_version": "1.2.0", "runtime_id": "loop-design", "configuration": map[string]any{"optimization": map[string]any{"packet": true}}, "baseline": map[string]any{"generation": 1}, "lifecycle": map[string]any{"state": "planning", "phase": "design", "phase_revision": 2}, "bound_req": map[string]any{"id": "REQ-001", "path": ref, "version": "v1.0.0", "status": "locked", "workspace": map[string]any{"project_root": root}}}
 	p, err := runtime.CurrentDesignPacket(state)
 	if err != nil {
 		t.Fatal(err)

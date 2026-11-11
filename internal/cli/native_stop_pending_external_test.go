@@ -3,29 +3,125 @@ package cli_test
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/entroforge/go-system-builder/internal/assignmentrecord"
+	"github.com/entroforge/go-system-builder/internal/cli"
+	"github.com/entroforge/go-system-builder/internal/runtime"
+	"github.com/entroforge/go-system-builder/internal/semantic"
 	"github.com/entroforge/go-system-builder/internal/workpacket"
 	fixtures "github.com/entroforge/go-system-builder/tests/fixtures/req039"
 )
 
 // Simulate an interrupted original fingerprint write, with an unchanged target
 // and a real coherent Runtime/journal. The production Writer validates it.
-func nativeStopFingerprintPending(t *testing.T, root string) string {
+func nativeStopCommitPending(t *testing.T, root string) string {
 	t.Helper()
-	state := stageSnapshot(t, root).State
-	encoded, err := json.MarshalIndent(state, "", "  ")
+	statePath := filepath.Join(root, ".claude/loop-state.json")
+	journalPath := filepath.Join(root, ".claude/loop-events.jsonl")
+	writer := runtime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{})
+	before, err := writer.Snapshot()
 	if err != nil {
 		t.Fatal(err)
 	}
-	hash := workpacket.Digest(append(encoded, '\n'))
-	path := ".claude/loop-state.json.fingerprint-pending.json"
-	stageJSON(t, root, path, map[string]any{"schema_version": "1.0.0", "previous_state_sha256": hash, "previous_revision": state["revision"], "state_sha256": hash, "state": state})
-	return filepath.Join(root, path)
+	life := before.State["lifecycle"].(map[string]any)
+	cursor := map[string]any{"state": life["state"], "phase": life["phase"]}
+	id := fmt.Sprintf("pending-fixture-%d", time.Now().UnixNano())
+	generation := 0
+	if baseline, ok := before.State["baseline"].(map[string]any); ok {
+		switch n := baseline["generation"].(type) {
+		case int:
+			generation = n
+		case float64:
+			generation = int(n)
+		}
+	}
+	after, err := writer.Update(before.Revision, runtime.Mutation{EventID: id, RequestID: id, TransitionID: "PENDING-FIXTURE", Event: "pending_fixture", Actor: "orchestrator", IdempotencyKey: id, RuntimeID: before.State["runtime_id"].(string), BaselineGeneration: generation, From: cursor, To: cursor, RetainLastTransition: true, OccurredAt: time.Now().UTC()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal, err := os.ReadFile(journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(journal)), "\n")
+	var event map[string]any
+	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &event); err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(map[string]any{"schema_version": "1.0.0", "previous_revision": before.Revision, "request_id": event["request_id"], "idempotency_key": event["idempotency_key"], "retain_last_transition": true, "state": after.State, "journal_event": event})
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker := statePath + ".commit-pending.json"
+	if err := os.WriteFile(marker, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	return marker
+}
+
+func pendingRawRevision(t *testing.T, root string) int {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(root, ".claude/loop-state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var state struct {
+		Revision int `json:"revision"`
+	}
+	if err := json.Unmarshal(raw, &state); err != nil {
+		t.Fatal(err)
+	}
+	return state.Revision
+}
+
+// assignmentResultReceipt reads the durable acceptance receipt written beside
+// a consumed S7 Assignment.
+func assignmentResultReceipt(t *testing.T, state map[string]any, assignmentID string) map[string]any {
+	t.Helper()
+	review, _ := state["review"].(map[string]any)
+	assignments, _ := review["assignments"].(map[string]any)
+	assignment, _ := assignments[assignmentID].(map[string]any)
+	receipt, _ := assignment["result_receipt"].(map[string]any)
+	return receipt
+}
+
+// nativeStopReviewEvent delivers a native SubagentStop the way the platform
+// does: transcript_path names Main's session while the actor's own task lives
+// in its sibling subagents transcript.
+//
+// The current contract resolves an issued S7 responsibility from that actor's
+// own original task (blueprint/l4-mechanisms/L4-hook-platform-wiring.md:56
+// "父会话转录、子会话转录与最后收尾文字不同"; :122 "成功 PostToolUse 和 Stop／
+// SubagentStop 复用同一消费者兜底"), so the exact original answer reference
+// must be present in the actor's own task prompt.
+func nativeStopReviewEvent(t *testing.T, root, event, actor, ref string) (int, string, string) {
+	t.Helper()
+	rel := ref
+	if strings.HasPrefix(ref, root+string(filepath.Separator)) {
+		rel = strings.TrimPrefix(ref, root+string(filepath.Separator))
+	}
+	parent := filepath.Join(t.TempDir(), "parent-session.jsonl")
+	child := filepath.Join(strings.TrimSuffix(parent, ".jsonl"), "subagents", "agent-"+actor+".jsonl")
+	if err := os.MkdirAll(filepath.Dir(child), 0700); err != nil {
+		t.Fatal(err)
+	}
+	row, _ := json.Marshal(map[string]any{"type": "user", "isSidechain": true, "agentId": actor, "message": map[string]any{"role": "user", "content": "Source root: `" + root + "`. Original questionnaire: `" + rel + "`."}})
+	if err := os.WriteFile(child, append(row, '\n'), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(parent, []byte(`{"type":"user","message":{"role":"user","content":"Main's own unrelated conversation"}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	body, _ := json.Marshal(map[string]any{"hook_event_name": event, "agent_id": actor, "session_id": "native-review-parent", "agent_type": "professional-reviewer", "cwd": root, "transcript_path": parent, "agent_transcript_path": child, "last_assistant_message": ref, "tool_name": "Write", "tool_input": map[string]any{"file_path": ref}, "tool_response": map[string]any{"filePath": ref}})
+	var out, diagnostic bytes.Buffer
+	code := cli.Run([]string{"hook", "--root", root, "--event", event}, bytes.NewReader(body), &out, &diagnostic)
+	return code, out.String(), diagnostic.String()
 }
 
 func TestNativeStopPendingS7ReceivesSameOriginalAnswer(t *testing.T) {
@@ -33,10 +129,11 @@ func TestNativeStopPendingS7ReceivesSameOriginalAnswer(t *testing.T) {
 	state := fixtures.BaseState(t, root, "verification", "planned", 1)
 	state["schema_version"] = "1.2.0"
 	state["configuration"].(map[string]any)["optimization"] = map[string]any{"packet": true}
+	state["review"].(map[string]any)["round_entry"] = map[string]any{"plan_id": "review-plan-pending-stop", "transition_id": "TR-006", "baseline_generation": 1, "change_impact_ref": nil}
 	plan := minimalReviewPlan(t, root, "review-plan-pending-stop")
 	fixtures.WriteState(t, root, state)
 	stageCLI(t, "runtime", "workspace", "bind", "--root", root)
-	stageCLI(t, "runtime", "review-plan", "--root", root, "--file", plan)
+	registerReviewPlanNaturally(t, root, state, "review-plan-pending-stop", plan)
 	markAssignmentDispatched(t, root, "assignment-dv-1", "reviewer-pending")
 	current := stageSnapshot(t, root)
 	for _, raw := range current.State["entities"].(map[string]any)["agents"].([]any) {
@@ -66,8 +163,8 @@ func TestNativeStopPendingS7ReceivesSameOriginalAnswer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	before := stageSnapshot(t, root).Revision
-	marker := nativeStopFingerprintPending(t, root)
+	marker := nativeStopCommitPending(t, root)
+	before := pendingRawRevision(t, root)
 	// No exact task reference: recover the pair, but never guess the only packet.
 	if code, _, diag := nativeReviewEvent(t, root, "SubagentStop", "opaque-reviewer", "unrelated actual task"); code != 0 || !strings.Contains(diag, "recovered the original pending Writer") {
 		t.Fatalf("unknown Stop: %d %s", code, diag)
@@ -93,20 +190,8 @@ func TestNativeStopPendingS7ReceivesSameOriginalAnswer(t *testing.T) {
 	if err := json.Unmarshal(lines[len(lines)-1], &event); err != nil {
 		t.Fatal(err)
 	}
-	hashState := func(state map[string]any) string {
-		data, err := json.MarshalIndent(state, "", "  ")
-		if err != nil {
-			t.Fatal(err)
-		}
-		return workpacket.Digest(append(data, '\n'))
-	}
-	eventBytes, err := json.Marshal(event)
-	if err != nil {
-		t.Fatal(err)
-	}
 	stageJSON(t, root, ".claude/loop-state.json.commit-pending.json", map[string]any{
-		"schema_version": "1.0.0", "previous_state_sha256": hashState(previous), "previous_revision": previous["revision"],
-		"state_sha256": hashState(target), "journal_event_sha256": workpacket.Digest(append(eventBytes, '\n')),
+		"schema_version": "1.0.0", "previous_revision": previous["revision"],
 		"request_id": event["request_id"], "idempotency_key": event["idempotency_key"], "retain_last_transition": true, "state": target, "journal_event": event,
 	})
 	marker = statePath + ".commit-pending.json"
@@ -116,12 +201,19 @@ func TestNativeStopPendingS7ReceivesSameOriginalAnswer(t *testing.T) {
 	if err := os.WriteFile(journalPath, previousJournal, 0600); err != nil {
 		t.Fatal(err)
 	}
-	if code, _, diag := nativeReviewEvent(t, root, "SubagentStop", "opaque-reviewer", filepath.Join(root, p.AnswerPath)); code != 0 || !strings.Contains(diag, "recovered the original pending Writer") || !strings.Contains(diag, "original consumer") {
+	code, _, diag := nativeStopReviewEvent(t, root, "SubagentStop", "opaque-reviewer", filepath.Join(root, p.AnswerPath))
+	if code != 0 || !strings.Contains(diag, "recovered the original pending Writer") || !strings.Contains(diag, "original consumer") {
 		t.Fatalf("same-event reception: %d %s", code, diag)
 	}
+	// The answer reached the original Writer when the durable acceptance
+	// receipt was written beside the consumed Assignment in the same Runtime
+	// CAS (internal/review/result_receipt.go:20-23). The recovered checkpoint
+	// carries its own real revision, so the Runtime revision number alone no
+	// longer separates "recovered only" from "recovered and accepted".
 	after := stageSnapshot(t, root)
-	if after.Revision <= before {
-		t.Fatal("answer did not reach original Writer")
+	receipt := assignmentResultReceipt(t, after.State, "assignment-dv-1")
+	if receipt == nil || receipt["contract"] != "s7-review-result-receipt-v1" || receipt["assignment_id"] != "assignment-dv-1" {
+		t.Fatalf("answer did not reach original Writer: %v", receipt)
 	}
 	answerAfter, err := os.ReadFile(filepath.Join(root, p.AnswerPath))
 	if err != nil || !bytes.Equal(answerBefore, answerAfter) {
@@ -130,7 +222,7 @@ func TestNativeStopPendingS7ReceivesSameOriginalAnswer(t *testing.T) {
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
 		t.Fatalf("pending not retired: %v", err)
 	}
-	if code, _, diag := nativeReviewEvent(t, root, "SubagentStop", "opaque-reviewer", filepath.Join(root, p.AnswerPath)); code != 0 || stageSnapshot(t, root).Revision != after.Revision {
+	if code, _, diag := nativeStopReviewEvent(t, root, "SubagentStop", "opaque-reviewer", filepath.Join(root, p.AnswerPath)); code != 0 || stageSnapshot(t, root).Revision != after.Revision {
 		t.Fatalf("replay duplicated acceptance: %d %s", code, diag)
 	}
 }
@@ -139,8 +231,8 @@ func TestNativeStopPendingS5DoesNotReceiveProfessionalAnswer(t *testing.T) {
 	f := newStageAnswerFixture(t)
 	p := f.packets[0]
 	stageJSON(t, f.root, p.AnswerPath, completedDraft(p, "pass"))
-	before := stageSnapshot(t, f.root).Revision
-	marker := nativeStopFingerprintPending(t, f.root)
+	marker := nativeStopCommitPending(t, f.root)
+	before := pendingRawRevision(t, f.root)
 	if code, _, diag := nativeReviewEvent(t, f.root, "SubagentStop", "opaque-document-reviewer", filepath.Join(f.root, p.ViewPath)); code != 0 || !strings.Contains(diag, "recovered the original pending Writer") || strings.Contains(diag, "answer received") {
 		t.Fatalf("S5: %d %s", code, diag)
 	}
@@ -156,8 +248,8 @@ func TestNativeStopPendingS6DoesNotReceiveProfessionalAnswer(t *testing.T) {
 	root, source, r := nativeDeliveryFixture(t)
 	nativeAnswer(t, source, r)
 	brief, _, result := assignmentrecord.NativePaths(r)
-	before := stageSnapshot(t, root).Revision
-	marker := nativeStopFingerprintPending(t, root)
+	marker := nativeStopCommitPending(t, root)
+	before := pendingRawRevision(t, root)
 	if code, diag := nativeEvent(t, root, source, "SubagentStop", filepath.Join(root, brief)+"\n"+filepath.Join(source, result), false); code != 0 || !strings.Contains(diag, "recovered the original pending Writer") || strings.Contains(diag, "delivery received") {
 		t.Fatalf("S6: %d %s", code, diag)
 	}

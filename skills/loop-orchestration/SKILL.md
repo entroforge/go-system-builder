@@ -8,7 +8,7 @@ version: 2.2.0
 
 ## Native S6 delivery (s6-native-v1)
 
-For a newly prepared native S6 TASK, Main uses `s6 prepare --task <TASK> --role <role> --root <Main>` and carries the exact returned task brief into Claude Code's native Agent prompt. Claude Code owns creation, foreground/background execution, messaging and resume. No Team, opaque platform ID, workspace prepare/launch, team launch, generic readback, begin or activation is required.
+For a newly prepared native S6 TASK, Main uses `s6 prepare --task <TASK> --role <role> --root <Main>` and carries the exact returned task brief into Claude Code's native Agent prompt. Claude Code owns creation, foreground/background execution, messaging and resume. The native TASK entry carries the responsibility and source paths.
 
 The Builder reads the brief and actual TASK inputs, saves its professional plan, continues implementation and actual self-checks, commits deliverables and saves the professional Result. Ordinary saves do not register an execution lifecycle. Return the exact task brief / delivery path. SubagentStart supplies bounded engineering guidance; SubagentStop receives actual professional artifacts through the original domain Writer. Main integrates separately and the original full-batch Gate remains. A real blocker may be handed back; never fabricate PASS or approval.
 
@@ -24,15 +24,15 @@ self-checks; an independent verifier, including test-builder in that role, owns
 only Targeted observations and conclusions. PreToolUse listens for the ready original answer; successful PostToolUse and Stop/SubagentStop provide fallback through the same original consumer. No extra submit, done or activation is required. Reception does not wait for a final message or returned reference. Main owns actual
 dispatch, integration/checks, Impact and the fresh S7 handoff. First incomplete
 returns preserve rejection and exact gaps for Main without manufacturing completion.
-Existing registered frozen execution keeps its original sources and recovery.
+Preserve accepted facts and continue unfinished work through its current responsibility.
 
 ## S7 clean-round completion
 
 Main organizes complete-round module and affected-surface coverage; Reviewers
 perform only assigned Claims/CASEs through the actual browser, API, command or
-state-based method. Final valid Result reception forms CleanRound and the same
-original completion outlet evaluates the gate/TR-009 and prepares the exact S10
-acceptance questionnaire. Report reception, transition and preparation separately.
+state-based method. Accepted original results and the applicable responsibility progress drive the
+original exit to S10 when no Finding remains; the same outlet prepares the exact
+acceptance questionnaire. No additional CleanRound proof is required. Report reception, transition and preparation separately.
 For a concrete exit failure, `loop-harness runtime review-continue --root <Main>`
 rechecks the current clean-round exit. After entry into S10,
 `loop-harness runtime audit-prepare --root <Main>` restores missing current
@@ -41,7 +41,7 @@ call, repeated Reviewer answer or copied clean_round binding is required.
 
 ## Native S5 / S7 / S8 professional work
 
-Main carries the exact original view and answer references into Claude Code native Agent. Read its actual frozen subjects, perform only your independent professional responsibility and save the original answer. For S5/S8, return the original reference for SubagentStop reception. For S7, PreToolUse listens for the ready original answer; successful PostToolUse and Stop/SubagentStop provide fallback through the same original consumer. No extra submit, done or activation is required. S5/S8 ordinary tools do not activate or receive work. Ordinary tools need no receipt. No Team, opaque platform ID, workspace prepare/launch, generic readback/PLAN or begin is required for new work. Main retains professional division, ReviewPlan waves, Case routing and stage closure; real approval modes and actual independence remain. Frozen registered workspaces keep their original sources and recovery; never fall back to Main for a lost frozen execution. S5 checks the independent document responsibility; S7 answers its Claims/lens; S8 investigates its Hypothesis without product writes.
+Main carries the exact original view and answer references into Claude Code native Agent. Read its actual frozen subjects, perform only your independent professional responsibility and save the original answer. S5 uses its original native return and consumer. For S7/S8, PreToolUse observes the original answer; successful PostToolUse and Stop/SubagentStop provide fallback through the same consumer. No extra submit, done, activation or returned reference is required. Ordinary tools need no receipt. No Team, opaque platform ID, workspace prepare/launch, generic readback/PLAN or begin is required for new work. Main retains professional division, Case routing and stage closure; real approval modes and actual independence remain. S5 checks the independent document responsibility; S7 answers its Claims/lens; S8 investigates its Hypothesis without product writes.
 
 For S8, follow the current Main intake → hypotheses/actual dispatch → causal
 route → Contract → actual decision questionnaires. Put experiment-specific scope,
@@ -101,7 +101,7 @@ always the most-forward missing piece of work the current stage requires.
 
 - Use the current supplied responsibility and exact questionnaire or brief.
 - S0 and unbound S1 are valid work: they do not require an already bound REQ.
-- Original preparation and domain consumers own source digests, bindings and
+- Original preparation and domain consumers own the actual source paths, responsibility and
   Runtime validation. Report their concrete preparation errors; do not compute,
   copy or script machine metadata as an opening ritual.
 
@@ -190,8 +190,8 @@ DRIVE()
 7. Verify and record.
    - Verify the artifact against the stage's done_when.
    - Save the original professional deliverable and reference real observations.
-     The original consumer creates its necessary evidence envelope, fingerprints
-     and receipt; do not hand-assemble another machine artifact.
+     The original consumer records the applicable original facts and reception; do not
+     hand-assemble another machine artifact or proof.
 
 8. Let Hook advance when the stage is complete.
    - When the original `done_when` and domain gate are satisfied, let the
@@ -206,11 +206,11 @@ DRIVE()
 
 ## Native responsibility handoff
 
-Main passes the original exact inputs and output references into native Agent. The Worker performs its professional work and saves its original artifacts; Start/Stop connect them to the original consumer. Main follows actual native return, continues unrelated ready work, and handles integration or blockers. Do not create a framework wait/activation queue, infer a task from role, or self-author delegated independent judgments.
+Main passes the original exact inputs and output references into native Agent. The Worker performs its professional work and saves its original artifacts; S7/S8 natural PreToolUse observes the answer, with successful PostToolUse and Stop as fallbacks through the original consumer. Main follows actual native return, continues unrelated ready work, and handles integration or blockers. Do not create a framework wait/activation queue, infer a task from role, or self-author delegated independent judgments.
 
 Professional S6/S9 Builder plans precede implementation but do not require a generic readback/activation exchange. S5/S7/S8 read-only responsibility uses its domain questionnaire directly. A missing artifact is a concrete handoff for that responsibility, not a human approval request or a reason to re-wake an invented teammate. Use native messaging/resume with exact references when more work is needed. A returned actor ID may differ after resume; keep the same original engineering responsibility.
 
-Real explicit approval remains in its original domain before applicable work. A frozen pre-migration teammate/execution alone uses [agent-dispatch's frozen recovery](../agent-dispatch/frozen-execution.md); do not copy that procedure into new native work. Main never reports a delegated independent conclusion on the reviewer's behalf.
+Real explicit approval remains in its original domain before applicable work. Main never reports a delegated independent conclusion on the reviewer's behalf.
 
 ## Autonomous decision rules (apply at DRIVE step 4 and 6)
 
@@ -251,7 +251,7 @@ it matches `docs/control/agent-protocol.md`.
 | any subagent dispatched (plan_checkpoint) | `agent-dispatch` |
 | Team creation / reconstruction | `team-planning` |
 | S8 finding_investigation; S9 bug_resolution.* | `bug-resolution` |
-| any committed change requiring evidence recalculation | `impact-analysis` |
+| applicable change-impact work | `impact-analysis` (S9 follows its original Impact branch) |
 | verification.clean_round_evaluation | `clean-round-evaluation` |
 | S10 acceptance, S11 release_gateway | `acceptance-and-handoff` |
 
@@ -385,8 +385,7 @@ A single turn of DRIVE produces one of:
 
 Stop immediately and surface to the human if **any** of:
 
-- The bound REQ is unlocked or its SHA-256 no longer matches the Runtime
-  baseline → `req_amendment` Gateway.
+- The actual bound REQ requires an approved scope change → `req_amendment` Gateway.
 - Runtime integrity check fails (schema invalid, journal behind snapshot,
   unrecoverable reconcile) → `runtime_integrity` Gateway.
 - A transition requires human approval (REQ amendment, release, abort) →
@@ -540,7 +539,7 @@ When a command response or Hook already supplies a current next_action and the r
 Before escalating an ordinary technical RepairContract approval, check the
 Runtime's `configuration.repair.bound_policy` and existing current bounded grants.
 A policy pinned when the human locked/bound this REQ authorizes the Driver review
-path described in docs/bounded-repair-autonomy.md; use the pinned digest rather
+path described in docs/bounded-repair-autonomy.md; use the original policy and actual bound decision rather
 than asking for repeated approval. Do not infer, fabricate, extend or auto-renew
 policy. Scope/semantic changes outside authority keep their existing Gateway.
 

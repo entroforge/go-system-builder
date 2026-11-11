@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -14,7 +15,7 @@ import (
 	"github.com/entroforge/go-system-builder/internal/submission"
 )
 
-// continueS7Acceptance resumes only the original clean-round exit. Result
+// continueS7Acceptance resumes only the original original S7 exit. Result
 // reception, the original Gate/TR-009, and material preparation remain separate
 // facts. Replaying after promotion cannot run another transition.
 func continueS7Acceptance(ctx context.Context, root, statePath, journalPath string, snapshot runtime.Snapshot) (runtime.Snapshot, string) {
@@ -27,7 +28,8 @@ func continueS7Acceptance(ctx context.Context, root, statePath, journalPath stri
 func continueS7AcceptanceResult(ctx context.Context, root, statePath, journalPath string, snapshot runtime.Snapshot) (runtime.Snapshot, string, error) {
 	retry := s7CaptureShellQuote(filepath.Join(root, ".claude/bin/loop-harness")) + " runtime review-continue --root " + s7CaptureShellQuote(root)
 	if lifecycleState(snapshot.State) == "verification" {
-		if stringValue(nestedStateValue(snapshot.State, "lifecycle", "phase")) != "clean" || stringValue(mapFieldCLI(mapFieldCLI(snapshot.State, "review"), "plan")["status"]) != "clean" {
+		phase := stringValue(nestedStateValue(snapshot.State, "lifecycle", "phase"))
+		if phase != "clean" && phase != "observation_sealed" {
 			return snapshot, "", nil
 		}
 		result, err := controller.RunControlCycle(ctx, controller.ControlRequest{Root: root, StatePath: statePath, JournalPath: journalPath, CWD: root, Event: "ReviewResultAccepted", AgentID: "Main"})
@@ -47,16 +49,35 @@ func continueS7AcceptanceResult(ctx context.Context, root, statePath, journalPat
 			if len(details) == 0 {
 				details = append(details, "original Gate status="+string(result.QualityGate.Status))
 			}
-			message := "ReviewResult and machine CleanRound are recorded; S7→S10 original Gate/TR-009 continuation is pending: " + strings.Join(details, "; ") + ". Preserve accepted Reviewer answers. Resolve this cause and resume the original exit with: " + retry
+			message := "ReviewResult and original conclusions are recorded; S7 original stage transition continuation is pending: " + strings.Join(details, "; ") + ". Preserve accepted Reviewer answers. Resolve this cause and resume the original exit with: " + retry
 			submission.RecordPlanningDiagnostic(root, snapshot.State, "S7 acceptance continuation", message)
 			return snapshot, message, fmt.Errorf("%s", message)
 		}
+	}
+
+	if lifecycleState(snapshot.State) == "bug_resolution" {
+		// This is system-owned successor preparation after the accepted
+		// transition. Its viewer is Main even when reception originated in
+		// a Worker hook; the original request and consumer authorization stay
+		// unchanged. Preserve cancellation while replacing presentation cache.
+		preparationContext := ctx
+		if preparationContext == nil {
+			preparationContext = context.Background()
+		}
+		mainContext := context.WithValue(preparationContext, hookReaderKey{}, &hookReader{Kind: "Main", Actor: "Main", Owner: "Main"})
+		material := stageInvestigationLeadQuestionnaireContext(root, policy.Input{Context: mainContext, Event: "ReviewResultAccepted", AgentID: "Main", CWD: root}, snapshot)
+		message := "Original S7 answer is accepted; TR-008 entered S8. Preserve already dispatched S7 responsibilities; receive their original late answers and hand new Findings to Main. " + material
+		if s7SuccessorPending(root, snapshot.State) {
+			message += " Main restores the original S8 preparation through: " + retry
+			return snapshot, message, fmt.Errorf("S8 original material preparation remains incomplete")
+		}
+		return snapshot, message, nil
 	}
 	if lifecycleState(snapshot.State) != "acceptance" {
 		return snapshot, "", nil
 	}
 	submission.RecordPlanningDiagnostic(root, snapshot.State, "S7 acceptance continuation", "")
-	prefix := "ReviewResult and machine CleanRound are recorded; original TR-009 has entered S10 acceptance. "
+	prefix := "ReviewResult and original conclusions are recorded; original TR-009 has entered S10 acceptance. "
 	if !runtime.PacketEnabled(snapshot.State) {
 		return snapshot, prefix, nil
 	}
@@ -126,14 +147,42 @@ func runRuntimeS7Recovery(args []string, prepareOnly bool, stdout, stderr io.Wri
 		fmt.Fprintln(stdout, stageAuditQuestionnaireContext(absRoot, policy.Input{AgentID: "Main"}, snapshot))
 		return 0
 	}
-	if lifecycleState(snapshot.State) != "acceptance" && !(lifecycleState(snapshot.State) == "verification" && stringValue(nestedStateValue(snapshot.State, "lifecycle", "phase")) == "clean" && stringValue(mapFieldCLI(mapFieldCLI(snapshot.State, "review"), "plan")["status"]) == "clean") {
-		fmt.Fprintln(stderr, "runtime review-continue requires an original machine CleanRound exit or current S10 acceptance")
+	phase := stringValue(nestedStateValue(snapshot.State, "lifecycle", "phase"))
+	if lifecycleState(snapshot.State) != "acceptance" && lifecycleState(snapshot.State) != "bug_resolution" && !(lifecycleState(snapshot.State) == "verification" && (phase == "clean" || phase == "observation_sealed")) {
+		fmt.Fprintln(stderr, "runtime review-continue requires an original S7 outlet or its S8/S10 material preparation")
 		return 1
 	}
 	next, message, continuationErr := continueS7AcceptanceResult(context.Background(), absRoot, statePath, journalPath, snapshot)
 	fmt.Fprintln(stdout, message)
-	if continuationErr != nil || lifecycleState(next.State) != "acceptance" {
+	if continuationErr != nil || (lifecycleState(next.State) != "acceptance" && lifecycleState(next.State) != "bug_resolution") {
 		return 1
 	}
 	return 0
+}
+
+// An accepted answer is observed again only when its existing outlet still
+// owes a transition or the original next-stage material. No receipt is redone.
+func s7SuccessorPending(root string, state map[string]any) bool {
+	life := lifecycleState(state)
+	if life == "verification" {
+		phase := stringValue(nestedStateValue(state, "lifecycle", "phase"))
+		return phase == "clean" || phase == "observation_sealed"
+	}
+	if life == "acceptance" {
+		path, err := auditQuestionnairePath(root, state, "acceptance")
+		if err != nil {
+			return true
+		}
+		info, err := os.Stat(resolveRootPath(root, path))
+		return err != nil || !info.Mode().IsRegular()
+	}
+	if life == "bug_resolution" && investigationLeadCurrent(state) {
+		paths := investigationLeadQuestionnairePaths(root, state)
+		if len(paths) == 0 {
+			return true
+		}
+		info, err := os.Stat(paths[0])
+		return err != nil || !info.Mode().IsRegular()
+	}
+	return false
 }

@@ -2,7 +2,6 @@ package cli
 
 import (
 	"bytes"
-	"context"
 	"crypto/rand"
 	"encoding/json"
 	"errors"
@@ -10,10 +9,10 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 
 	"github.com/entroforge/go-system-builder/internal/agentcontext"
-	"github.com/entroforge/go-system-builder/internal/assignment"
 	"github.com/entroforge/go-system-builder/internal/assignmentrecord"
 	"github.com/entroforge/go-system-builder/internal/assignmentresult"
 	"github.com/entroforge/go-system-builder/internal/plancheckpoint"
@@ -35,7 +34,7 @@ func runSavedBuilderQuestionnaire(root string, request policy.Input, stdout, std
 	if err != nil {
 		return false, 0
 	}
-	questions, _ := projectS6BuilderQuestionnaires(root, "", snapshot)
+	questions, _ := projectS6BuilderQuestionnaires(root, request.EffectiveAgentID(), snapshot)
 	var matched s6BuilderQuestionnaire
 	var questionnaire, questionnairePath string
 	matches := 0
@@ -183,17 +182,6 @@ func prepareS6BuilderResult(mainRoot string, q s6BuilderQuestionnaire, snapshot 
 	}
 	if answer, ok := s6ProfessionalAnswer(draft); ok {
 		if assignmentresult.ValidateAnswer(answer, acceptedPlan.Assertions) == nil && assignmentresult.ValidateClosingAssessment(record, acceptedPlan.Assertions, answer) == nil {
-			answerDigest, err := assignmentresult.AnswerDigest(answer)
-			if err != nil {
-				return err
-			}
-			closureDigest := ""
-			if record.ClosingContract != nil {
-				closureDigest, err = assignment.CurrentWorkerClosureDigest(context.Background(), mainRoot, snapshot.State, record)
-				if err != nil {
-					return fmt.Errorf("collect current registered Worker check facts: %w", err)
-				}
-			}
 			read := func(ref string) ([]byte, error) {
 				return workpacket.ReadFile(mainRoot, ref, assignmentresult.EvidenceReadLimit)
 			}
@@ -201,19 +189,11 @@ func prepareS6BuilderResult(mainRoot string, q s6BuilderQuestionnaire, snapshot 
 			if err != nil {
 				return fmt.Errorf("read accepted Result history: %w", err)
 			}
-			messageID := "msg-result-" + answerDigest
-			if closureDigest != "" {
-				messageID += "-" + closureDigest
-			}
-			for _, accepted := range history {
-				priorClosure, err := assignmentresult.EffectiveToolClosureDigest(record, accepted)
-				if err != nil {
-					return err
-				}
-				if accepted.AnswerDigest == answerDigest && priorClosure == closureDigest {
-					messageID = accepted.SubmissionKey
-					break
-				}
+			// A new attempt follows the actual persisted Result revision; same
+			// professional answer reuses its original accepted responsibility.
+			messageID := fmt.Sprintf("msg-result-%s-a%d-r%d", record.AssignmentID, record.Revision, len(history)+1)
+			if len(history) != 0 && reflect.DeepEqual(history[len(history)-1].Answer, answer) {
+				messageID = history[len(history)-1].SubmissionKey
 			}
 			if draft["message_id"] != messageID {
 				draft["message_id"], changed = messageID, true

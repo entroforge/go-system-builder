@@ -34,7 +34,7 @@ func TestBoundHookObservesWrongDirectoryWithoutToolACL(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			e := workspace.Execution{AssignmentID: "assignment", RuntimeID: workspace.RuntimeID(fix.state), BaselineGeneration: workspace.Generation(fix.state), Generation: 1, AgentID: "builder", Path: filepath.Join(fix.root, ".worktrees/worker"), Branch: "codex/worker", TargetBranch: binding.Branch, BaseCommit: binding.BoundHead, Status: "preparing", WritePaths: []string{"src/"}, Checks: []string{}, Inputs: map[string]string{}}
+			e := workspace.Execution{AssignmentID: "assignment", RuntimeID: workspace.RuntimeID(fix.state), BaselineGeneration: workspace.Generation(fix.state), Generation: 1, AgentID: "builder", Path: filepath.Join(fix.root, ".worktrees/worker"), Branch: "codex/worker", TargetBranch: binding.Branch, Status: "preparing", WritePaths: []string{"src/"}, Checks: []string{}, Inputs: map[string]string{}}
 			binding.Executions[e.AssignmentID] = e
 			if err = binding.Materialize(ctx, e); err != nil {
 				t.Fatal(err)

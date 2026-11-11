@@ -34,8 +34,7 @@ type contractIndexRow struct {
 // ContractArtifacts resolves the current bound REQ's locked S3 batch. The
 // index and its complete FE/BE/SYNC set lead the result; the original shared
 // model checker then appends the exact schema/example JSON refs not already
-// frozen as upstream packet inputs. Every ref is checked against the original
-// source view and current checkout before it is returned.
+// frozen as upstream packet inputs. The original source view supplies each ref.
 func ContractArtifacts(root string, state map[string]any, p workpacket.ContractPacket, answer workpacket.ContractAnswer, files fileview.Reader) ([]workpacket.Reference, error) {
 	if files == nil {
 		return nil, fmt.Errorf("S3 requires original authoritative file view")
@@ -55,23 +54,9 @@ func ContractArtifacts(root string, state map[string]any, p workpacket.ContractP
 	if err != nil {
 		return nil, fmt.Errorf("read S3 contract directory through source view: %w", err)
 	}
-	if err := workpacket.CheckPath(root, filepath.ToSlash(filepath.Join(contractsDirectory, ".source-probe"))); err != nil {
-		return nil, fmt.Errorf("S3 contract checkout: %w", err)
-	}
-	diskEntries, err := os.ReadDir(filepath.Join(root, filepath.FromSlash(contractsDirectory)))
-	if err != nil {
-		return nil, fmt.Errorf("read S3 contract checkout: %w", err)
-	}
 	viewEntries, err = contractCandidateEntries(files, viewEntries)
 	if err != nil {
 		return nil, err
-	}
-	diskEntries, err = contractCandidateEntries(fileview.Disk{Root: root}, diskEntries)
-	if err != nil {
-		return nil, err
-	}
-	if !sameContractDirectory(viewEntries, diskEntries) {
-		return nil, fmt.Errorf("S3 contract source view and checkout directory differ: %s", contractDirectoryDifference(viewEntries, diskEntries))
 	}
 
 	indexPath := *answer.IndexPath
@@ -202,51 +187,6 @@ func contractCandidateEntries(files fileview.Reader, entries []os.DirEntry) ([]o
 	return candidates, nil
 }
 
-// contractDirectoryDifference names only meaningful candidates after filtering.
-func contractDirectoryDifference(view, disk []os.DirEntry) string {
-	source, checkout := map[string]bool{}, map[string]bool{}
-	for _, entry := range view {
-		source[entry.Name()] = entry.IsDir()
-	}
-	for _, entry := range disk {
-		checkout[entry.Name()] = entry.IsDir()
-	}
-	differences := []string{}
-	for name, isDir := range source {
-		other, exists := checkout[name]
-		if !exists {
-			differences = append(differences, "missing from checkout: "+contractsDirectory+"/"+name)
-		} else if other != isDir {
-			differences = append(differences, "file type differs: "+contractsDirectory+"/"+name)
-		}
-	}
-	for name := range checkout {
-		if _, exists := source[name]; !exists {
-			differences = append(differences, "missing from declared source: "+contractsDirectory+"/"+name)
-		}
-	}
-	sort.Strings(differences)
-	return strings.Join(differences, "; ")
-}
-
-func sameContractDirectory(view, disk []os.DirEntry) bool {
-	if len(view) != len(disk) {
-		return false
-	}
-	byName := make(map[string]bool, len(view))
-	for _, entry := range view {
-		byName[entry.Name()] = entry.IsDir()
-	}
-	for _, entry := range disk {
-		isDir, ok := byName[entry.Name()]
-		if !ok || isDir != entry.IsDir() {
-			return false
-		}
-		delete(byName, entry.Name())
-	}
-	return len(byName) == 0
-}
-
 func validateCurrentREQDeliveryCoverage(files fileview.Reader, entries []os.DirEntry, indexPath string, contractPaths []string, requirementID string) error {
 	var err error
 	entries, err = contractCandidateEntries(files, entries)
@@ -367,12 +307,12 @@ func contractSharedModelArtifacts(root string, p workpacket.ContractPacket, file
 	if len(checked.Warnings) > 0 {
 		return nil, fmt.Errorf("S3 shared-model source closure has no explicit applicability decision: %s", strings.Join(checked.Warnings, "; "))
 	}
-	frozen := map[string]string{p.Binding.Requirement.Path: p.Binding.Requirement.SHA256}
+	upstream := map[string]bool{p.Binding.Requirement.Path: true}
 	for _, ref := range p.Inputs.Designs {
-		frozen[ref.Path] = ref.SHA256
+		upstream[ref.Path] = true
 	}
 	for _, ref := range p.Inputs.Sources {
-		frozen[ref.Path] = ref.SHA256
+		upstream[ref.Path] = true
 	}
 	paths := make([]string, 0, len(checked.Files))
 	for path := range checked.Files {
@@ -385,20 +325,10 @@ func contractSharedModelArtifacts(root string, p workpacket.ContractPacket, file
 		if !safeContractPath(path) || path != originalPath || strings.HasPrefix(path, ".claude/") || !strings.HasSuffix(strings.ToLower(path), ".json") {
 			return nil, fmt.Errorf("S3 shared-model source is not a safe repository JSON path: %s", originalPath)
 		}
-		data, err := readConditionalSource(root, files, path)
-		if err != nil {
-			return nil, s3ArtifactSourceError(root, files, path, fmt.Errorf("S3 shared-model source closure: %w", err))
-		}
-		if !bytes.Equal(data, checked.Files[originalPath]) {
-			return nil, fmt.Errorf("S3 shared-model checker source changed while projecting evidence: %s", path)
-		}
-		if expected, ok := frozen[path]; ok {
-			if workpacket.Digest(data) != expected {
-				return nil, fmt.Errorf("S3 shared-model source differs from frozen upstream input: %s", path)
-			}
+		if upstream[path] {
 			continue
 		}
-		refs = append(refs, workpacket.Reference{Path: path, SHA256: workpacket.Digest(data)})
+		refs = append(refs, workpacket.Reference{Path: path})
 	}
 	return refs, nil
 }
@@ -419,20 +349,12 @@ func readLockedContractArtifact(root string, files fileview.Reader, path string)
 	if len(view) > 2<<20 {
 		return workpacket.Reference{}, fmt.Errorf("S3 artifact %s exceeds 2 MiB", path)
 	}
-	disk, err := workpacket.ReadFile(root, path, 2<<20)
-	if err != nil {
-		return workpacket.Reference{}, s3ArtifactSourceError(root, files, path, fmt.Errorf("read S3 artifact %s from checkout: %w", path, err))
-	}
-	digest := workpacket.Digest(view)
-	if digest != workpacket.Digest(disk) {
-		return workpacket.Reference{}, s3ArtifactSourceError(root, files, path, fmt.Errorf("S3 artifact checkout differs from source view: %s", path))
-	}
 	status := contractHeaderField(string(view), "状态", "Status")
 	version := contractHeaderField(string(view), "版本", "Version")
 	if status != "locked" || strings.TrimSpace(version) == "" || strings.ContainsAny(version, " \t\r\n") {
 		return workpacket.Reference{}, fmt.Errorf("S3 artifact %s must declare status=locked and a concrete version", path)
 	}
-	return workpacket.Reference{ID: id, Path: path, Version: version, SHA256: digest}, nil
+	return workpacket.Reference{ID: id, Path: path, Version: version}, nil
 }
 
 func s3ArtifactSourceError(root string, files fileview.Reader, path string, cause error) error {

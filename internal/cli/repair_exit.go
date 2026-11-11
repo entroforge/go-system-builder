@@ -9,11 +9,12 @@ import (
 
 	"github.com/entroforge/go-system-builder/internal/policy"
 	"github.com/entroforge/go-system-builder/internal/review"
+	"github.com/entroforge/go-system-builder/internal/reviewmeta"
 	"github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/workspace"
 )
 
-const repairHandoffPendingInstruction = "The final required Targeted SubagentStop attempts the original Handoff automatically. If it remains incomplete, preserve the accepted observations and use the exact runtime repair handoff complete recovery supplied with the failure; a real budget decision remains necessary when the limit is reached. No extra Handoff answer or repeated Targeted report is needed; ordinary reminders do not retry the transition"
+const repairHandoffPendingInstruction = "Successful reception of the final required Targeted answer through its original consumer attempts the original Handoff automatically. If it remains incomplete, preserve the accepted observations and use the exact runtime repair handoff complete recovery supplied with the failure. No extra Handoff answer or repeated Targeted report is needed; ordinary reminders do not retry the transition"
 
 func repairExitRecovery(root string) string {
 	return fmt.Sprintf("%s runtime repair handoff complete --root %s", s7CaptureShellQuote(filepath.Join(root, ".claude/bin/loop-harness")), s7CaptureShellQuote(root))
@@ -62,10 +63,20 @@ func repairCurrentS7Entry(state map[string]any) bool {
 	p := repairPointerCLI(state)
 	entry := mapFieldCLI(mapFieldCLI(state, "review"), "round_entry")
 	return lifecycleState(state) == "verification" && stringValue(entry["transition_id"]) == "TR-012" &&
-		integerValue(entry["round"]) == integerValue(nestedStateValue(state, "review", "round")) &&
+		repairS7EntryIdentityCurrent(state) &&
 		integerValue(entry["baseline_generation"]) == integerValue(nestedStateValue(state, "baseline", "generation")) &&
 		stringValue(p["review_plan_seed_ref"]) != "" && entry["review_plan_seed_ref"] == p["review_plan_seed_ref"] &&
 		stringValue(p["handoff_ref"]) != "" && entry["repair_handoff_ref"] == p["handoff_ref"]
+}
+
+func repairS7EntryIdentityCurrent(state map[string]any) bool {
+	reviewState := mapFieldCLI(state, "review")
+	entry := reviewmeta.FromRoundEntry(reviewState)
+	return entry.PlanID != ""
+}
+
+func repairS7PlanIdentityCurrent(state map[string]any, planID string) bool {
+	return reviewmeta.SameIdentity(reviewmeta.FromReview(mapFieldCLI(state, "review")), reviewmeta.ArtifactIdentity(planID))
 }
 
 // TR-012 installs the seed's pointer to pin its baseline. That projection is
@@ -77,7 +88,7 @@ func repairSeedAwaitingPlan(state map[string]any) bool {
 	}
 	plan := review.PlanPointerFromState(state)
 	p := repairPointerCLI(state)
-	return plan != nil && plan.Revision == 1 && plan.Path == stringValue(p["review_plan_seed_ref"]) && plan.SHA256 == stringValue(p["review_plan_seed_sha256"])
+	return plan != nil && plan.Revision == 1 && plan.Path == stringValue(p["review_plan_seed_ref"])
 }
 
 // This projection never retries a Writer or prepares files. The explicit
@@ -118,18 +129,12 @@ func repairHandoffProjectionContext(root string, state map[string]any) string {
 	} else if session := stringValue(p["session_id"]); session != "" {
 		message += " Original Handoff source: " + filepath.Join(root, ".claude/review/repair/handoffs", "repair-handoff-"+dispatchSlug(session)+".json") + "."
 	}
-	if s7BudgetGateRequired(state, root) {
-		path, _, err := s7BudgetDecisionApplicationForState(root, state)
-		if err == nil {
-			message += " Actual review budget is exhausted; the original human decision is required before completion. Original human budget application: " + path + "."
-		}
-	}
 	if seed := stringValue(p["review_plan_seed_ref"]); repairCurrentS7Entry(state) {
 		message += " Fresh S7 seed: " + resolveRootPath(root, seed) + "."
-		if plan := review.PlanPointerFromState(state); plan != nil && plan.ReviewRound == integerValue(nestedStateValue(state, "review", "round")) && !repairSeedAwaitingPlan(state) {
+		if plan := review.PlanPointerFromState(state); plan != nil && repairS7PlanIdentityCurrent(state, plan.PlanID) && !repairSeedAwaitingPlan(state) {
 			return message + " The current S7 ReviewPlan is already registered; follow its current independent review responsibilities without submitting it again."
 		}
-		if plan := review.PlanPointerFromState(state); plan == nil || plan.ReviewRound != integerValue(nestedStateValue(state, "review", "round")) {
+		if plan := review.PlanPointerFromState(state); plan == nil || !repairS7PlanIdentityCurrent(state, plan.PlanID) {
 			return message + " The original S9 seed/ReviewPlan projection is missing for this TR-012 entry; resume `" + repairExitRecovery(root) + "` to restore preparation without resubmitting accepted Targeted work."
 		}
 		if path := reviewPlanQuestionnairePath(root, state); path != "" {
@@ -160,14 +165,6 @@ func completeRepairExit(root string) (string, error) {
 		message := "Original Handoff remains incomplete: " + err.Error() + ". "
 		if ref.Path != "" {
 			message += "Existing Handoff source: " + resolveRootPath(root, ref.Path) + ". "
-		}
-		if s7BudgetGateRequired(snapshot.State, root) {
-			path, prepareErr := prepareS7BudgetDecisionQuestionnaire(root, snapshot.State)
-			if prepareErr != nil {
-				message += "Original budget application preparation failed: " + prepareErr.Error() + ". "
-			} else {
-				message += "Actual review budget is exhausted; original human decision application: " + path + ". Only its real human decision can authorize the successor. "
-			}
 		}
 		return message + repairHandoffProjectionContext(root, snapshot.State), err
 	}

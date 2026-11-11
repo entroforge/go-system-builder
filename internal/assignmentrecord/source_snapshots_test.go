@@ -16,7 +16,7 @@ func TestCaptureSourceSnapshotsCapturesExactBytesAndEmbeddedInputs(t *testing.T)
 	profile := checkexec.Profile{
 		ID: "profile-unit", Version: "1.0.0", CheckIndex: 0, Command: "go test ./...",
 		Location: "worker", TimeoutSeconds: 30, EnvironmentPolicy: "declared_only",
-		Environment: []checkexec.EnvFact{}, Dependencies: []checkexec.FileRef{{Path: "internal/profile-input.txt", SHA256: digest(depBytes)}},
+		Environment: []checkexec.EnvFact{}, Dependencies: []checkexec.FileRef{{Path: "internal/profile-input.txt"}},
 		Fixtures: []checkexec.FileRef{}, InputClosure: "whole_tree", SideEffects: "none", ReusePolicy: "never",
 	}
 	record.RequiredChecks = []string{"go test ./..."}
@@ -30,19 +30,14 @@ func TestCaptureSourceSnapshotsCapturesExactBytesAndEmbeddedInputs(t *testing.T)
 	profileSchemaRef := "gsb-embedded/schema/agent-message.schema.json"
 	profileSchemaBytes := []byte("embedded schema bytes\n")
 	record.ContextSources = append(record.ContextSources,
-		ContextSource{Kind: "manifest_document", Ref: record.Task.Ref, ID: record.Task.ID, Version: record.Task.Version, SHA256: record.Task.SHA256},
-		ContextSource{Kind: "frozen_input", Ref: "docs/context/decision.md", SHA256: digest([]byte("same content as a second source ref\n"))},
-		ContextSource{Kind: "check_profile", Ref: profileRef, ID: profile.ID, Version: profile.Version, SHA256: profile.Digest()},
-		ContextSource{Kind: "check_profile_dependency", Ref: "internal/profile-input.txt", SHA256: digest(depBytes)},
-		ContextSource{Kind: "embedded_context_profile", Ref: profileSourceRef, SHA256: digest(profileSourceBytes)},
-		ContextSource{Kind: "embedded_schema", Ref: profileSchemaRef, SHA256: digest(profileSchemaBytes)},
+		ContextSource{Kind: "manifest_document", Ref: record.Task.Ref, ID: record.Task.ID, Version: record.Task.Version},
+		ContextSource{Kind: "frozen_input", Ref: "docs/context/decision.md"},
+		ContextSource{Kind: "check_profile", Ref: profileRef, ID: profile.ID, Version: profile.Version},
+		ContextSource{Kind: "check_profile_dependency", Ref: "internal/profile-input.txt"},
+		ContextSource{Kind: "embedded_context_profile", Ref: profileSourceRef},
+		ContextSource{Kind: "embedded_schema", Ref: profileSchemaRef},
 	)
 	contextBytes := []byte("same content as a second source ref\n")
-	for i := range record.ContextSources {
-		if record.ContextSources[i].Kind == "frozen_input" {
-			record.ContextSources[i].SHA256 = digest(contextBytes)
-		}
-	}
 	sources["docs/context/decision.md"] = contextBytes
 	sources[profileSourceRef] = profileSourceBytes
 	sources[profileSchemaRef] = profileSchemaBytes
@@ -100,8 +95,8 @@ func TestCaptureSourceSnapshotsCapturesExactBytesAndEmbeddedInputs(t *testing.T)
 	}
 	taskRow := findSnapshot(t, updated.SourceSnapshots, record.Task.Ref, "task")
 	docRow := findSnapshot(t, updated.SourceSnapshots, record.Task.Ref, "manifest_document")
-	if taskRow.Path != docRow.Path || taskRow.SHA256 != docRow.SHA256 {
-		t.Fatal("same source bytes under two semantic kinds did not share one content-addressed artifact")
+	if taskRow.Path != docRow.Path {
+		t.Fatal("same source under two semantic kinds did not share the original artifact")
 	}
 
 	encoded, err := json.Marshal(updated)
@@ -113,7 +108,7 @@ func TestCaptureSourceSnapshotsCapturesExactBytesAndEmbeddedInputs(t *testing.T)
 	}
 }
 
-func TestCaptureSourceSnapshotsPreservesLegacyRecordJSONAndRejectsDrift(t *testing.T) {
+func TestCaptureSourceSnapshotsPreservesRecordAndCapturesActualSource(t *testing.T) {
 	legacy := recordTestRecord()
 	encoded, err := json.Marshal(legacy)
 	if err != nil {
@@ -122,52 +117,35 @@ func TestCaptureSourceSnapshotsPreservesLegacyRecordJSONAndRejectsDrift(t *testi
 	if strings.Contains(string(encoded), "source_snapshots") || strings.Contains(string(encoded), "revision_issuance") {
 		t.Fatalf("legacy Record acquired optional fields: %s", encoded)
 	}
-	legacyDigest, err := legacy.Digest()
-	if err != nil {
-		t.Fatal(err)
-	}
 	decoded := Record{}
 	if err := json.Unmarshal(encoded, &decoded); err != nil {
 		t.Fatal(err)
 	}
-	decodedDigest, err := decoded.Digest()
-	if err != nil || decodedDigest != legacyDigest {
-		t.Fatalf("optional fields changed legacy digest: before %s, after %s, err %v", legacyDigest, decodedDigest, err)
+	if decoded.Reference() != legacy.Reference() {
+		t.Fatalf("legacy assignment responsibility changed: %+v", decoded.Reference())
 	}
 
 	record, sources := snapshotFixtureRecord(t)
-	if _, _, err := CaptureSourceSnapshots(record, func(ref string) ([]byte, error) {
-		data := sources[ref]
+	updated, artifacts, err := CaptureSourceSnapshots(record, func(ref string) ([]byte, error) {
 		if ref == record.AgentDefinition.Ref {
-			return []byte("drifted role source"), nil
+			return []byte("current role source"), nil
 		}
-		return data, nil
-	}); err == nil || !strings.Contains(err.Error(), "changed") {
-		t.Fatalf("changed historical source error = %v, want source drift rejection", err)
+		return sources[ref], nil
+	})
+	if err != nil {
+		t.Fatalf("actual role source was rejected: %v", err)
 	}
+	row := findSnapshot(t, updated.SourceSnapshots, record.AgentDefinition.Ref, "agent_definition")
+	if string(artifacts[row.Path]) != "current role source" {
+		t.Fatalf("captured wrong role source: %#v", row)
+	}
+
 }
 
-func TestCaptureSourceSnapshotsRejectsConflictingRefsAndBounds(t *testing.T) {
-	record, sources := snapshotFixtureRecord(t)
-	conflict := record
-	conflict.ContextSources = append([]ContextSource(nil), record.ContextSources...)
-	conflict.ContextSources = append(conflict.ContextSources, ContextSource{
-		Kind: "frozen_input", Ref: record.Task.Ref, SHA256: strings.Repeat("d", 64),
-	})
-	conflict.ContextSources, _ = canonicalContextSources(conflict.ContextSources)
-	if _, _, err := CaptureSourceSnapshots(conflict, func(ref string) ([]byte, error) { return sources[ref], nil }); err == nil {
-		t.Fatal("same ref with conflicting digests was accepted")
-	}
-
+func TestCaptureSourceSnapshotsEnforcesActualSizeBounds(t *testing.T) {
 	oversized, oversizedSources := snapshotFixtureRecord(t)
 	large := make([]byte, maxSourceSnapshotBytes+1)
 	large[0] = 'x'
-	for i := range oversized.ContextSources {
-		if oversized.ContextSources[i].Kind == "task" {
-			oversized.ContextSources[i].SHA256 = digest(large)
-		}
-	}
-	oversized.Task.SHA256 = digest(large)
 	oversizedSources[oversized.Task.Ref] = large
 	if _, _, err := CaptureSourceSnapshots(oversized, func(ref string) ([]byte, error) { return oversizedSources[ref], nil }); err == nil || !strings.Contains(err.Error(), "exceeds") {
 		t.Fatalf("oversized source error = %v, want per-source bound rejection", err)
@@ -180,7 +158,7 @@ func TestCaptureSourceSnapshotsRejectsConflictingRefsAndBounds(t *testing.T) {
 		data := append([]byte(nil), largeUnique...)
 		data[0] = byte('a' + i)
 		totalSources[ref] = data
-		tooMany.ContextSources = append(tooMany.ContextSources, ContextSource{Kind: "frozen_input", Ref: ref, SHA256: digest(data)})
+		tooMany.ContextSources = append(tooMany.ContextSources, ContextSource{Kind: "frozen_input", Ref: ref})
 	}
 	tooMany.ContextSources, _ = canonicalContextSources(tooMany.ContextSources)
 	if _, _, err := CaptureSourceSnapshots(tooMany, func(ref string) ([]byte, error) { return totalSources[ref], nil }); err == nil || !strings.Contains(err.Error(), "bundle exceeds") {
@@ -188,25 +166,25 @@ func TestCaptureSourceSnapshotsRejectsConflictingRefsAndBounds(t *testing.T) {
 	}
 }
 
-func TestCaptureSourceSnapshotsRequiresProfileDependenciesInContextSources(t *testing.T) {
+func TestCaptureSourceSnapshotsDoesNotInventProfileDependencyRegistration(t *testing.T) {
 	record, sources := snapshotFixtureRecord(t)
 	depBytes := []byte("dependency")
 	profile := checkexec.Profile{
 		ID: "profile-unit", Version: "1.0.0", CheckIndex: 0, Command: "go test ./...",
 		Location: "worker", TimeoutSeconds: 30, EnvironmentPolicy: "declared_only",
-		Environment: []checkexec.EnvFact{}, Dependencies: []checkexec.FileRef{{Path: "internal/profile-input.txt", SHA256: digest(depBytes)}},
+		Environment: []checkexec.EnvFact{}, Dependencies: []checkexec.FileRef{{Path: "internal/profile-input.txt"}},
 		Fixtures: []checkexec.FileRef{}, InputClosure: "whole_tree", SideEffects: "none", ReusePolicy: "never",
 	}
 	record.RequiredChecks = []string{"go test ./..."}
 	record.CheckProfiles = []checkexec.Profile{profile}
 	record.ContextSources = append(record.ContextSources, ContextSource{
 		Kind: "check_profile", Ref: record.Manifest.Ref + "#assignments/" + record.AssignmentID + "/check_profiles/" + profile.ID,
-		ID: profile.ID, Version: profile.Version, SHA256: profile.Digest(),
+		ID: profile.ID, Version: profile.Version,
 	})
 	record.ContextSources, _ = canonicalContextSources(record.ContextSources)
 	sources["internal/profile-input.txt"] = depBytes
-	if _, _, err := CaptureSourceSnapshots(record, func(ref string) ([]byte, error) { return sources[ref], nil }); err == nil || !strings.Contains(err.Error(), "dependency") {
-		t.Fatalf("missing profile dependency context ref error = %v", err)
+	if _, _, err := CaptureSourceSnapshots(record, func(ref string) ([]byte, error) { return sources[ref], nil }); err != nil {
+		t.Fatalf("profile dependency without extra registration blocked original sources: %v", err)
 	}
 }
 
@@ -219,8 +197,8 @@ func TestRevisionIssuanceIsOptionalButStrictWhenPresent(t *testing.T) {
 		t.Fatalf("historical r2 without an issuance receipt must remain valid: %v", err)
 	}
 	second.RevisionIssuance = &RevisionIssuance{
-		IntentKey: "intent-2026-10-14-001", RequestDigest: strings.Repeat("d", 64),
-		PreviousRecord: previous.Reference(), PreviousRecordSHA256: mustDigestRecord(t, previous),
+		IntentKey:      "intent-2026-10-14-001",
+		PreviousRecord: previous.Reference(),
 	}
 	if err := ValidateRecord(second); err != nil {
 		t.Fatalf("valid r2 issuance receipt rejected: %v", err)
@@ -269,15 +247,6 @@ func snapshotFixtureRecord(t *testing.T) (Record, map[string][]byte) {
 		source := &record.ContextSources[i]
 		data := []byte("original source bytes for " + source.Kind + "\n")
 		dataByRef[source.Ref] = data
-		source.SHA256 = digest(data)
-		switch source.Kind {
-		case "manifest":
-			record.Manifest.SHA256 = source.SHA256
-		case "task":
-			record.Task.SHA256 = source.SHA256
-		case "agent_definition":
-			record.AgentDefinition.SHA256 = source.SHA256
-		}
 	}
 	var err error
 	record.ContextSources, err = canonicalContextSources(record.ContextSources)
@@ -298,11 +267,21 @@ func findSnapshot(t *testing.T, snapshots []SourceSnapshot, ref, kind string) So
 	return SourceSnapshot{}
 }
 
-func mustDigestRecord(t *testing.T, record Record) string {
-	t.Helper()
-	digest, err := record.Digest()
+func TestCaptureSourceSnapshotsUsesOriginalResponsibilityNotDigest(t *testing.T) {
+	record, sources := snapshotFixtureRecord(t)
+	updated, artifacts, err := CaptureSourceSnapshots(record, func(ref string) ([]byte, error) {
+		data, ok := sources[ref]
+		if !ok {
+			return nil, fmt.Errorf("missing actual source %s", ref)
+		}
+		return data, nil
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return digest
+	for _, snapshot := range updated.SourceSnapshots {
+		if got, ok := artifacts[snapshot.Path]; !ok || string(got) != string(sources[snapshot.SourceRef]) {
+			t.Fatalf("snapshot does not preserve original source %s", snapshot.SourceRef)
+		}
+	}
 }

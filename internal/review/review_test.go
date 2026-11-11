@@ -1,9 +1,8 @@
 package review
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -166,6 +165,27 @@ func writePlanFile(t *testing.T, root string) string {
 	return path
 }
 
+// commitUnrelatedRuntime commits a Runtime change that belongs to no review
+// responsibility. It moves the Runtime write count so a test can prove that
+// the write count no longer qualifies a professional completion
+// (L4-revision-usage.md §4/§8, G18 §3.1).
+func commitUnrelatedRuntime(t *testing.T, root, statePath, journalPath string, revision int) loopruntime.Snapshot {
+	t.Helper()
+	store := loopruntime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{})
+	next, err := store.Update(revision, loopruntime.Mutation{
+		EventID:        fmt.Sprintf("evt-test-unrelated-runtime-commit-%d", revision),
+		TransitionID:   "TEST",
+		Event:          "test_unrelated_runtime_commit",
+		Actor:          "test",
+		IdempotencyKey: fmt.Sprintf("test:unrelated-runtime-commit:%d", revision),
+		Apply:          func(state map[string]any) error { return nil },
+	})
+	if err != nil {
+		t.Fatalf("commit unrelated Runtime update: %v", err)
+	}
+	return next
+}
+
 // registerFixturePlan registers the fixture plan and returns the new snapshot.
 func registerFixturePlan(t *testing.T, root, statePath, journalPath string) loopruntime.Snapshot {
 	t.Helper()
@@ -241,10 +261,9 @@ func writeResultFile(t *testing.T, root string, plan *Plan, assignmentID, result
 		"assignment_id":       assignmentID,
 		"assignment_revision": 1,
 		"review_plan_id":      plan.ReviewPlanID,
-		"review_round":        plan.ReviewRound,
 		"baseline_generation": plan.BaselineGeneration,
 		"producer_agent_id":   producer,
-		"subject_digest":      SubjectDigest(plan),
+		"subject_digest":      "",
 		"claim_results":       claimResults,
 		"verdict":             verdict,
 	}
@@ -414,7 +433,7 @@ func TestRegisterPlanRejectsDuplicate(t *testing.T) {
 	}
 }
 
-func TestValidatePlanCoverageRules(t *testing.T) {
+func TestValidatePlanOriginalResponsibilitiesWithoutCoverageGate(t *testing.T) {
 	root := t.TempDir()
 	base, err := os.ReadFile(writePlanFile(t, root))
 	if err != nil {
@@ -427,59 +446,36 @@ func TestValidatePlanCoverageRules(t *testing.T) {
 		}
 		return &plan
 	}
-
-	// unassigned required claim
-	plan := load()
-	plan.Assignments[0].ClaimIDs = nil
-	if err := ValidatePlan(plan); err == nil || !strings.Contains(err.Error(), "no owning Assignment") {
-		t.Fatalf("expected unassigned claim rejection, got %v", err)
-	}
-	// claim in two assignments (same lens, so the partition check fires)
-	plan = load()
-	plan.Assignments = append(plan.Assignments, PlanAssignment{
-		AssignmentID: "assignment-qa-2", Lens: "qa", ClaimIDs: []string{"claim-qa-1"},
-		NonOverlapBoundary: "duplicates qa claim", ExecutionWave: "static",
+	t.Run("unassigned remains unfinished", func(t *testing.T) {
+		plan := load()
+		plan.Assignments[0].ClaimIDs = nil
+		if err := ValidatePlan(plan); err != nil {
+			t.Fatalf("unfinished Claim blocked Plan: %v", err)
+		}
 	})
-	if err := ValidatePlan(plan); err == nil || !strings.Contains(err.Error(), "partitioned exactly") {
-		t.Fatalf("expected double-assignment rejection, got %v", err)
-	}
-	// lens merge
-	plan = load()
-	plan.Assignments[0].ClaimIDs = append(plan.Assignments[0].ClaimIDs, "claim-qa-1")
-	if err := ValidatePlan(plan); err == nil || !strings.Contains(err.Error(), "lens") {
-		t.Fatalf("expected lens-mix rejection, got %v", err)
-	}
-	// N/A dispatched
-	plan = load()
-	plan.Assignments = append(plan.Assignments, PlanAssignment{
-		AssignmentID: "assignment-e2e-1", Lens: "e2e", ClaimIDs: []string{"claim-e2e-na"},
-		NonOverlapBoundary: "n/a", ExecutionWave: "behavior",
+	t.Run("same Claim has two owners", func(t *testing.T) {
+		plan := load()
+		plan.Assignments = append(plan.Assignments, PlanAssignment{AssignmentID: "assignment-qa-2", Lens: "qa", ClaimIDs: []string{"claim-qa-1"}})
+		if err := ValidatePlan(plan); err == nil || !strings.Contains(err.Error(), "assigned to both") {
+			t.Fatalf("ambiguous responsibility accepted: %v", err)
+		}
 	})
-	if err := ValidatePlan(plan); err == nil || !strings.Contains(err.Error(), "not_applicable") {
-		t.Fatalf("expected N/A dispatch rejection, got %v", err)
-	}
-	// dependency cycle
-	plan = load()
-	plan.Claims[1].DependsOn = []string{"claim-qa-2"}
-	plan.Claims[2].DependsOn = []string{"claim-qa-1"}
-	if err := ValidatePlan(plan); err == nil || !strings.Contains(err.Error(), "cycle") {
-		t.Fatalf("expected cycle rejection, got %v", err)
-	}
-	// A dependency cannot be satisfied by another Claim in the same
-	// Assignment: the Assignment has only one Result boundary, so there is no
-	// upstream Result to consume before it starts.
-	plan = load()
-	plan.Claims[1].DependsOn = []string{"claim-qa-2"}
-	if err := ValidatePlan(plan); err == nil || !strings.Contains(err.Error(), "same Assignment") {
-		t.Fatalf("expected same-Assignment dependency rejection, got %v", err)
-	}
-	// Execution waves are semantic, not just labels: white-box delivery/QA
-	// work is static and behavior work is reserved for E2E/specialty lenses.
-	plan = load()
-	plan.Assignments[1].ExecutionWave = "behavior"
-	if err := ValidatePlan(plan); err == nil || !strings.Contains(err.Error(), "behavior wave") {
-		t.Fatalf("expected QA behavior-wave rejection, got %v", err)
-	}
+	t.Run("professional applicability remains accepted", func(t *testing.T) {
+		plan := load()
+		plan.Assignments = append(plan.Assignments, PlanAssignment{AssignmentID: "assignment-e2e-1", Lens: "e2e", ClaimIDs: []string{"claim-e2e-na"}})
+		if err := ValidatePlan(plan); err != nil {
+			t.Fatalf("applicability became a Plan reception gate: %v", err)
+		}
+	})
+	t.Run("dependency and wave stay professional choices", func(t *testing.T) {
+		plan := load()
+		plan.Claims[1].DependsOn = []string{"claim-qa-2"}
+		plan.Claims[2].DependsOn = []string{"claim-qa-1"}
+		plan.Assignments[1].ExecutionWave = "behavior"
+		if err := ValidatePlan(plan); err != nil {
+			t.Fatalf("dependency or wave blocked Plan reception: %v", err)
+		}
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -524,27 +520,14 @@ func TestSubmitResultCleanRoundOnFinalPass(t *testing.T) {
 	if ptr.Status != "clean" {
 		t.Fatalf("status = %s, want clean", ptr.Status)
 	}
-	if snap.State["review"].(map[string]any)["clean_round"] != 1 {
-		t.Fatalf("clean_round not set: %v", snap.State["review"])
-	}
 	lifecycle := snap.State["lifecycle"].(map[string]any)
 	if lifecycle["phase"] != "clean" {
 		t.Fatalf("phase = %v, want clean", lifecycle["phase"])
 	}
-	// clean_round evidence registered
-	found := false
-	for _, raw := range snap.State["evidence"].([]any) {
-		entry := raw.(map[string]any)
-		if entry["kind"] == "clean_round" && entry["status"] == "valid" {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatal("no clean_round evidence registered")
-	}
+
 }
 
-func TestSubmitResultFindingSealsObservationBatch(t *testing.T) {
+func TestSubmitResultFindingLeavesOtherResponsibilityUnfinished(t *testing.T) {
 	root := t.TempDir()
 	statePath, journalPath := writeState(t, root, baseVerificationState())
 	snap := registerFixturePlan(t, root, statePath, journalPath)
@@ -565,41 +548,16 @@ func TestSubmitResultFindingSealsObservationBatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SubmitResult qa: %v", err)
 	}
-	ptr := PlanPointerFromState(snap.State)
-	if ptr.Status != "cannot_clean" {
-		t.Fatalf("status = %s, want cannot_clean", ptr.Status)
+	findings := RoundFindings(snap.State)
+	if len(findings) != 1 || findings[0]["finding_id"] != "finding-qa-1" {
+		t.Fatalf("accepted original Finding lost: %v", findings)
 	}
-	// Finding entity registered.
-	findings := snap.State["entities"].(map[string]any)["findings"].([]any)
-	if len(findings) != 1 || findings[0].(map[string]any)["finding_id"] != "finding-qa-1" {
-		t.Fatalf("findings not registered: %v", findings)
-	}
-	// Round not sealed yet — DV claim pending (drain continues).
-	if snap.State["review"].(map[string]any)["observation_batch"] != nil {
-		t.Fatal("batch sealed before the final claim disposition; ordinary findings drain first")
+	assignments := snap.State["review"].(map[string]any)["assignments"].(map[string]any)
+	dv := assignments["assignment-dv-1"].(map[string]any)
+	if dv["result_ref"] != nil {
+		t.Fatalf("unfinished reviewer was projected complete: %v", dv)
 	}
 
-	// DV pass lands the final disposition -> batch seals atomically.
-	dvPath := writeResultFile(t, root, plan, "assignment-dv-1", "review-result-dv-1", "agent-dv-1", "pass",
-		map[string]string{"claim-dv-1": "pass"}, nil)
-	snap, err = SubmitResult(root, statePath, journalPath, SubmitRequest{
-		ExpectedRevision: snap.Revision, AssignmentID: "assignment-dv-1", ResultPath: dvPath,
-	})
-	if err != nil {
-		t.Fatalf("SubmitResult dv: %v", err)
-	}
-	ptr = PlanPointerFromState(snap.State)
-	if ptr.Status != "observation_sealed" {
-		t.Fatalf("status = %s, want observation_sealed", ptr.Status)
-	}
-	batch := snap.State["review"].(map[string]any)["observation_batch"].(map[string]any)
-	if batch == nil || batch["drain_policy"] != "complete_required_claims" {
-		t.Fatalf("batch missing or wrong drain policy: %v", batch)
-	}
-	ids := batch["finding_ids"].([]any)
-	if len(ids) != 1 || ids[0] != "finding-qa-1" {
-		t.Fatalf("batch finding set wrong: %v", ids)
-	}
 }
 
 func TestSubmitResultP0SealsImmediately(t *testing.T) {
@@ -645,58 +603,12 @@ func TestSubmitResultP0SealsImmediately(t *testing.T) {
 	if ptr.Status != "observation_sealed" {
 		t.Fatalf("status = %s, want observation_sealed (immediate stop)", ptr.Status)
 	}
-	batch := snap.State["review"].(map[string]any)["observation_batch"].(map[string]any)
-	if batch["drain_policy"] != "immediate_stop" {
-		t.Fatalf("drain_policy = %v", batch["drain_policy"])
+	if len(RoundFindings(snap.State)) != 1 {
+		t.Fatalf("P0 original Finding was lost: %v", RoundFindings(snap.State))
 	}
 	queued := snap.State["review"].(map[string]any)["assignments"].(map[string]any)["assignment-queued"].(map[string]any)
 	if queued["status"] != "planned" || queued["agent_id"] != nil {
 		t.Fatalf("P0 seal must not release queued dispatch: %v", queued)
-	}
-}
-
-func TestSubmitResultRejectsClaimSetMismatch(t *testing.T) {
-	root := t.TempDir()
-	statePath, journalPath := writeState(t, root, baseVerificationState())
-	snap := registerFixturePlan(t, root, statePath, journalPath)
-	snap = markDispatched(t, root, statePath, journalPath, snap, "assignment-qa-1", "agent-qa-1")
-	plan, _, _ := LoadPlan(root, snap.State)
-
-	// Missing claim-qa-2.
-	qaPath := writeResultFile(t, root, plan, "assignment-qa-1", "review-result-qa-1", "agent-qa-1", "pass",
-		map[string]string{"claim-qa-1": "pass"}, nil)
-	_, err := SubmitResult(root, statePath, journalPath, SubmitRequest{
-		ExpectedRevision: snap.Revision, AssignmentID: "assignment-qa-1", ResultPath: qaPath,
-	})
-	if err == nil || !strings.Contains(err.Error(), "missing claim-qa-2") {
-		t.Fatalf("expected exact-set rejection, got %v", err)
-	}
-}
-
-// RC-02 (L3-S7 §10.1): blocking is a business judgment carried with the
-// Finding. A P0 Finding is implicitly blocking=true and must not claim
-// blocking=false; a non-P0 Finding may carry blocking=true and keeps the
-// marker through the entity row.
-func TestSubmitResultRejectsP0FindingWithBlockingFalse(t *testing.T) {
-	root := t.TempDir()
-	statePath, journalPath := writeState(t, root, baseVerificationState())
-	snap := registerFixturePlan(t, root, statePath, journalPath)
-	snap = markDispatched(t, root, statePath, journalPath, snap, "assignment-qa-1", "agent-qa-1")
-	plan, _, _ := LoadPlan(root, snap.State)
-
-	p0 := codeInspectionFinding("finding-p0-1", "claim-qa-1")
-	p0.Severity = "P0"
-	no := false
-	p0.Blocking = &no
-	p0.Encounter.CaptureGaps = []string{"stopped before the destructive path"}
-	qaPath := writeResultFile(t, root, plan, "assignment-qa-1", "review-result-qa-1", "agent-qa-1", "finding",
-		map[string]string{"claim-qa-1": "fail", "claim-qa-2": "pass"},
-		[]Finding{p0})
-	_, err := SubmitResult(root, statePath, journalPath, SubmitRequest{
-		ExpectedRevision: snap.Revision, AssignmentID: "assignment-qa-1", ResultPath: qaPath,
-	})
-	if err == nil || !strings.Contains(err.Error(), "blocking=false") {
-		t.Fatalf("P0 with blocking=false must be rejected, got %v", err)
 	}
 }
 
@@ -729,44 +641,6 @@ func TestSubmitResultCarriesBlockingMarkerIntoFindingEntity(t *testing.T) {
 	}
 }
 
-func TestSubmitResultRejectsBuilderProducer(t *testing.T) {
-	root := t.TempDir()
-	// A completion_report from agent-qa-1 this generation makes it a Builder.
-	// RC-16: the registered artifact must exist on disk with a matching
-	// sha256 — the S7 projection no longer bridges a missing artifact with
-	// the agent-controllable scope_refs.
-	envelopeRel := ".claude/evidence/x.json"
-	envelopeAbs := filepath.Join(root, filepath.FromSlash(envelopeRel))
-	if err := os.MkdirAll(filepath.Dir(envelopeAbs), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	envelope := []byte(`{"kind":"completion_report","changed_paths":[]}`)
-	if err := os.WriteFile(envelopeAbs, envelope, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	sum := sha256.Sum256(envelope)
-	state := baseVerificationState()
-	state["evidence"] = []any{map[string]any{
-		"id": "ev-completion-1", "kind": "completion_report", "baseline_generation": 1,
-		"produced_by": []any{"agent-qa-1"}, "status": "valid",
-		"path": envelopeRel, "sha256": hex.EncodeToString(sum[:]),
-		"review_round": nil, "invalidated_by": nil, "invalidation_rule": nil,
-		"invalidation_reason": nil, "responsibility_id": "BUILD-WORK-PACKAGE", "scope_refs": []any{},
-	}}
-	statePath, journalPath := writeState(t, root, state)
-	snap := registerFixturePlan(t, root, statePath, journalPath)
-	snap = markDispatched(t, root, statePath, journalPath, snap, "assignment-qa-1", "agent-qa-1")
-	plan, _, _ := LoadPlan(root, snap.State)
-	qaPath := writeResultFile(t, root, plan, "assignment-qa-1", "review-result-qa-1", "agent-qa-1", "pass",
-		map[string]string{"claim-qa-1": "pass", "claim-qa-2": "pass"}, nil)
-	_, err := SubmitResult(root, statePath, journalPath, SubmitRequest{
-		ExpectedRevision: snap.Revision, AssignmentID: "assignment-qa-1", ResultPath: qaPath,
-	})
-	if err == nil || !strings.Contains(err.Error(), "independence") {
-		t.Fatalf("expected independence rejection, got %v", err)
-	}
-}
-
 func TestSubmitResultRejectsVerdictContradiction(t *testing.T) {
 	root := t.TempDir()
 	statePath, journalPath := writeState(t, root, baseVerificationState())
@@ -775,11 +649,11 @@ func TestSubmitResultRejectsVerdictContradiction(t *testing.T) {
 	plan, _, _ := LoadPlan(root, snap.State)
 
 	qaPath := writeResultFile(t, root, plan, "assignment-qa-1", "review-result-qa-1", "agent-qa-1", "pass",
-		map[string]string{"claim-qa-1": "fail", "claim-qa-2": "pass"}, nil)
+		map[string]string{"claim-qa-1": "fail", "claim-qa-2": "pass"}, []Finding{codeInspectionFinding("finding-qa-1", "claim-qa-1")})
 	_, err := SubmitResult(root, statePath, journalPath, SubmitRequest{
 		ExpectedRevision: snap.Revision, AssignmentID: "assignment-qa-1", ResultPath: qaPath,
 	})
-	if err == nil || !strings.Contains(err.Error(), "contradicts") {
+	if err == nil || !strings.Contains(err.Error(), "pass cannot carry Findings") {
 		t.Fatalf("expected verdict contradiction rejection, got %v", err)
 	}
 }
@@ -1011,37 +885,6 @@ func TestRevisePlanRejectsGhostSourceRef(t *testing.T) {
 	}
 }
 
-func TestRevisePlanRejectsPreviousRoundSource(t *testing.T) {
-	root := t.TempDir()
-	state := revisionSourceState()
-	state["evidence"].([]any)[0].(map[string]any)["review_round"] = 2
-	statePath, journalPath := writeState(t, root, state)
-	snap := registerFixturePlan(t, root, statePath, journalPath)
-	plan, _, err := LoadPlan(root, snap.State)
-	if err != nil {
-		t.Fatal(err)
-	}
-	v2 := reviseFixturePlan(t, root, plan,
-		map[string]any{
-			"claim_id": "claim-qa-3", "lens": "qa", "target": "internal/example",
-			"assertion": "new surface covered", "oracle": "observed", "method": "review",
-			"applicability": "required",
-		},
-		map[string]any{
-			"assignment_id": "assignment-qa-2", "lens": "qa", "claim_ids": []string{"claim-qa-3"},
-			"non_overlap_boundary": "owns the new surface", "execution_wave": "static",
-		},
-		[]string{"review-result-qa-1"},
-	)
-	_, err = RevisePlan(root, statePath, journalPath, ReviseRequest{
-		ExpectedRevision: snap.Revision, PlanPath: v2,
-		SourceRef: "review-result-qa-1", AffectedSurface: "internal/example",
-	})
-	if err == nil || !strings.Contains(err.Error(), "review_round") || !strings.Contains(err.Error(), "current round") {
-		t.Fatalf("wrong-round source must be rejected with its round boundary, got %v", err)
-	}
-}
-
 func TestRevisePlanCleansArtifactAfterNonStaleApplyFailure(t *testing.T) {
 	root := t.TempDir()
 	statePath, journalPath := writeState(t, root, revisionSourceState())
@@ -1123,46 +966,6 @@ func TestDiffClaimsRejectsSurfacePrefixCollision(t *testing.T) {
 	v2 := &Plan{Claims: []Claim{{ClaimID: "claim-1", Target: "internal/example2", SourceRefs: []string{"review-result-1"}}}}
 	if _, err := diffClaims(v1, v2, "review-result-1", "internal/example"); err == nil || !strings.Contains(err.Error(), "outside the affected surface") {
 		t.Fatalf("surface prefix collision must be rejected, got %v", err)
-	}
-}
-
-func TestRevisePlanRechecksCurrentTaskCoverage(t *testing.T) {
-	root := t.TempDir()
-	statePath, journalPath := writeState(t, root, baseVerificationState())
-	snap := registerFixturePlan(t, root, statePath, journalPath)
-	plan, _, err := LoadPlan(root, snap.State)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// A new S6 task may appear after registration but before the controlled
-	// revision. The v2 plan must not silently omit it.
-	snap.State["documents"] = []any{map[string]any{
-		"id": "TASK-099", "kind": "task", "generation": 1,
-	}}
-	stateBytes, err := json.MarshalIndent(snap.State, "", "  ")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(statePath, append(stateBytes, '\n'), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	v2 := reviseFixturePlan(t, root, plan,
-		map[string]any{
-			"claim_id": "claim-qa-3", "lens": "qa", "target": "internal/example",
-			"assertion": "new surface covered", "oracle": "observed", "method": "review",
-			"applicability": "required",
-		},
-		map[string]any{
-			"assignment_id": "assignment-qa-2", "lens": "qa", "claim_ids": []string{"claim-qa-3"},
-			"non_overlap_boundary": "owns the new surface", "execution_wave": "static",
-		},
-		[]string{"review-result-qa-1"},
-	)
-	if _, err := RevisePlan(root, statePath, journalPath, ReviseRequest{
-		ExpectedRevision: snap.Revision, PlanPath: v2,
-		SourceRef: "review-result-qa-1", AffectedSurface: "internal/example",
-	}); err == nil || !strings.Contains(err.Error(), "TASK-099") {
-		t.Fatalf("revision must recheck current task coverage, got %v", err)
 	}
 }
 

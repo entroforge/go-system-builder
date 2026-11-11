@@ -39,7 +39,7 @@ func TestCreateChangeStoresRecordWithCASAndJournal(t *testing.T) {
 	}
 
 	record, err := change.BuildRecord(change.Input{
-		ID: "CHG-001", REQRef: "REQ-002", REQSHA: "1111111111111111111111111111111111111111111111111111111111111111",
+		ID: "CHG-001", REQRef: "REQ-002",
 		Summary: "fix timeout mapping", Class: "bugfix", Risk: "medium",
 		WorkItems: []change.WorkItem{{ID: "W-1", Text: "fix timeout", Owner: "main", WritePaths: []string{"internal/client/**"}}},
 	})
@@ -92,7 +92,7 @@ func TestCreateChangeRejectsSecondRecordWithoutMutation(t *testing.T) {
 	if err := os.WriteFile(statePath, stateData, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	record := change.Record{ID: "CHG-002", REQRef: "REQ-002", REQSHA: "1111111111111111111111111111111111111111111111111111111111111111", Summary: "second", Class: "docs-only", Risk: "low", WorkItems: []change.WorkItem{{ID: "W-1", Text: "work", Status: "open"}}, RequiredChecks: []change.Check{{ID: "CK-1", Kind: "link_check", Status: "open"}}}
+	record := change.Record{ID: "CHG-002", REQRef: "REQ-002", Summary: "second", Class: "docs-only", Risk: "low", WorkItems: []change.WorkItem{{ID: "W-1", Text: "work", Status: "open"}}, RequiredChecks: []change.Check{{ID: "CK-1", Kind: "link_check", Status: "open"}}}
 	_, err = runtime.CreateChange(dir, statePath, journalPath, runtime.ChangeRequest{ExpectedRevision: 1, Record: record})
 	if err == nil {
 		t.Fatal("expected second Change Record to be rejected")
@@ -115,7 +115,7 @@ func TestCreateChangeRejectsRecordWithMismatchedREQRef(t *testing.T) {
 		t.Fatal(err)
 	}
 	record, err := change.BuildRecord(change.Input{
-		ID: "CHG-001", REQRef: "REQ-999", REQSHA: "1111111111111111111111111111111111111111111111111111111111111111",
+		ID: "CHG-001", REQRef: "REQ-999",
 		Summary: "mismatched req ref", Class: "docs-only", Risk: "low",
 		WorkItems: []change.WorkItem{{ID: "W-1", Text: "work", Owner: "main"}},
 	})
@@ -131,7 +131,7 @@ func TestCreateChangeRejectsRecordWithMismatchedREQRef(t *testing.T) {
 	}
 }
 
-func TestCreateChangeRejectsRecordWithMismatchedREQSHA(t *testing.T) {
+func TestCreateChangeIgnoresHistoricalREQSHA(t *testing.T) {
 	dir := t.TempDir()
 	statePath := filepath.Join(dir, "loop-state.json")
 	journalPath := filepath.Join(dir, "loop-events.jsonl")
@@ -144,16 +144,27 @@ func TestCreateChangeRejectsRecordWithMismatchedREQSHA(t *testing.T) {
 		t.Fatal(err)
 	}
 	record, err := change.BuildRecord(change.Input{
-		ID: "CHG-001", REQRef: "REQ-002", REQSHA: "2222222222222222222222222222222222222222222222222222222222222222",
+		ID: "CHG-001", REQRef: "REQ-002",
 		Summary: "mismatched req sha", Class: "docs-only", Risk: "low",
 		WorkItems: []change.WorkItem{{ID: "W-1", Text: "work", Owner: "main"}},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = runtime.CreateChange(dir, statePath, journalPath, runtime.ChangeRequest{ExpectedRevision: 1, Record: record})
-	if err == nil {
-		t.Fatal("expected mismatched req_sha256 to be rejected")
+	// Historical unknown fields are ignored when decoding the original record.
+	if err := json.Unmarshal([]byte(`{"req_sha256":"not-a-valid-historical-sha","workspace":{"base_sha":"historical-git-oid"}}`), &record); err != nil {
+		t.Fatal(err)
+	}
+	next, err := runtime.CreateChange(dir, statePath, journalPath, runtime.ChangeRequest{ExpectedRevision: 1, Record: record, Validator: testCandidateValidator()})
+	if err != nil {
+		t.Fatalf("historical req digest must not reject a change: %v", err)
+	}
+	created := next.State["change"].(map[string]any)
+	if _, ok := created["req_sha256"]; ok {
+		t.Fatalf("new change copied historical REQ digest: %v", created)
+	}
+	if workspace, _ := created["workspace"].(map[string]any); workspace["base_sha"] != nil {
+		t.Fatalf("new change copied historical Git OID: %v", workspace)
 	}
 }
 
@@ -170,7 +181,7 @@ func TestCreateChangeRejectsRecordWithReducedRequiredChecks(t *testing.T) {
 		t.Fatal(err)
 	}
 	record, err := change.BuildRecord(change.Input{
-		ID: "CHG-001", REQRef: "REQ-002", REQSHA: "1111111111111111111111111111111111111111111111111111111111111111",
+		ID: "CHG-001", REQRef: "REQ-002",
 		Summary: "reduced checks", Class: "bugfix", Risk: "medium",
 		WorkItems: []change.WorkItem{{ID: "W-1", Text: "work", Owner: "main"}},
 	})

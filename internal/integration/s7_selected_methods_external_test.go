@@ -51,15 +51,11 @@ func TestS7RegisteredAdditionalMethodReachesNativeViewAndFrozenRecovery(t *testi
 	if err != nil {
 		t.Fatal("original Register rejected explicitly selected method", err)
 	}
-	manifestBytes, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
 	foundSource := false
 	for _, raw := range registered.State["entities"].(map[string]any)["teams"].([]any) {
 		team := raw.(map[string]any)
 		if team["id"] == manifest.WorkgroupID {
-			foundSource = team["manifest_sha256"] == workpacket.Digest(manifestBytes)
+			foundSource = team["manifest_ref"] == ref
 		}
 	}
 	if !foundSource {
@@ -70,7 +66,7 @@ func TestS7RegisteredAdditionalMethodReachesNativeViewAndFrozenRecovery(t *testi
 		t.Fatalf("issue original selected responsibility: %v (%d)", err, len(packets))
 	}
 	packet := packets[0]
-	if packet.Inputs.MethodSource == nil || packet.Inputs.MethodSource.ManifestRef != ref || packet.Inputs.MethodSource.SHA256 != workpacket.Digest(manifestBytes) {
+	if packet.Inputs.MethodSource == nil || packet.Inputs.MethodSource.ManifestRef != ref {
 		t.Fatal("packet lost original manifest source")
 	}
 	viewBytes, err := os.ReadFile(filepath.Join(fixture.root, packet.ViewPath))

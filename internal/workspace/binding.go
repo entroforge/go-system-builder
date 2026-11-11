@@ -3,7 +3,6 @@ package workspace
 
 import (
 	"fmt"
-	"github.com/entroforge/go-system-builder/internal/fileview"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -13,7 +12,6 @@ type Binding struct {
 	ProjectRoot     string `json:"project_root"`
 	DevBranch       string `json:"dev_branch"`
 	ReleaseUpstream string `json:"release_upstream"`
-	BoundCommit     string `json:"bound_commit"`
 }
 
 func Bind(root, dev, upstream string) (Binding, error) {
@@ -35,18 +33,18 @@ func Bind(root, dev, upstream string) (Binding, error) {
 	if e := exec.Command("git", "check-ref-format", ref).Run(); e != nil {
 		return b, fmt.Errorf("invalid release upstream %q", upstream)
 	}
-	commit, e := fileview.Resolve(root, "refs/heads/"+dev)
-	if e != nil {
-		return b, e
+	if err := exec.Command("git", "-C", root, "show-ref", "--verify", "--quiet", "refs/heads/"+dev).Run(); err != nil {
+		return b, fmt.Errorf("development branch %q is not available: %w", dev, err)
 	}
+	var e error
 	root, e = filepath.Abs(root)
 	if e != nil {
 		return b, e
 	}
-	return Binding{root, dev, upstream, commit}, nil
+	return Binding{ProjectRoot: root, DevBranch: dev, ReleaseUpstream: upstream}, nil
 }
 func (b Binding) Map() map[string]any {
-	return map[string]any{"project_root": b.ProjectRoot, "dev_branch": b.DevBranch, "release_upstream": b.ReleaseUpstream, "bound_commit": b.BoundCommit}
+	return map[string]any{"project_root": b.ProjectRoot, "dev_branch": b.DevBranch, "release_upstream": b.ReleaseUpstream}
 }
 
 // ValidateCheckout proves that a recorded path is a checkout of the same

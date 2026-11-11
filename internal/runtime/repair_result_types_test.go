@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"reflect"
 	"testing"
-
-	"github.com/entroforge/go-system-builder/internal/workpacket"
 )
 
 func TestRepairResultRawFactsRoundTripCanonicalizesWithoutDrift(t *testing.T) {
@@ -27,11 +25,8 @@ func TestRepairResultRawFactsRoundTripCanonicalizesWithoutDrift(t *testing.T) {
 	if !bytes.Equal(gotProvenance.SubmittedAnswer, wantSubmitted) {
 		t.Fatalf("submitted answer was not canonicalized on readback:\n got %s\nwant %s", gotProvenance.SubmittedAnswer, wantSubmitted)
 	}
-	if workpacket.Digest(gotProvenance.SubmittedAnswer) != workpacket.Digest(wantSubmitted) {
-		t.Fatal("submitted answer digest drifted across MarshalIndent/readback")
-	}
 
-	verifiedFacts := json.RawMessage(`{"check_receipts":[{"index":0,"status":"passed","profile_digest":"profile-a"}],"tested_head":"abc123","source_head":"def456","completion":{"complete":false,"reason":"awaiting main"}}`)
+	verifiedFacts := json.RawMessage(`{"check_receipts":[{"index":0,"status":"passed"}],"completion":{"complete":false,"reason":"awaiting main"}}`)
 	proof := RepairResultMainProof{VerifiedFacts: verifiedFacts}
 	wire, err = json.MarshalIndent(proof, "", "  ")
 	if err != nil {
@@ -47,9 +42,6 @@ func TestRepairResultRawFactsRoundTripCanonicalizesWithoutDrift(t *testing.T) {
 	}
 	if !bytes.Equal(gotProof.VerifiedFacts, wantFacts) {
 		t.Fatalf("verified facts were not canonicalized on readback:\n got %s\nwant %s", gotProof.VerifiedFacts, wantFacts)
-	}
-	if workpacket.Digest(gotProof.VerifiedFacts) != workpacket.Digest(wantFacts) {
-		t.Fatal("verified-facts digest drifted across MarshalIndent/readback")
 	}
 
 	for name, data := range map[string][]byte{
@@ -74,54 +66,53 @@ func TestRepairResultRawFactsRoundTripCanonicalizesWithoutDrift(t *testing.T) {
 
 func TestProjectRepairResultExecutionFreezesDefinitionOnly(t *testing.T) {
 	base := map[string]any{
-		"assignment_record":        map[string]any{"path": "record.json", "sha256": "record-sha"},
-		"assignment_record_sha256": "record-sha",
-		"worker_checks":            []any{map[string]any{"index": 0, "command": "go test ./internal/api"}},
-		"check_profiles":           []any{map[string]any{"id": "go-test", "location": "worker"}},
-		"purpose":                  "repair",
-		"work_packet_id":           "packet-a",
-		"stage_entry":              "repair-result",
-		"check_location":           "worker",
-		"platform_session_id":      "session-a",
-		"assignment_id":            "assignment-a",
-		"runtime_id":               "runtime-a",
-		"baseline_generation":      2,
-		"execution_generation":     3,
-		"agent_id":                 "owner-a",
-		"worktree_path":            "/work/assignment-a",
-		"branch":                   "worker-a",
-		"target_branch":            "main",
-		"base_commit":              "base-a",
-		"write_paths":              []any{"internal/api"},
-		"required_checks":          []any{map[string]any{"index": 0, "command": "go test ./internal/api"}},
-		"inputs":                   map[string]any{"assignment_record": "record.json", "source_head": "source-a"},
-		"bootstrap_sha256":         "bootstrap-a",
-		"status":                   "prepared",
-		"tool_receipts":            []any{map[string]any{"status": "passed", "sha256": "mutable"}},
-		"delivery_ref":             "delivery-old",
-		"rework_ref":               "rework-old",
+		"assignment_record":    map[string]any{"path": "record.json"},
+		"worker_checks":        []any{map[string]any{"index": 0, "command": "go test ./internal/api"}},
+		"check_profiles":       []any{map[string]any{"id": "go-test", "location": "worker"}},
+		"purpose":              "repair",
+		"work_packet_id":       "packet-a",
+		"stage_entry":          "repair-result",
+		"check_location":       "worker",
+		"platform_session_id":  "session-a",
+		"assignment_id":        "assignment-a",
+		"runtime_id":           "runtime-a",
+		"baseline_generation":  2,
+		"execution_generation": 3,
+		"agent_id":             "owner-a",
+		"worktree_path":        "/work/assignment-a",
+		"branch":               "worker-a",
+		"target_branch":        "main",
+		"base_commit":          "base-a",
+		"write_paths":          []any{"internal/api"},
+		"required_checks":      []any{map[string]any{"index": 0, "command": "go test ./internal/api"}},
+		"inputs":               map[string]any{"assignment_record": "record.json"},
+		"bootstrap_sha256":     "bootstrap-a",
+		"status":               "prepared",
+		"tool_receipts":        []any{map[string]any{"status": "passed"}},
+		"delivery_ref":         "delivery-old",
+		"rework_ref":           "rework-old",
 	}
 
 	projected, err := ProjectRepairResultExecution(base)
 	if err != nil {
 		t.Fatal(err)
 	}
-	baseDigest := workpacket.Digest(projected)
+	original := append([]byte(nil), projected...)
 
 	mutable := cloneRuntimeMap(t, base)
 	mutable["status"] = "completed"
-	mutable["tool_receipts"] = []any{map[string]any{"status": "failed", "sha256": "different"}}
+	mutable["tool_receipts"] = []any{map[string]any{"status": "failed"}}
 	mutable["delivery_ref"] = "delivery-new"
 	mutable["rework_ref"] = "rework-new"
 	projected, err = ProjectRepairResultExecution(mutable)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := workpacket.Digest(projected); got != baseDigest {
-		t.Fatalf("mutable progress changed frozen execution digest: got %s want %s", got, baseDigest)
+	if !bytes.Equal(projected, original) {
+		t.Fatal("mutable progress changed original execution facts")
 	}
 
-	for _, key := range []string{"worktree_path", "agent_id", "base_commit", "check_profiles", "inputs"} {
+	for _, key := range []string{"worktree_path", "agent_id", "check_profiles"} {
 		t.Run(key, func(t *testing.T) {
 			changed := cloneRuntimeMap(t, base)
 			changed[key] = map[string]any{"changed": true}
@@ -129,8 +120,8 @@ func TestProjectRepairResultExecutionFreezesDefinitionOnly(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got := workpacket.Digest(gotJSON); got == baseDigest {
-				t.Fatalf("frozen execution field %q did not change digest", key)
+			if bytes.Equal(gotJSON, original) {
+				t.Fatalf("execution fact %q was lost", key)
 			}
 		})
 	}
@@ -146,108 +137,55 @@ func TestProjectRepairResultExecutionFreezesDefinitionOnly(t *testing.T) {
 	}
 }
 
-func TestProjectRepairResultMainFactsIgnoresLifecycleAndBindsVerifiedFacts(t *testing.T) {
+func TestProjectRepairResultMainFactsPreservesActualWork(t *testing.T) {
 	base := repairResultCheckpointFixture()
-	first, err := json.Marshal(base)
+	data, _ := json.Marshal(base)
+	original, err := ProjectRepairResultMainFacts(data)
 	if err != nil {
 		t.Fatal(err)
 	}
-	firstProjection, err := ProjectRepairResultMainFacts(first)
-	if err != nil {
-		t.Fatalf("project verified checkpoint: %v", err)
+	later := cloneRuntimeMap(t, base)
+	later["status"], later["revision"], later["cleanup"] = "acknowledged", 91, map[string]any{"status": "complete"}
+	data, _ = json.Marshal(later)
+	replay, err := ProjectRepairResultMainFacts(data)
+	if err != nil || !bytes.Equal(original, replay) {
+		t.Fatalf("lifecycle changed recorded work: %v", err)
 	}
-	firstDigest := workpacket.Digest(firstProjection)
-
-	lifecycle := cloneRuntimeMap(t, base)
-	lifecycle["status"] = "acknowledged"
-	lifecycle["revision"] = float64(91)
-	lifecycle["updated_at"] = "2026-10-14T12:59:59Z"
-	lifecycle["cleanup"] = map[string]any{"status": "complete", "removed": []any{"worktree"}}
-	lifecycle["diagnostic"] = "replayed after cleanup"
-	second, err := json.Marshal(lifecycle)
-	if err != nil {
-		t.Fatal(err)
+	changed := cloneRuntimeMap(t, base)
+	changed["changed_paths"] = []any{"internal/api/other.go"}
+	data, _ = json.Marshal(changed)
+	actual, err := ProjectRepairResultMainFacts(data)
+	if err != nil || bytes.Equal(original, actual) {
+		t.Fatalf("actual changed paths were lost: %v", err)
 	}
-	secondProjection, err := ProjectRepairResultMainFacts(second)
-	if err != nil {
-		t.Fatalf("project lifecycle-updated checkpoint: %v", err)
-	}
-	if got := workpacket.Digest(secondProjection); got != firstDigest {
-		t.Fatalf("ACK/cleanup lifecycle mutation changed Main facts digest: got %s want %s", got, firstDigest)
-	}
-
-	for _, mutate := range []struct {
-		name string
-		fn   func(map[string]any)
-	}{
-		{"source head", func(cp map[string]any) { cp["source_head"] = "source-b" }},
-		{"tested head", func(cp map[string]any) { cp["tested_head"] = "tested-b" }},
-		{"check receipt", func(cp map[string]any) {
-			cp["check_receipts"] = []any{map[string]any{"receipt_ref": "new.json", "sha256": "new-sha"}}
-		}},
-		{"profile facts", func(cp map[string]any) {
-			cp["canonical_main_facts"] = map[string]any{"checks": []any{map[string]any{"profile_digest": "profile-b", "status": "passed"}}}
-		}},
-		{"completion facts", func(cp map[string]any) { cp["completion_report_sha256"] = "completion-b" }},
-	} {
-		t.Run(mutate.name, func(t *testing.T) {
-			changed := cloneRuntimeMap(t, base)
-			mutate.fn(changed)
-			data, err := json.Marshal(changed)
-			if err != nil {
-				t.Fatal(err)
-			}
-			projection, err := ProjectRepairResultMainFacts(data)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if got := workpacket.Digest(projection); got == firstDigest {
-				t.Fatal("verified Main fact mutation did not change digest")
-			}
-		})
-	}
-
-	for name, input := range map[string][]byte{
-		"missing required tested head": []byte(`{"assignment_id":"a","baseline_generation":1,"source_head":"s","merge_commit":"m","verified_at":"now"}`),
-		"duplicate keys":               []byte(`{"assignment_id":"a","assignment_id":"b","baseline_generation":1,"source_head":"s","merge_commit":"m","tested_head":"t","verified_at":"now"}`),
-	} {
-		t.Run(name, func(t *testing.T) {
-			if _, err := ProjectRepairResultMainFacts(input); err == nil {
-				t.Fatal("invalid Main facts accepted")
-			}
-		})
+	for _, raw := range [][]byte{[]byte(`{"baseline_generation":1}`), []byte(`{"assignment_id":"a","assignment_id":"b"}`)} {
+		if _, err := ProjectRepairResultMainFacts(raw); err == nil {
+			t.Fatal("invalid original responsibility accepted")
+		}
 	}
 }
 
 func repairResultCheckpointFixture() map[string]any {
 	return map[string]any{
-		"assignment_id":            "assignment-a",
-		"task_id":                  "TASK-a",
-		"baseline_generation":      2,
-		"assignment_record":        "record.json",
-		"assignment_record_sha256": "record-sha",
-		"source_branch":            "worker-a",
-		"source_head":              "source-a",
-		"target_branch":            "main",
-		"target_head":              "target-a",
-		"merge_base":               "base-a",
-		"merge_commit":             "merge-a",
-		"tested_head":              "tested-a",
-		"worktree_path":            "/work/assignment-a",
-		"changed_paths":            []any{"internal/api/payload.go"},
-		"changed_paths_sha256":     "changed-paths-sha",
-		"canonical_main_facts":     map[string]any{"checks": []any{map[string]any{"command": "go test ./internal/api", "status": "passed", "profile_digest": "profile-a", "receipt_sha256": "receipt-a"}}},
-		"completion_report_path":   "completion/report.json",
-		"completion_report_sha256": "completion-a",
-		"verified_at":              "2026-10-14T12:30:00Z",
-		"idempotency_key":          "integrate:assignment-a",
-		"check_receipts":           []any{map[string]any{"receipt_ref": "check-a.json", "sha256": "check-a"}},
-		"tool_check_receipts":      []any{map[string]any{"receipt_ref": "tool-a.json", "sha256": "tool-a"}},
-		"status":                   "verified",
-		"revision":                 float64(3),
-		"updated_at":               "2026-10-14T12:30:00Z",
-		"cleanup":                  map[string]any{"status": "pending"},
-		"diagnostic":               "initial verification",
+		"assignment_id":          "assignment-a",
+		"task_id":                "TASK-a",
+		"baseline_generation":    2,
+		"assignment_record":      "record.json",
+		"source_branch":          "worker-a",
+		"target_branch":          "main",
+		"worktree_path":          "/work/assignment-a",
+		"changed_paths":          []any{"internal/api/payload.go"},
+		"canonical_main_facts":   map[string]any{"checks": []any{map[string]any{"command": "go test ./internal/api", "status": "passed", "receipt_ref": "receipt-a"}}},
+		"completion_report_path": "completion/report.json",
+		"verified_at":            "2026-10-14T12:30:00Z",
+		"idempotency_key":        "integrate:assignment-a",
+		"check_receipts":         []any{map[string]any{"receipt_ref": "check-a.json"}},
+		"tool_check_receipts":    []any{map[string]any{"receipt_ref": "tool-a.json"}},
+		"status":                 "verified",
+		"revision":               float64(3),
+		"updated_at":             "2026-10-14T12:30:00Z",
+		"cleanup":                map[string]any{"status": "pending"},
+		"diagnostic":             "initial verification",
 	}
 }
 
@@ -283,5 +221,22 @@ func TestRepairResultMainFactsProjectionIsStableAcrossCanonicalRoundTrip(t *test
 	}
 	if !reflect.DeepEqual(bytes.TrimSpace(projected), bytes.TrimSpace(encoded)) {
 		t.Fatalf("canonical projection changed after decode/marshal:\n%s\n%s", projected, encoded)
+	}
+}
+
+func TestS9MainFactsKeepsProfessionalContent(t *testing.T) {
+	input := []byte(`{"assignment_id":"assignment-a","baseline_generation":1,"source_branch":"fix/a","changed_paths":["a.go"],"canonical_main_facts":{"checks":[{"command":"go test ./...","result":"pass","note":"SHA is a user discussion","custom":{"sha256":"business-value"}}]}}`)
+	data, err := ProjectRepairResultMainFacts(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	facts := got["canonical_main_facts"].(map[string]any)
+	check := facts["checks"].([]any)[0].(map[string]any)
+	if got["source_branch"] != "fix/a" || check["note"] != "SHA is a user discussion" || check["custom"].(map[string]any)["sha256"] != "business-value" {
+		t.Fatal("actual work or professional content changed")
 	}
 }

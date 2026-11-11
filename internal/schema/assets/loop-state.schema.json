@@ -28,12 +28,11 @@
   "properties": {
     "workspace": {
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "main_root",
         "common_dir",
         "integration_branch",
-        "bound_head",
         "binding_version",
         "executions"
       ],
@@ -50,10 +49,6 @@
           "type": "string",
           "minLength": 1
         },
-        "bound_head": {
-          "type": "string",
-          "minLength": 1
-        },
         "binding_version": {
           "const": 1
         },
@@ -61,7 +56,7 @@
           "type": "object",
           "additionalProperties": {
             "type": "object",
-            "additionalProperties": false,
+            "additionalProperties": true,
             "required": [
               "assignment_id",
               "runtime_id",
@@ -69,7 +64,6 @@
               "worktree_path",
               "branch",
               "target_branch",
-              "base_commit",
               "baseline_generation",
               "execution_generation",
               "status",
@@ -99,10 +93,6 @@
                 "minLength": 1
               },
               "target_branch": {
-                "type": "string",
-                "minLength": 1
-              },
-              "base_commit": {
                 "type": "string",
                 "minLength": 1
               },
@@ -137,26 +127,23 @@
               "inputs": {
                 "type": "object",
                 "additionalProperties": {
-                  "type": "string",
-                  "pattern": "^[a-f0-9]{64}$"
+                  "type": "string"
                 }
               },
               "platform_session_id": {
                 "type": "string",
                 "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
               },
-              "check_location": {"type":"string", "enum":["worker","main"]},
-              "bootstrap_sha256": {
+              "check_location": {
                 "type": "string",
-                "pattern": "^[a-f0-9]{64}$"
+                "enum": [
+                  "worker",
+                  "main"
+                ]
               },
               "delivery_ref": {
                 "type": "string",
                 "minLength": 1
-              },
-              "delivery_sha256": {
-                "type": "string",
-                "pattern": "^[a-f0-9]{64}$"
               },
               "rework_ref": {
                 "type": "string",
@@ -186,7 +173,7 @@
       "pattern": "^loop-[A-Za-z0-9._-]+$"
     },
     "definition": {
-      "$ref": "#/$defs/fingerprintedReference"
+      "$ref": "#/$defs/frameworkReference"
     },
     "revision": {
       "type": "integer",
@@ -321,11 +308,8 @@
     },
     "review": {
       "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "round",
-        "clean_round"
-      ],
+      "additionalProperties": true,
+      "required": [],
       "properties": {
         "round": {
           "type": "integer",
@@ -343,11 +327,10 @@
             "object",
             "null"
           ],
-          "description": "The transition that opened the active S7 round. TR-012 entries carry the exact repair handoff and change_impact evidence references used to freeze the post-repair baseline.",
-          "additionalProperties": false,
+          "description": "Original S7 entry relationship. Historical entries retain round; new entries persist system-owned plan_id before preparing the original questionnaire. No numeric ordering or count is implied.",
+          "additionalProperties": true,
           "required": [
             "transition_id",
-            "round",
             "baseline_generation",
             "change_impact_ref"
           ],
@@ -378,50 +361,34 @@
               ],
               "minLength": 1
             },
-            "repair_handoff_sha256": {
-              "type": [
-                "string",
-                "null"
-              ],
-              "pattern": "^[a-f0-9]{64}$"
-            },
-            "implementation_baseline_digest": {
-              "type": [
-                "string",
-                "null"
-              ],
-              "pattern": "^[a-f0-9]{64}$"
-            },
+
             "review_plan_seed_ref": {
               "type": [
                 "string",
                 "null"
               ]
             },
-            "review_plan_seed_sha256": {
-              "type": [
-                "string",
-                "null"
-              ],
-              "pattern": "^[a-f0-9]{64}$"
+
+            "plan_id": {
+              "type": "string",
+              "minLength": 1,
+              "description": "System-owned original ReviewPlan identity saved with the S7 entry transaction. It locates the original responsibility and is not an author field or quality gate."
             }
           }
         },
         "plan": {
-          "description": "The registered S7 ReviewPlan pointer (L3-S7 \u00a73.2). Claim/assignment content lives in the pinned plan file; the runtime holds identity, hash and status under CAS.",
+          "description": "The original S7 ReviewPlan pointer. Professional content remains in its plan file; Runtime retains identity, path and status. Legacy machine fields are data only.",
           "oneOf": [
             {
               "type": "null"
             },
             {
               "type": "object",
-              "additionalProperties": false,
+              "additionalProperties": true,
               "required": [
                 "plan_id",
                 "path",
-                "sha256",
                 "revision",
-                "review_round",
                 "status",
                 "e2e_coverage_state",
                 "submitted_at"
@@ -433,10 +400,7 @@
                 "path": {
                   "type": "string"
                 },
-                "sha256": {
-                  "type": "string",
-                  "pattern": "^[a-f0-9]{64}$"
-                },
+
                 "revision": {
                   "type": "integer",
                   "minimum": 1
@@ -458,6 +422,7 @@
                 },
                 "e2e_coverage_state": {
                   "enum": [
+                    "",
                     "cold_start",
                     "regression_available",
                     "not_applicable"
@@ -469,14 +434,7 @@
                     "null"
                   ]
                 },
-                "verification_artifact_digest": {
-                  "type": [
-                    "string",
-                    "null"
-                  ],
-                  "pattern": "^[a-f0-9]{64}$",
-                  "description": "sha256 over the workspace's relative-path:file-hash lines at plan registration (E2E cold_start only); the seal/clean close recomputes and rejects drift."
-                },
+
                 "submitted_at": {
                   "type": "string"
                 }
@@ -485,7 +443,7 @@
           ]
         },
         "claims": {
-          "description": "Consumer-maintained disposition projection for the current plan (L3-S7 \u00a73.5 round-level disposition). Written only inside the review-plan / review-result CAS transactions.",
+          "description": "Consumer-maintained disposition projection for the current plan (L3-S7 §3.5 round-level disposition). Written only inside the review-plan / review-result CAS transactions.",
           "type": "object",
           "additionalProperties": {
             "type": "object",
@@ -499,6 +457,7 @@
             "properties": {
               "lens": {
                 "enum": [
+                  "",
                   "delivery",
                   "qa",
                   "e2e"
@@ -506,6 +465,7 @@
               },
               "applicability": {
                 "enum": [
+                  "",
                   "required",
                   "not_applicable"
                 ]
@@ -543,7 +503,7 @@
           "type": "object",
           "additionalProperties": {
             "type": "object",
-            "additionalProperties": false,
+            "additionalProperties": true,
             "required": [
               "lens",
               "claim_ids",
@@ -605,20 +565,13 @@
                 ],
                 "description": "UTC timestamp at which the Assignment entered the explicit S7 blocker state."
               },
-              "artifact_digest": {
-                "type": [
-                  "string",
-                  "null"
-                ],
-                "pattern": "^[a-f0-9]{64}$",
-                "description": "The verification workspace digest the consumed E2E result ran against (L3-S7 \u00a710.1.6)."
-              },
+
               "resource_locks": {
                 "type": [
                   "array",
                   "null"
                 ],
-                "description": "Sorted unique non-empty union of the Assignment's declared locks plus the locks declared on each of its Claims (computed via mergedResourceLocks); consulted for dispatch conflict detection and queueing (L3-S7 \u00a74.5, L4 \u00a76.2). Absent/null when no claim/assignment in this round declares any lock.",
+                "description": "Sorted unique non-empty union of the Assignment's declared locks plus the locks declared on each of its Claims (computed via mergedResourceLocks); consulted for dispatch conflict detection and queueing (L3-S7 §4.5, L4 §6.2). Absent/null when no claim/assignment in this round declares any lock.",
                 "items": {
                   "type": "string",
                   "minLength": 1
@@ -630,69 +583,19 @@
                   "string",
                   "null"
                 ],
-                "description": "Recorded queue-cause identifier when the scheduler queues this Assignment behind a held resource lock; null when the Assignment is ready or already consumed (L3-S7 \u00a74.5)."
+                "description": "Recorded queue-cause identifier when the scheduler queues this Assignment behind a held resource lock; null when the Assignment is ready or already consumed (L3-S7 §4.5)."
+              },
+              "result_verdict": {
+                "enum": [
+                  "pass",
+                  "finding",
+                  "blocked",
+                  "req_change_required",
+                  "release_blocked"
+                ]
               }
             }
           }
-        },
-        "observation_batch": {
-          "description": "The sealed S7 -> S8 handoff pointer (L3-S7 \u00a73.7); null while the round is still discovering.",
-          "oneOf": [
-            {
-              "type": "null"
-            },
-            {
-              "type": "object",
-              "additionalProperties": false,
-              "required": [
-                "batch_id",
-                "path",
-                "sha256",
-                "finding_ids",
-                "drain_policy",
-                "sealed_at"
-              ],
-              "properties": {
-                "batch_id": {
-                  "type": "string"
-                },
-                "path": {
-                  "type": "string"
-                },
-                "sha256": {
-                  "type": "string",
-                  "pattern": "^[a-f0-9]{64}$"
-                },
-                "finding_ids": {
-                  "type": "array",
-                  "items": {
-                    "type": "string"
-                  }
-                },
-                "drain_policy": {
-                  "enum": [
-                    "complete_required_claims",
-                    "immediate_stop"
-                  ]
-                },
-                "sealed_at": {
-                  "type": "string"
-                }
-              }
-            }
-          ]
-        },
-        "investigation_baseline_drift": {
-          "description": "RC-18 S8-H3: the latest baseline-digest drift warning from investigation Case revisions, or null while the Case baseline matches the frozen ReviewPlan subjects. Read-only projection for `runtime investigation status`; the Case artifact's pinned baseline_digest is never rewritten.",
-          "oneOf": [
-            {
-              "type": "null"
-            },
-            {
-              "type": "string",
-              "minLength": 1
-            }
-          ]
         },
         "investigation": {
           "description": "The S8 InvestigationCase intake pointer. The Case artifact is the authority; this runtime field is only its CAS-pinned identity and status projection.",
@@ -702,11 +605,10 @@
             },
             {
               "type": "object",
-              "additionalProperties": false,
+              "additionalProperties": true,
               "required": [
                 "case_id",
                 "path",
-                "sha256",
                 "revision",
                 "status",
                 "source_finding_ids",
@@ -721,10 +623,7 @@
                   "type": "string",
                   "minLength": 1
                 },
-                "sha256": {
-                  "type": "string",
-                  "pattern": "^[a-f0-9]{64}$"
-                },
+
                 "revision": {
                   "type": "integer",
                   "minimum": 1
@@ -786,10 +685,6 @@
                     "minLength": 1
                   }
                 },
-                "observation_batch_id": {
-                  "type": "string",
-                  "minLength": 1
-                },
                 "updated_at": {
                   "type": "string",
                   "minLength": 1
@@ -798,10 +693,7 @@
                   "type": "string",
                   "minLength": 1
                 },
-                "repair_contract_sha256": {
-                  "type": "string",
-                  "pattern": "^[a-f0-9]{64}$"
-                },
+
                 "canonical_case_id": {
                   "type": [
                     "string",
@@ -815,13 +707,6 @@
                     "null"
                   ],
                   "minLength": 1
-                },
-                "canonical_case_sha256": {
-                  "type": [
-                    "string",
-                    "null"
-                  ],
-                  "pattern": "^[a-f0-9]{64}$"
                 }
               }
             }
@@ -835,21 +720,23 @@
             },
             {
               "type": "object",
-              "additionalProperties": false,
+              "additionalProperties": true,
               "required": [
                 "session_id",
                 "case_id",
                 "contract_id",
                 "contract_ref",
-                "contract_sha256",
                 "path",
-                "sha256",
                 "revision",
                 "status",
                 "updated_at",
                 "next_action"
               ],
               "properties": {
+                "questionnaire_root": {
+                  "type": "string",
+                  "minLength": 1
+                },
                 "session_id": {
                   "type": "string",
                   "pattern": "^repair-session-[A-Za-z0-9._-]+$"
@@ -866,18 +753,12 @@
                   "type": "string",
                   "minLength": 1
                 },
-                "contract_sha256": {
-                  "type": "string",
-                  "pattern": "^[a-f0-9]{64}$"
-                },
+
                 "path": {
                   "type": "string",
                   "minLength": 1
                 },
-                "sha256": {
-                  "type": "string",
-                  "pattern": "^[a-f0-9]{64}$"
-                },
+
                 "revision": {
                   "type": "integer",
                   "minimum": 1
@@ -902,43 +783,26 @@
                     "null"
                   ]
                 },
-                "plan_sha256": {
-                  "type": [
-                    "string",
-                    "null"
-                  ],
-                  "pattern": "^[a-f0-9]{64}$"
-                },
+
                 "plan_report_ref": {
                   "type": [
                     "string",
                     "null"
                   ]
                 },
-                "plan_report_sha256": {
-                  "type": [
-                    "string",
-                    "null"
-                  ],
-                  "pattern": "^[a-f0-9]{64}$"
-                },
+
                 "plan_report_refs": {
                   "type": "array",
                   "items": {
                     "type": "object",
-                    "additionalProperties": false,
+                    "additionalProperties": true,
                     "required": [
-                      "path",
-                      "sha256"
+                      "path"
                     ],
                     "properties": {
                       "path": {
                         "type": "string",
                         "minLength": 1
-                      },
-                      "sha256": {
-                        "type": "string",
-                        "pattern": "^[a-f0-9]{64}$"
                       }
                     }
                   },
@@ -964,30 +828,19 @@
                     "null"
                   ]
                 },
-                "result_sha256": {
-                  "type": [
-                    "string",
-                    "null"
-                  ],
-                  "pattern": "^[a-f0-9]{64}$"
-                },
+
                 "result_refs": {
                   "type": "array",
                   "items": {
                     "type": "object",
-                    "additionalProperties": false,
+                    "additionalProperties": true,
                     "required": [
-                      "path",
-                      "sha256"
+                      "path"
                     ],
                     "properties": {
                       "path": {
                         "type": "string",
                         "minLength": 1
-                      },
-                      "sha256": {
-                        "type": "string",
-                        "pattern": "^[a-f0-9]{64}$"
                       }
                     }
                   },
@@ -999,26 +852,14 @@
                     "null"
                   ]
                 },
-                "changeset_sha256": {
-                  "type": [
-                    "string",
-                    "null"
-                  ],
-                  "pattern": "^[a-f0-9]{64}$"
-                },
+
                 "impact_ref": {
                   "type": [
                     "string",
                     "null"
                   ]
                 },
-                "impact_sha256": {
-                  "type": [
-                    "string",
-                    "null"
-                  ],
-                  "pattern": "^[a-f0-9]{64}$"
-                },
+
                 "targeted_reverification_refs": {
                   "type": "array",
                   "items": {
@@ -1031,19 +872,21 @@
                   "type": "array",
                   "items": {
                     "type": "object",
-                    "additionalProperties": false,
+                    "additionalProperties": true,
                     "required": [
-                      "path",
-                      "sha256"
+                      "path"
                     ],
                     "properties": {
                       "path": {
                         "type": "string",
                         "minLength": 1
                       },
-                      "sha256": {
-                        "type": "string",
-                        "pattern": "^[a-f0-9]{64}$"
+
+                      "performing_assignment_id": {
+                        "type": "string"
+                      },
+                      "result": {
+                        "type": "string"
                       }
                     }
                   },
@@ -1055,13 +898,7 @@
                     "null"
                   ]
                 },
-                "handoff_sha256": {
-                  "type": [
-                    "string",
-                    "null"
-                  ],
-                  "pattern": "^[a-f0-9]{64}$"
-                },
+
                 "failure_route": {
                   "type": [
                     "string",
@@ -1103,28 +940,7 @@
                     "null"
                   ]
                 },
-                "review_plan_seed_sha256": {
-                  "type": [
-                    "string",
-                    "null"
-                  ],
-                  "pattern": "^[a-f0-9]{64}$"
-                },
-                "implementation_baseline_digest": {
-                  "type": [
-                    "string",
-                    "null"
-                  ],
-                  "pattern": "^[a-f0-9]{64}$"
-                },
-                "authority_fingerprint": {
-                  "description": "RC-09 (S9-4): repository baseline digest captured when each RepairSession opened, keyed by session id. Repair commits re-verify the live digest against the pinned fingerprint and fail stale on drift.",
-                  "type": "object",
-                  "additionalProperties": {
-                    "type": "string",
-                    "pattern": "^[a-f0-9]{64}$"
-                  }
-                },
+
                 "required_reverification_ids": {
                   "description": "RC-09 (S9-6): targeted reverification ids the ChangeImpact declared as mandatory. Repair handoff is blocked until every id resolves to a committed targeted_reverification artifact.",
                   "type": "array",
@@ -1160,18 +976,15 @@
           "additionalProperties": false,
           "required": [
             "max_attempts_per_bug",
-            "max_same_contract_failures",
-            "max_full_review_rounds"
+            "max_same_contract_failures"
           ],
           "properties": {
             "bound_policy": {
               "type": "object",
-              "additionalProperties": false,
+              "additionalProperties": true,
               "required": [
                 "path",
-                "sha256",
                 "approved_by",
-                "req_sha256",
                 "runtime_id",
                 "baseline_generation"
               ],
@@ -1180,18 +993,12 @@
                   "type": "string",
                   "minLength": 1
                 },
-                "sha256": {
-                  "type": "string",
-                  "pattern": "^[a-f0-9]{64}$"
-                },
+
                 "approved_by": {
                   "type": "string",
                   "minLength": 1
                 },
-                "req_sha256": {
-                  "type": "string",
-                  "pattern": "^[a-f0-9]{64}$"
-                },
+
                 "runtime_id": {
                   "type": "string",
                   "minLength": 1
@@ -1220,81 +1027,14 @@
               "default": 2
             },
             "max_investigation_reentries": {
-              "description": "Maximum consecutive S8 investigate_more route registrations; does not limit actual investigation work. Absent legacy values use the independent S8 default, never the S7 review-round limit.",
+              "description": "Legacy numeric configuration retained for reading issued Runtime data. It does not establish a user constraint, remaining allowance or automatic approval requirement.",
               "type": "integer",
-              "minimum": 1,
-              "default": 5
+              "minimum": 1
             },
             "max_full_review_rounds": {
               "type": "integer",
               "minimum": 1,
-              "default": 5
-            },
-            "last_budget_decision": {
-              "type": [
-                "object",
-                "null"
-              ],
-              "additionalProperties": false,
-              "required": [
-                "decision",
-                "evidence_id",
-                "evidence_path",
-                "review_round",
-                "previous_max_full_review_rounds",
-                "new_max_full_review_rounds",
-                "authorized_by",
-                "reason",
-                "decided_at",
-                "committed_revision"
-              ],
-              "properties": {
-                "decision": {
-                  "enum": [
-                    "increase_budget",
-                    "return_to_governance"
-                  ]
-                },
-                "evidence_id": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "evidence_path": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "review_round": {
-                  "type": "integer",
-                  "minimum": 1
-                },
-                "previous_max_full_review_rounds": {
-                  "type": "integer",
-                  "minimum": 1
-                },
-                "new_max_full_review_rounds": {
-                  "type": [
-                    "integer",
-                    "null"
-                  ],
-                  "minimum": 1
-                },
-                "authorized_by": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "reason": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "decided_at": {
-                  "type": "string",
-                  "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?Z$"
-                },
-                "committed_revision": {
-                  "type": "integer",
-                  "minimum": 1
-                }
-              }
+              "description": "Legacy numeric configuration retained for reading issued Runtime data. It does not establish a user constraint, remaining allowance or automatic approval requirement."
             }
           }
         }
@@ -1312,7 +1052,7 @@
       ],
       "properties": {
         "policy_ref": {
-          "$ref": "#/$defs/fingerprintedReference"
+          "$ref": "#/$defs/frameworkReference"
         },
         "mode": {
           "enum": [
@@ -1382,14 +1122,14 @@
           }
         },
         "findings": {
-          "description": "Immutable S7 Finding index rows (L3-S7 \u00a73.6). Full content lives in the pinned finding file; rows are never mutated after creation.",
+          "description": "Immutable S7 Finding index rows (L3-S7 §3.6). Full content lives in the pinned finding file; rows are never mutated after creation.",
           "type": "array",
           "items": {
             "$ref": "#/$defs/findingEntity"
           }
         },
         "finding_supplements": {
-          "description": "Append-only FindingSupplement index rows (L3-S7 \u00a73.6, L3-S8 \u00a72.2). Each row is the control-plane pointer to one persisted supplement artifact hanging under an immutable Finding; rows are never mutated after creation. Written exclusively by `runtime finding-supplement` in the main runtime CAS transaction.",
+          "description": "Append-only FindingSupplement index rows (L3-S7 §3.6, L3-S8 §2.2). Each row is the control-plane pointer to one persisted supplement artifact hanging under an immutable Finding; rows are never mutated after creation. Written exclusively by `runtime finding-supplement` in the main runtime CAS transaction.",
           "type": "array",
           "items": {
             "$ref": "#/$defs/findingSupplementEntity"
@@ -1611,13 +1351,12 @@
         },
         "quality_gate": {
           "type": "object",
-          "additionalProperties": false,
+          "additionalProperties": true,
           "required": [
             "status",
             "gate_id",
             "candidate_transition",
             "observed_revision",
-            "fingerprint",
             "missing",
             "evidence_refs",
             "transition_committed",
@@ -1643,9 +1382,7 @@
               "type": "integer",
               "minimum": 0
             },
-            "fingerprint": {
-              "type": "string"
-            },
+
             "missing": {
               "type": "array",
               "items": {
@@ -1670,11 +1407,10 @@
     },
     "changeRecord": {
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "id",
         "req_ref",
-        "req_sha256",
         "summary",
         "class",
         "risk",
@@ -1695,10 +1431,7 @@
           "type": "string",
           "minLength": 1
         },
-        "req_sha256": {
-          "type": "string",
-          "pattern": "^[a-f0-9]{64}$"
-        },
+
         "summary": {
           "type": "string",
           "minLength": 1
@@ -1941,28 +1674,24 @@
       "additionalProperties": false,
       "required": [
         "branch",
-        "base_sha",
         "integration_target"
       ],
       "properties": {
         "branch": {
           "type": "string"
         },
-        "base_sha": {
-          "type": "string"
-        },
+        "base_sha": {},
         "integration_target": {
           "type": "string"
         }
       }
     },
-    "fingerprintedReference": {
+    "frameworkReference": {
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "path",
-        "version",
-        "sha256"
+        "version"
       ],
       "properties": {
         "path": {
@@ -1972,20 +1701,15 @@
         "version": {
           "type": "string",
           "minLength": 1
-        },
-        "sha256": {
-          "type": "string",
-          "pattern": "^[a-f0-9]{64}$"
         }
       }
     },
     "boundReq": {
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "path",
         "version",
-        "sha256",
         "id",
         "status",
         "approved_by",
@@ -1998,8 +1722,7 @@
           "required": [
             "project_root",
             "dev_branch",
-            "release_upstream",
-            "bound_commit"
+            "release_upstream"
           ],
           "properties": {
             "project_root": {
@@ -2013,10 +1736,6 @@
             "release_upstream": {
               "type": "string",
               "minLength": 1
-            },
-            "bound_commit": {
-              "type": "string",
-              "minLength": 1
             }
           }
         },
@@ -2028,10 +1747,7 @@
           "type": "string",
           "minLength": 1
         },
-        "sha256": {
-          "type": "string",
-          "pattern": "^[a-f0-9]{64}$"
-        },
+
         "id": {
           "type": "string",
           "pattern": "^REQ-[0-9]{3,}$"
@@ -2067,7 +1783,7 @@
     },
     "bindingReceipt": {
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "event_id",
         "transition_id",
@@ -2076,8 +1792,6 @@
         "occurred_at",
         "source_runtime_id",
         "source_revision",
-        "source_state_sha256",
-        "source_journal_sha256",
         "target_runtime_id",
         "target_revision"
       ],
@@ -2110,14 +1824,6 @@
           "type": "integer",
           "minimum": 0
         },
-        "source_state_sha256": {
-          "type": "string",
-          "pattern": "^[a-f0-9]{64}$"
-        },
-        "source_journal_sha256": {
-          "type": "string",
-          "pattern": "^[a-f0-9]{64}$"
-        },
         "target_runtime_id": {
           "type": "string",
           "pattern": "^loop-REQ-[0-9]{3,}$"
@@ -2130,13 +1836,12 @@
     },
     "documentReference": {
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "id",
         "kind",
         "path",
         "version",
-        "sha256",
         "status",
         "generation"
       ],
@@ -2172,10 +1877,7 @@
           "type": "string",
           "minLength": 1
         },
-        "sha256": {
-          "type": "string",
-          "pattern": "^[a-f0-9]{64}$"
-        },
+
         "status": {
           "type": "string",
           "minLength": 1
@@ -2186,7 +1888,7 @@
         },
         "author_agent_id": {
           "type": "string",
-          "description": "Registering actor \u2014 consumed by the S5 independence check (reviewer must not be an author)."
+          "description": "Registering actor — consumed by the S5 independence check (reviewer must not be an author)."
         },
         "registered_at": {
           "type": "string",
@@ -2332,12 +2034,11 @@
     },
     "task": {
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "id",
         "state",
         "path",
-        "sha256",
         "owner_agent_ids"
       ],
       "properties": {
@@ -2361,10 +2062,7 @@
           "type": "string",
           "minLength": 1
         },
-        "sha256": {
-          "type": "string",
-          "pattern": "^[a-f0-9]{64}$"
-        },
+
         "owner_agent_ids": {
           "type": "array",
           "uniqueItems": true,
@@ -2404,18 +2102,16 @@
     },
     "findingEntity": {
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "finding_id",
         "path",
-        "sha256",
         "claim_id",
         "assignment_id",
         "lens",
         "severity",
         "observation_mode",
         "original_finder",
-        "review_round",
         "created_at"
       ],
       "properties": {
@@ -2427,10 +2123,7 @@
           "type": "string",
           "minLength": 1
         },
-        "sha256": {
-          "type": "string",
-          "pattern": "^[a-f0-9]{64}$"
-        },
+
         "claim_id": {
           "type": "string"
         },
@@ -2469,24 +2162,29 @@
           "type": "string"
         },
         "review_round": {
-          "type": "integer",
+          "type": [
+            "integer",
+            "null"
+          ],
           "minimum": 1
         },
         "created_at": {
           "type": "string"
+        },
+        "review_plan_id": {
+          "type": "string",
+          "minLength": 1
         }
       }
     },
     "findingSupplementEntity": {
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "supplement_id",
         "supplements_finding_id",
         "author",
         "path",
-        "sha256",
-        "review_round",
         "baseline_generation",
         "created_at",
         "appended_at"
@@ -2508,18 +2206,18 @@
         "authorized_by": {
           "type": "string",
           "minLength": 1,
-          "description": "Scheduler identity that authorized a replacement finder when author != the Finding's original_finder (L3-S8 \u00a72.2). Absent when the original finder authored the supplement."
+          "description": "Scheduler identity that authorized a replacement finder when author != the Finding's original_finder (L3-S8 §2.2). Absent when the original finder authored the supplement."
         },
         "path": {
           "type": "string",
           "minLength": 1
         },
-        "sha256": {
-          "type": "string",
-          "pattern": "^[a-f0-9]{64}$"
-        },
+
         "review_round": {
-          "type": "integer",
+          "type": [
+            "integer",
+            "null"
+          ],
           "minimum": 1
         },
         "baseline_generation": {
@@ -2532,13 +2230,17 @@
         },
         "discriminator": {
           "type": "string",
-          "description": "The S8 discriminator this observation answers (L3-S8 \u00a72.1/\u00a78). Present exactly on discriminator-bound follow-up observations."
+          "description": "The S8 discriminator this observation answers (L3-S8 §2.1/§8). Present exactly on discriminator-bound follow-up observations."
         },
         "created_at": {
           "type": "string"
         },
         "appended_at": {
           "type": "string"
+        },
+        "review_plan_id": {
+          "type": "string",
+          "minLength": 1
         }
       }
     },
@@ -2587,7 +2289,7 @@
         },
         "blocking": {
           "type": "boolean",
-          "description": "Explicit business-blocking marker (RC-02, L3-S7 \u00a710.1). P0 BUGs are implicitly blocking=true; a non-P0 BUG with blocking=true blocks the clean round exactly like a P0 \u2014 blocking is a business judgment, never a severity synonym."
+          "description": "Explicit business-blocking marker (RC-02, L3-S7 §10.1). P0 BUGs are implicitly blocking=true; a non-P0 BUG with blocking=true blocks the clean round exactly like a P0 — blocking is a business judgment, never a severity synonym."
         },
         "attempt_count": {
           "type": "integer",
@@ -2649,7 +2351,7 @@
     },
     "team": {
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "id",
         "platform_team_id",
@@ -2657,8 +2359,7 @@
         "status",
         "manifest_ref",
         "responsibility_ids",
-        "agent_ids",
-        "review_round"
+        "agent_ids"
       ],
       "properties": {
         "id": {
@@ -2706,19 +2407,12 @@
           "items": {
             "type": "string"
           }
-        },
-        "review_round": {
-          "type": [
-            "integer",
-            "null"
-          ],
-          "minimum": 1
         }
       }
     },
     "evidence": {
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "allOf": [
         {
           "if": {
@@ -2778,10 +2472,8 @@
         "id",
         "kind",
         "path",
-        "sha256",
         "status",
         "baseline_generation",
-        "review_round",
         "produced_by",
         "invalidated_by",
         "invalidation_rule",
@@ -2821,7 +2513,6 @@
             "review_result",
             "finding",
             "finding_supplement",
-            "observation_batch",
             "review_blocker"
           ]
         },
@@ -2829,10 +2520,7 @@
           "type": "string",
           "minLength": 1
         },
-        "sha256": {
-          "type": "string",
-          "pattern": "^[a-f0-9]{64}$"
-        },
+
         "status": {
           "enum": [
             "valid",
@@ -2843,13 +2531,6 @@
         "baseline_generation": {
           "type": "integer",
           "minimum": 0
-        },
-        "review_round": {
-          "type": [
-            "integer",
-            "null"
-          ],
-          "minimum": 1
         },
         "produced_by": {
           "type": "array",
@@ -2906,6 +2587,10 @@
           "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?Z$"
         },
         "dimension": {
+          "type": "string",
+          "minLength": 1
+        },
+        "review_plan_id": {
           "type": "string",
           "minLength": 1
         }
@@ -2965,16 +2650,14 @@
     },
     "pause": {
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "from_state",
         "from_phase",
         "phase_revision",
         "baseline_generation",
-        "review_round",
         "reason",
         "required_human_action",
-        "document_fingerprints",
         "paused_at"
       ],
       "properties": {
@@ -2996,10 +2679,6 @@
           "type": "integer",
           "minimum": 0
         },
-        "review_round": {
-          "type": "integer",
-          "minimum": 0
-        },
         "reason": {
           "type": "string",
           "minLength": 1
@@ -3008,15 +2687,14 @@
           "type": "string",
           "minLength": 1
         },
-        "document_fingerprints": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/fingerprintedReference"
-          }
-        },
+
         "paused_at": {
           "type": "string",
           "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?Z$"
+        },
+        "review_plan_id": {
+          "type": "string",
+          "minLength": 1
         }
       }
     },

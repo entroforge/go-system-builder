@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -108,8 +107,7 @@ func runWorktreeCreate(args []string, stdout, stderr io.Writer) int {
 				fmt.Fprintln(stderr, "existing worktree coordinates differ or worktree is missing; preserve and reconcile before reuse")
 				return 1
 			}
-			fmt.Fprintln(stdout, string(data))
-			return 0
+			return encodeJSON(stdout, map[string]any{"assignment_id": *id, "worktree_path": path, "branch": prior["branch"], "target_branch": prior["target_branch"]})
 		}
 	}
 	if assigned.WorktreePath != "" {
@@ -135,7 +133,7 @@ func runWorktreeCreate(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "create worktree: %v\n%s", e, out)
 		return 1
 	}
-	coordinates := map[string]any{"assignment_id": *id, "worktree_path": target, "branch": *branch, "target_branch": strings.TrimPrefix(ref, "refs/heads/"), "base_commit": commit}
+	coordinates := map[string]any{"assignment_id": *id, "worktree_path": target, "branch": *branch, "target_branch": strings.TrimPrefix(ref, "refs/heads/")}
 	for key, value := range coordinates {
 		prior[key] = value
 	}
@@ -148,8 +146,7 @@ func runWorktreeCreate(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "worktree created; coordinates pending:", target, e)
 		return 1
 	}
-	fmt.Fprintln(stdout, string(data))
-	return 0
+	return encodeJSON(stdout, coordinates)
 }
 
 // reminderDelivery computes a per-session, fact-deduplicated soft message.
@@ -198,7 +195,7 @@ func worktreeIntegrationFact(a hookctx.AssignmentContext) string {
 
 func reminderDelivery(root string, input policy.Input) (string, func()) {
 	noop := func() {}
-	if input.EffectiveAgentID() != "" {
+	if input.Event != "SessionStart" || input.EffectiveAgentID() != "" {
 		return "", noop
 	}
 	snap, e := runtime.NewStore(filepath.Join(root, ".claude/loop-state.json"), filepath.Join(root, ".claude/loop-events.jsonl")).Snapshot()
@@ -271,30 +268,12 @@ func reminderDelivery(root string, input policy.Input) (string, func()) {
 	sort.Strings(facts)
 
 	if len(facts) == 0 {
-		key := fmt.Sprintf("%x", sha256.Sum256([]byte(input.SessionID)))
-		_ = os.Remove(filepath.Join(root, ".claude/worktree-reminders", key+".txt"))
 		return "", noop
 	}
 	message := fmt.Sprintf("WORKTREE REMINDER (advisory) REQ=%v development=%s\n", bound["id"], dev) + strings.Join(facts, "\n")
-	key := fmt.Sprintf("%x", sha256.Sum256([]byte(input.SessionID)))
-	file := filepath.Join(root, ".claude/worktree-reminders", key+".txt")
-	if data, e := os.ReadFile(file); e == nil && string(data) == message {
-		return "", noop
-	}
-	return message, func() {
-		if os.MkdirAll(filepath.Dir(file), 0700) == nil {
-			if f, err := os.CreateTemp(filepath.Dir(file), ".delivery-"); err == nil {
-				name := f.Name()
-				defer os.Remove(name)
-				_, err = f.WriteString(message)
-				closeErr := f.Close()
-				if err == nil && closeErr == nil {
-					_ = os.Rename(name, file)
-				}
-			}
-		}
-	}
+	return message, noop
 }
+
 func runWorktreePostTool(root string, input policy.Input, stdout, stderr io.Writer) int {
 	// Reports are observed in the worker context. Never mistake launch/closing
 	// text for a completed assignment or mutate integration state here.
@@ -373,12 +352,7 @@ func runWorkspaceBind(args []string, stdout, stderr io.Writer) int {
 	}
 	occurredAt := time.Now().UTC()
 	runtimeID, _ := snap.State["runtime_id"].(string)
-	bindingBytes, e := json.Marshal(binding.Map())
-	if e != nil {
-		fmt.Fprintln(stderr, e)
-		return 1
-	}
-	operation := fmt.Sprintf("%x", sha256.Sum256([]byte(runtimeID+"\x00"+occurredAt.Format(time.RFC3339Nano)+"\x00"+string(bindingBytes))))
+	operation := fmt.Sprintf("%d-%d", snap.Revision+1, occurredAt.UnixNano())
 	next, e := writer.UpdateCurrent(runtime.Mutation{EventID: "evt-req-workspace-" + operation, IdempotencyKey: "runtime:req-workspace:" + runtimeID + ":" + operation, RuntimeID: runtimeID, TransitionID: "REQ-WORKSPACE-BIND", Event: "req_workspace_bound", Actor: "user", OccurredAt: occurredAt, Apply: func(state map[string]any) error {
 		bound, _ := state["bound_req"].(map[string]any)
 		if bound == nil {
@@ -389,14 +363,9 @@ func runWorkspaceBind(args []string, stdout, stderr io.Writer) int {
 			return e
 		}
 		path, _ := bound["path"].(string)
-		data, e := view.ReadFile(path)
-		if e != nil {
+		if _, e := view.ReadFile(path); e != nil {
 			return e
 		}
-		if fmt.Sprintf("%x", sha256.Sum256(data)) != bound["sha256"] {
-			return fmt.Errorf("declared branch does not contain the bound REQ bytes; use the amendment path for a changed baseline")
-		}
-		binding.BoundCommit = view.Commit
 		if e := view.Verify(); e != nil {
 			return e
 		}

@@ -50,8 +50,11 @@ func TestAuditSharedModelCLIAndPinnedGitTree(t *testing.T) {
 	}
 	auditGit(t, root, "add", "docs/architecture/data-model/request.json")
 	auditGit(t, root, "commit", "-qm", "dirty example")
-	if err := view.Verify(); err == nil {
-		t.Fatal("formal Git view accepted a moved development ref")
+	if err := view.Verify(); err != nil {
+		t.Fatalf("moving development branch blocked the source view: %v", err)
+	}
+	if result, err := semantic.ContractsCheckWithFiles(root, view, "REQ-001"); err != nil || len(result.Problems) == 0 {
+		t.Fatalf("current branch did not expose its malformed example: err=%v result=%+v", err, result)
 	}
 }
 

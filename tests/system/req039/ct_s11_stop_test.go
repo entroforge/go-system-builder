@@ -19,7 +19,7 @@ func TestCT03915_S11TerminalStopSystem(t *testing.T) {
 	before := req039fixtures.ReadState(t, root)
 	beforeLC, beforePh := req039fixtures.Lifecycle(before)
 
-	body := req039fixtures.PreToolUseBody("session-ct-039-15-sys", "Bash", map[string]any{"command": "ls"})
+	body := req039fixtures.MainPreToolUseBody(root, "session-ct-039-15-sys", "Bash", map[string]any{"command": "ls"})
 	code, stdout, stderr := runHookWithRunner(t, runner, root, "PreToolUse", body)
 	if code != 0 {
 		t.Fatalf("PreToolUse at S11 failed: code=%d stderr=%s", code, stderr)

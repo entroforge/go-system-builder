@@ -2,82 +2,55 @@ package assignmentresult
 
 import (
 	"encoding/json"
-	"fmt"
+	"strings"
 	"testing"
 
-	"github.com/entroforge/go-system-builder/internal/checkexec"
+	"github.com/entroforge/go-system-builder/internal/assignmentrecord"
 )
 
-func TestMainFactsRequireEveryOriginalCheckAndActualReceiptBytes(t *testing.T) {
-	state, record, resultRef, files := acceptedFixture(t)
-	read := func(ref string) ([]byte, error) {
-		data, ok := files[ref]
-		if !ok {
-			return nil, fmt.Errorf("missing %s", ref)
-		}
-		return data, nil
-	}
-	result, err := LoadAccepted(state, record, resultRef, read)
-	if err != nil {
-		t.Fatal(err)
-	}
-	paths := []string{"internal/pkg/handler.go"}
-	diffSHA, _ := ChangedPathsDigest(paths)
-	mainRoot := "/original-main"
-	logRef := "/original-main/.claude/evidence/checks/output.log"
-	receiptRef := "/original-main/.claude/evidence/checks/receipt.json"
-	head := "actual-tested-head"
-	log := []byte("real fixture output bytes")
-	receipt := map[string]any{"command": record.RequiredChecks[0], "status": "pass", "exit_code": 0, "cwd": mainRoot, "head": head, "head_before": head, "head_after": head, "output": logRef, "check_binding": checkexec.Binding{RuntimeID: record.RuntimeID, Generation: record.BaselineGeneration, AssignmentID: record.AssignmentID, Owner: "Main", Responsibility: "main_required_integration"}}
-	body, _ := json.Marshal(receipt)
-	files[logRef] = log
-	files[receiptRef] = body
-	sha, _ := record.Digest()
-	facts := MainFacts{Binding: ResultBinding{AssignmentRecord: record.Reference(), AssignmentRecordSHA256: sha, ResultPath: resultRef, ResultSHA256: digestBytes(files[resultRef]), ResultRevision: result.ResultRevision, AnswerDigest: result.AnswerDigest}, MainRoot: mainRoot, SourceHead: "source", MergeBase: "base", TestedHead: head, TargetBranch: "development", MergeCommit: "non-squash-merge", ChangedPaths: paths, ChangedPathsSHA256: diffSHA, Checks: []MainCheckFact{{CheckIndex: 0, Command: record.RequiredChecks[0], Status: "pass", ReceiptRef: receiptRef, ReceiptSHA256: digestBytes(body), LogRef: logRef, LogSHA256: digestBytes(log), TestedHead: head}}}
-	validate := func(value MainFacts) error {
-		return ValidateMainFacts(record, result, resultRef, digestBytes(files[resultRef]), value, read)
+func TestMainFactsValidateActualPathsAndChecksWithoutDigest(t *testing.T) {
+	record := assignmentrecord.Record{RuntimeID: "loop-test", BaselineGeneration: 1, AssignmentID: "assignment-test", Revision: 1, EffectiveWritePaths: []string{"internal/pkg"}, RequiredChecks: []string{"go test ./internal/pkg"}}
+	result := AcceptedResult{AssignmentRecord: record.Reference(), ResultRevision: 1}
+	facts := MainFacts{Binding: ResultBinding{AssignmentRecord: record.Reference(), ResultPath: ".claude/evidence/result.json", ResultRevision: 1}, MainRoot: "/actual-main", TargetBranch: "development", ChangedPaths: []string{"internal/pkg/a.go"}, Checks: []MainCheckFact{{CheckIndex: 0, Command: "go test ./internal/pkg", Status: "pass"}}}
+	validate := func(f MainFacts) error {
+		return ValidateMainFacts(record, result, facts.Binding.ResultPath, f)
 	}
 	if err := validate(facts); err != nil {
 		t.Fatal(err)
 	}
-	missing := facts
-	missing.Checks = nil
-	if err := validate(missing); err == nil {
-		t.Fatal("missing full RequiredCheck coverage accepted")
-	}
-	for _, field := range []string{"command", "head_before", "exit_code", "check_binding", "output"} {
-		old := receipt[field]
-		delete(receipt, field)
-		files[receiptRef], _ = json.Marshal(receipt)
-		invalid := facts
-		invalid.Checks = append([]MainCheckFact{}, facts.Checks...)
-		invalid.Checks[0].ReceiptSHA256 = digestBytes(files[receiptRef])
-		if err := validate(invalid); err == nil {
-			t.Fatalf("missing %s accepted", field)
-		}
-		receipt[field] = old
-		files[receiptRef] = body
-	}
-	files[logRef] = []byte("changed log")
-	if err := validate(facts); err == nil {
-		t.Fatal("changed actual log accepted")
-	}
-	files[logRef] = log
 	invalid := facts
 	invalid.ChangedPaths = []string{"internal/other.go"}
-	invalid.ChangedPathsSHA256, _ = ChangedPathsDigest(invalid.ChangedPaths)
 	if err := validate(invalid); err == nil {
-		t.Fatal("actual out-of-scope Git path accepted")
+		t.Fatal("different out-of-scope actual path accepted")
+	}
+	invalid = facts
+	invalid.Checks = nil
+	if err := validate(invalid); err == nil {
+		t.Fatal("missing actual Main check accepted")
+	}
+	invalid = facts
+	invalid.Binding.ResultRevision = 2
+	if err := validate(invalid); err == nil {
+		t.Fatal("another accepted Result revision reused the checkpoint")
+	}
+	data, err := json.Marshal(facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"sha256", "digest", "source_head", "tested_head", "merge_commit", "merge_base"} {
+		if strings.Contains(string(data), forbidden) {
+			t.Fatalf("new facts contain %s: %s", forbidden, data)
+		}
 	}
 }
 
-func TestGitChangedPathDigestPreservesWhitespaceAndRejectsAmbiguousSets(t *testing.T) {
-	paths, sha, err := CanonicalChangedPaths([]string{"internal/pkg/with\nnewline.go", "internal/pkg/with space.go"})
-	if err != nil || len(paths) != 2 || sha == "" {
-		t.Fatalf("Git paths=%v sha=%s err=%v", paths, sha, err)
+func TestGitChangedPathsPreserveWhitespaceAndRejectAmbiguousSets(t *testing.T) {
+	paths, err := CanonicalChangedPaths([]string{"internal/pkg/with\nnewline.go", "internal/pkg/with space.go"})
+	if err != nil || len(paths) != 2 {
+		t.Fatalf("Git paths=%v err=%v", paths, err)
 	}
 	for _, invalid := range [][]string{nil, {"../escape"}, {"b", "a"}, {"a", "a"}, {"/absolute"}} {
-		if _, err := ChangedPathsDigest(invalid); err == nil {
+		if err := ValidateChangedPaths(invalid); err == nil {
 			t.Fatalf("invalid actual path set accepted: %v", invalid)
 		}
 	}

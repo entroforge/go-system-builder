@@ -1,22 +1,24 @@
 package cli
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
-	"reflect"
+	"strings"
 	"time"
 
 	"github.com/entroforge/go-system-builder/internal/metrics"
 	"github.com/entroforge/go-system-builder/internal/policy"
+	"github.com/entroforge/go-system-builder/internal/review"
 	"github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/submission"
 	"github.com/entroforge/go-system-builder/internal/workpacket"
 	"github.com/entroforge/go-system-builder/internal/workspace"
-	"github.com/entroforge/go-system-builder/internal/workstate"
 )
 
 func nativeReviewStage(state map[string]any) string {
@@ -29,11 +31,22 @@ func nativeReviewStage(state map[string]any) string {
 		return "S5"
 	case "verification":
 		return "S7"
+	case "acceptance":
+		if stringValue(mapFieldCLI(mapFieldCLI(state, "review"), "plan")["status"]) == "clean" {
+			return "S7" // Original accepted responsibility may still owe S10 materials.
+		}
+		return "S8" // Original Investigator work may still be in flight.
 	case "bug_resolution":
-		if life["phase"] == "investigation" {
+		if life["phase"] == "investigation" || s9ProfessionalPhase(stringValue(life["phase"])) {
 			return "S8"
 		}
+	case "release_audit", "awaiting_human_release", "release_authorized":
+		return "S8" // Retain already issued professional responsibilities at S11.
 	}
+	if stringValue(mapFieldCLI(mapFieldCLI(state, "review"), "plan")["status"]) == "observation_sealed" {
+		return "S7"
+	}
+
 	return ""
 }
 
@@ -41,47 +54,81 @@ func nativeReviewStage(state map[string]any) string {
 // Original packets and domain consumers own all responsibility and result facts;
 // there is no native actor registry, launcher, queue, activation or new Result.
 func nativeReviewHook(root string, in policy.Input, out, diagnostic io.Writer) (bool, int) {
+	return nativeReviewHookStage(root, in, out, diagnostic, "")
+}
+
+func nativeReviewHookStage(root string, in policy.Input, out, diagnostic io.Writer, issuedStage string) (bool, int) {
 	snap, err := nativeRoutingSnapshot(root, in)
 	if err != nil {
 		return false, 0
 	}
 	stage := nativeReviewStage(snap.State)
+	if issuedStage != "" {
+		stage = issuedStage
+	}
 	if stage == "" {
 		return false, 0
 	}
-	ordinaryS7 := stage == "S7" && (in.Event == "PreToolUse" || in.Event == "PostToolUse")
+	ordinaryReview := (stage == "S7" || stage == "S8") && (in.Event == "PreToolUse" || in.Event == "PostToolUse")
 	if in.AgentID == "Main" || in.AgentID == "" {
 		if in.Event == "PostToolUse" && (in.ToolName == "Agent" || in.ToolName == "Task") {
+			life := mapFieldCLI(snap.State, "lifecycle")
+			if stage != "S5" && life["state"] != "verification" && (life["state"] != "bug_resolution" || life["phase"] != "investigation") {
+				return false, 0
+			}
 			return true, 0
 		}
 		return false, 0
 	}
-	if prior := contextAgent(snap.State, in.AgentID); stringValue(prior["activation_ref"]) != "" {
-		return false, 0 // Explicitly activated legacy responsibility, not a new prerequisite.
-	}
-	// A frozen independently installed session keeps its recorded recovery.
-	for _, raw := range mapFieldCLI(mapFieldCLI(snap.State, "workspace"), "executions") {
-		e, _ := raw.(map[string]any)
-		if e["agent_id"] == in.AgentID && stringValue(e["bootstrap_sha256"]) != "" {
+	// S5 retains its document-review routing. S7/S8 always identify an
+	// original responsibility by the same exact task and answer references.
+	if stage == "S5" {
+		// A registered activation belongs to an already issued legacy
+		// responsibility, including its pre-staged reading/PLAN checkpoint.
+		// Preserve that route even before activation_revision exists. Fresh
+		// native S5 responsibilities do not register an activation_ref.
+		prior := contextAgent(snap.State, in.AgentID)
+		if stringValue(prior["activation_ref"]) != "" {
 			return false, 0
 		}
+		mode := stringValue(prior["dispatch_mode"])
+		if mode != "" && mode != "plan_checkpoint" && mode != "one_shot" {
+			return false, 0
+		}
+		for _, raw := range mapFieldCLI(mapFieldCLI(snap.State, "workspace"), "executions") {
+			e, _ := raw.(map[string]any)
+			if e["agent_id"] == in.AgentID {
+				return false, 0
+			}
+		}
 	}
-	if ordinaryS7 && in.Event == "PostToolUse" {
+	if ordinaryReview && in.Event == "PostToolUse" {
 		failed, _ := in.ToolResponse["is_error"].(bool)
 		if in.Error != "" || failed {
+			life := mapFieldCLI(snap.State, "lifecycle")
+			if stage == "S8" && (life["state"] != "bug_resolution" || life["phase"] != "investigation") {
+				return false, 0
+			}
 			return true, 0
 		}
 	}
-	if ordinaryS7 {
+	if ordinaryReview {
 		// Real ordinary payloads point transcript_path at Main's session. Only
 		// this actor's verified sidechain transcript can identify its task.
 		child, ok := nativeChildTranscript(in)
 		if !ok {
-			return true, 0
+			// Without this Worker's task, this receiver cannot claim an event
+			// that may belong to another issued professional responsibility.
+			return false, 0
 		}
 		in.AgentTranscriptPath = child
 	}
-	if in.Event != "SubagentStart" && in.Event != "SubagentStop" && !ordinaryS7 {
+	if in.Event != "SubagentStart" && in.Event != "SubagentStop" && !ordinaryReview {
+		// S7/S8 do not consume other platform events: the original S9 and
+		// general Hook routes still own their own feedback and lifecycle.
+		if stage != "S5" {
+			return false, 0
+		}
 		return true, 0
 	}
 	if engine, err := policy.Load(filepath.Join(root, "docs/control/hook-policy.json")); err == nil {
@@ -94,26 +141,32 @@ func nativeReviewHook(root string, in policy.Input, out, diagnostic io.Writer) (
 			}
 		}()
 	}
-	if in.Event == "SubagentStart" && stage != "S7" {
+	if in.Event == "SubagentStart" && stage == "S5" {
 		_ = json.NewEncoder(out).Encode(map[string]any{"hookSpecificOutput": map[string]any{"hookEventName": in.Event, "additionalContext": stage + " native professional work: follow the exact original questionnaire view and answer references in Main's task prompt. Read its actual frozen subjects, perform your independent review/investigation and save the professional answer at the supplied path. Return that exact reference; SubagentStop calls the original consumer. Ordinary tools do not activate or receive work. Claude Code owns execution/resume; no Team, platform ID lookup, workspace launcher or generic report is required. Real domain approval and independence remain. Unrelated native work follows its own task; do not infer a formal responsibility from your role."}})
 		return true, 0
 	}
-	type candidate struct {
-		owner, answer, source string
-		packet, view          string
-		refs                  []string
-		err                   error
-		diagnosticOnly        bool
-	}
-	var candidates []candidate
+	var candidates []nativeReviewCandidate
 	var sourceErr error
 	selectAnswer := func(id, assignment, view, path string, generation int, runtimeID string, aliases ...string) {
 		actual, err := questionnaireSourceRoot(root, snap.State, assignment, id, runtimeID, generation)
 		refs := append([]string{filepath.Join(root, view), filepath.Join(root, path)}, aliases...)
+		taskRefs := []string{filepath.Join(root, view)}
 		if err == nil {
 			refs = append(refs, filepath.Join(actual, view), filepath.Join(actual, path))
+			taskRefs = append(taskRefs, filepath.Join(actual, view))
 		}
-		candidates = append(candidates, candidate{owner: id, answer: filepath.Join(actual, path), source: actual, refs: refs, err: err})
+		candidates = append(candidates, nativeReviewCandidate{view: filepath.Join(actual, view), stage: stage, owner: id, answer: filepath.Join(actual, path), source: actual, refs: refs, taskRefs: taskRefs, err: err})
+	}
+	selectReviewAnswer := func(p runtime.ReviewResultPacketIndex) {
+		packet := workpacket.ReviewResultPacket{ID: p.ID, Binding: p.Binding, AnswerPath: p.AnswerPath, ViewPath: p.ViewPath}
+		source, err := review.IssuedResultSourceRoot(root, snap.State, packet, p.Reception)
+		refs := []string{p.ViewPath, p.AnswerPath, filepath.Join(root, p.ViewPath), filepath.Join(root, p.AnswerPath)}
+		taskRefs := []string{p.ViewPath, filepath.Join(root, p.ViewPath)}
+		if source != "" {
+			refs = append(refs, filepath.Join(source, p.ViewPath), filepath.Join(source, p.AnswerPath))
+			taskRefs = append(taskRefs, filepath.Join(source, p.ViewPath))
+		}
+		candidates = append(candidates, nativeReviewCandidate{owner: p.Binding.OwnerAgentID, answer: filepath.Join(source, p.AnswerPath), source: source, packet: p.ID, view: filepath.Join(source, p.ViewPath), stage: "S7", assignment: p.Binding.AssignmentID, claims: p.Binding.ClaimIDs, refs: refs, taskRefs: taskRefs, err: err})
 	}
 	switch stage {
 	case "S5":
@@ -154,33 +207,28 @@ func nativeReviewHook(root string, in policy.Input, out, diagnostic io.Writer) (
 				candidates[len(candidates)-1].answer, candidates[len(candidates)-1].source = frozenAnswer, frozenSource
 			}
 		}
-	case "S7":
-		packets, err := runtime.ProjectCurrentReviewResultPacketIndex(snap.State, "")
-		if err != nil {
+	case "S7", "S8":
+		// Already issued Reviewer and Investigator responsibilities can overlap
+		// across a stage transition. Neither candidate reads another answer.
+		packets, err := runtime.ProjectIssuedReviewResultPacketIndex(snap.State, "")
+		if err != nil && stage == "S7" {
 			message := "S7 current responsibility index is unavailable; Main must restore the original Runtime index before answer observation: " + nativeFailureDetail(err)
 			fmt.Fprintln(diagnostic, message)
 			_ = json.NewEncoder(out).Encode(map[string]any{"hookSpecificOutput": map[string]any{"hookEventName": in.Event, "additionalContext": message}})
 			return true, 0
 		}
-		for _, p := range packets {
-			row := mapFieldCLI(mapFieldCLI(snap.State, "review"), "assignments")[p.Binding.AssignmentID]
-			assignment, _ := row.(map[string]any)
-			if in.Event == "SubagentStart" && workstate.ReviewAssignmentActivity(assignment) == "consumed" {
-				continue // Reception history is not a new professional task.
-			}
-			selectAnswer(p.Binding.OwnerAgentID, p.Binding.AssignmentID, p.ViewPath, p.AnswerPath, p.Binding.BaselineGeneration, p.Binding.RuntimeID)
-			candidates[len(candidates)-1].packet = p.ID
-			candidates[len(candidates)-1].view = filepath.Join(root, p.ViewPath)
-			if candidates[len(candidates)-1].source != "" {
-				candidates[len(candidates)-1].view = filepath.Join(candidates[len(candidates)-1].source, p.ViewPath)
-			}
-			if candidates[len(candidates)-1].err != nil {
-				// Report the exact issued reference even when its execution source
-				// cannot be resolved. The source error still prevents reception.
-				candidates[len(candidates)-1].answer = filepath.Join(root, p.AnswerPath)
+		if err == nil {
+			for _, p := range packets {
+				if in.Event == "SubagentStart" && stage == "S7" {
+					packet := workpacket.ReviewResultPacket{ID: p.ID, Binding: p.Binding}
+					if p.Reception["receipt"] != nil && p.Reception["work_complete"] == true || review.IssuedResultWorkComplete(snap.State, packet) {
+						continue
+					}
+				}
+				selectReviewAnswer(p)
 			}
 		}
-	case "S8":
+
 		current, currentErr := runtime.CurrentHypothesisResultPackets(root, snap.State, "")
 		currentIDs := map[string]bool{}
 		for _, p := range current {
@@ -189,16 +237,19 @@ func nativeReviewHook(root string, in policy.Input, out, diagnostic io.Writer) (
 		// A damaged Case or changed question must not erase the original
 		// responsibility from the return. Registry references identify only
 		// the diagnostic owner here; only a current packet can be received.
-		packets, err := runtime.HypothesisResultPackets(snap.State)
+		hypothesisPackets, err := runtime.HypothesisResultPackets(snap.State)
 		if err != nil {
 			sourceErr = err
 		}
-		for _, p := range packets {
-			if p.Binding.RuntimeID != snap.State["runtime_id"] || p.Binding.BaselineGeneration != workspace.Generation(snap.State) || p.Binding.ReviewRound != tolerantInt(mapFieldCLI(snap.State, "review")["round"]) || p.Binding.CaseID != investigationPointer(snap.State)["case_id"] {
+		for _, p := range hypothesisPackets {
+			if p.Binding.RuntimeID != snap.State["runtime_id"] {
 				continue
 			}
 			selectAnswer(p.Binding.OwnerAgentID, p.Binding.AssignmentID, p.ViewPath, p.AnswerPath, p.Binding.BaselineGeneration, p.Binding.RuntimeID)
 			candidates[len(candidates)-1].packet = p.ID
+			candidates[len(candidates)-1].stage = "S8"
+			candidates[len(candidates)-1].refs = append(candidates[len(candidates)-1].refs, p.ViewPath, p.AnswerPath)
+			candidates[len(candidates)-1].hypothesis = p.Binding.HypothesisID
 			candidates[len(candidates)-1].diagnosticOnly = currentErr != nil || !currentIDs[p.ID]
 			if candidates[len(candidates)-1].err == nil {
 				if currentErr != nil {
@@ -217,238 +268,386 @@ func nativeReviewHook(root string, in policy.Input, out, diagnostic io.Writer) (
 	var refs []string
 	for _, c := range candidates {
 		refs = append(refs, c.refs...)
+		if c.stage == "S8" {
+			refs = append(refs, c.owner, c.hypothesis)
+			for _, ref := range c.refs {
+				if rel, err := filepath.Rel(root, ref); err == nil && rel != "." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+					refs = append(refs, rel)
+				}
+			}
+		}
 	}
 	taskInput := in
-	if ordinaryS7 {
+	if ordinaryReview {
 		// Tool payloads and assistant output never nominate a professional owner.
 		taskInput.LastAssistantMessage = ""
 	}
-	text := nativeReviewTaskText(taskInput, refs)
-	owner, answer, source, packet := "", "", "", ""
-	matched := 0
-	matchedCurrent := false
-	for _, c := range candidates {
-		for _, ref := range c.refs {
-			if nativeS6ExactReference(text, ref) {
-				// A resumed task may mention a superseded question alongside
-				// its current one. Historical references supply diagnostics only
-				// when no current responsibility was identified.
-				if c.diagnosticOnly && matchedCurrent {
-					break
-				}
-				if !c.diagnosticOnly && !matchedCurrent {
-					matched = 0
-					matchedCurrent = true
-				}
-				matched++
-				owner, answer, source, sourceErr = c.owner, c.answer, c.source, c.err
-				packet = c.packet
-				break
+	var text string
+	fromOriginalTask := false
+	if stage == "S5" {
+		text, _ = nativeTaskTextDiagnostic(taskInput, refs, true)
+	} else {
+		if taskInput.AgentTranscriptPath == "" && in.Event == "SubagentStart" {
+			child, ok := nativeChildTranscript(in)
+			if !ok {
+				return false, 0
+			}
+			taskInput.AgentTranscriptPath = child
+		}
+		text, fromOriginalTask = nativeReviewOriginalTaskText(taskInput, refs)
+	}
+	selection := candidates
+	if !fromOriginalTask {
+		// The actor's own final statement is not a dispatch. It may still name
+		// the original task it was given, but a statement that names only the
+		// saved output path of another responsibility claims that output
+		// instead of naming a task. The original consumer must not receive on
+		// behalf of that author. L4-workflow-convergence.md:191 — "消息、工具
+		// 输入／输出或本人末次陈述中即使含另一责任准确路径，也不能单独改变此
+		// 子会话的 owner，或促使 Hook 代另一作者接收"; :189 — "本人事件从同一
+		// 平台子会话的真实原任务选择".
+		selection = make([]nativeReviewCandidate, len(candidates))
+		copy(selection, candidates)
+		for i := range selection {
+			if len(selection[i].taskRefs) > 0 {
+				selection[i].refs = selection[i].taskRefs
 			}
 		}
 	}
-	// An exact task reference cannot override an existing owner binding to a
-	// different current packet. As in S6, surface the handoff mismatch without
-	// selecting either responsibility or restricting ordinary tools.
-	if stage == "S7" && (in.Event == "SubagentStart" || ordinaryS7) && matched == 1 {
+	var selected []nativeReviewCandidate
+	unknown := false
+	if stage == "S5" {
 		for _, c := range candidates {
-			if c.owner == in.AgentID && c.packet != packet {
-				message := fmt.Sprintf("S7 native lifecycle handoff responsibility mismatch: actor %s is the registered owner of packet %s (answer %s), but the exact task reference selects packet %s (owner %s, answer %s). Main resolves the original actor/reference conflict before resuming either responsibility. No answer was inspected or received.", in.AgentID, c.packet, c.answer, packet, owner, answer)
-				_ = json.NewEncoder(out).Encode(map[string]any{"hookSpecificOutput": map[string]any{"hookEventName": in.Event, "additionalContext": message}})
-				fmt.Fprintln(diagnostic, message)
-				return true, 0
+			matches := false
+			for _, ref := range c.refs {
+				matches = matches || nativeS6ExactReference(text, ref)
+			}
+			if matches {
+				selected = append(selected, c)
 			}
 		}
-	}
-	// A platform ID may be the exact registered owner. Role names and the
-	// number of pending packets never establish this binding.
-	if stage == "S7" && (in.Event == "SubagentStart" || ordinaryS7) && matched == 0 {
-		for _, c := range candidates {
-			if c.owner == in.AgentID {
-				matched++
-				owner, answer, source, sourceErr, packet = c.owner, c.answer, c.source, c.err, c.packet
-			}
+		unknown = len(selected) > 1
+		if unknown {
+			selected = nil
 		}
+	} else {
+		selected, unknown = nativeReviewSelect(nativeReviewFacts(text), text, root, selection)
 	}
-	if matched != 1 {
-		if matched > 1 {
-			message := stage + " lifecycle handoff has multiple exact professional responsibility references; Main must resolve the handoff"
-			fmt.Fprintln(diagnostic, message)
-			if ordinaryS7 {
-				_ = json.NewEncoder(out).Encode(map[string]any{"hookSpecificOutput": map[string]any{"hookEventName": in.Event, "additionalContext": message}})
-			}
+	if len(selected) == 0 && sourceErr != nil {
+		fmt.Fprintln(diagnostic, "Original responsibility index could not be read:", sourceErr)
+		unknown = true
+	}
+	if len(selected) == 0 {
+		switch {
+		case len(candidates) == 0 && sourceErr == nil:
+			// This event carries no projectable candidate content. That is not an
+			// attribution gap: nothing is projected and no responsibility claim is
+			// made here. The event continues on the ordinary observation path,
+			// where the hook reader reports the event-level attribution.
+			return false, 0
+		case !unknown && (stage == "S7" || stage == "S8"):
+			// Candidates exist, but none of them is this event's original
+			// responsibility. That is the concrete gap: the responsibility cannot
+			// be located, so Main must inspect the original dispatch.
+			unknown = true
+		}
+		if unknown {
+			// The unresolved original responsibility belongs to Main's diagnostic
+			// channel only. The actor's own model context stays silent: another
+			// responsibility's gap is not this actor's business, and the honest
+			// hint must not leak another responsibility into this actor's context.
+			// L4-hook-platform-wiring.md:90 — "准确关联不足时保留相关未知并交
+			// Main／系统"; L4-workflow-convergence.md:191 — a path or hint in the
+			// actor's own text cannot change this sub-session's owner.
+			fmt.Fprintln(diagnostic, stage+" lifecycle handoff contains an unresolved original responsibility; Main must inspect the original dispatch")
 		}
 		return true, 0
 	}
-	// The index selects coordinates only. Validate just this original packet;
-	// an unrelated packet body must not erase the selected responsibility.
-	var selectedReview workpacket.ReviewResultPacket
-	if stage == "S7" {
-		var found bool
-		var err error
-		selectedReview, found, err = runtime.FindReviewResultPacketContext(runtime.WithPacketBodyRoot(contextForHook(in), root), snap.State, packet)
-		if err != nil {
-			sourceErr = err
-		} else if !found {
-			sourceErr = fmt.Errorf("selected S7 original packet %s is unavailable", packet)
-		}
-	}
-	if in.Event == "SubagentStart" {
-		view := ""
-		for _, c := range candidates {
-			if c.packet == packet {
-				view = c.view
+	handle := func(c nativeReviewCandidate, out io.Writer) (bool, int) {
+		stage, owner, answer, source, packet, sourceErr := c.stage, c.owner, c.answer, c.source, c.packet, c.err
+
+		if in.Event == "SubagentStart" {
+			view := ""
+			for _, c := range candidates {
+				if c.packet == packet {
+					view = c.view
+				}
 			}
-		}
-		if selectedReview.ID != "" {
-			view = filepath.Join(source, selectedReview.ViewPath)
-			if source == "" {
-				view = filepath.Join(root, selectedReview.ViewPath)
+
+			message := "S7 current professional responsibility for " + owner + ": packet " + packet + "; view " + view + "; answer " + answer + ". Read that exact original questionnaire, review only its assigned Claims against the frozen subjects, save the professional answer at that exact original path. Ordinary PreToolUse and successful PostToolUse automatically observe that answer through the original consumer; SubagentStop retains the final fallback. No submit, done or return-reference ceremony is required. Ordinary tools are freely available; no activation or platform ID lookup is required."
+			if stage == "S8" {
+				message = "S8 current professional responsibility for " + owner + ": packet " + packet + "; view " + view + "; answer " + answer + ". Read that exact original question, perform its actual independent discriminator without product writes, and save your professional HypothesisResult at the supplied original path. Ordinary PreToolUse and successful PostToolUse observe that answer through the original Case consumer; SubagentStop is the final fallback. No submit, done or return-reference action is required. Ordinary tools remain available. An inconclusive result is an honest conclusion, not proof that you have not done your work; Main owns unknowns and next responsibility. Genuine unfinished work may continue on the original responsibility."
 			}
-		}
-		message := "S7 current professional responsibility for " + owner + ": packet " + packet + "; view " + view + "; answer " + answer + ". Read that exact original questionnaire, review only its assigned Claims against the frozen subjects, save the professional answer at that exact original path. Ordinary PreToolUse and successful PostToolUse automatically observe that answer through the original consumer; SubagentStop retains the final fallback. No submit, done or return-reference ceremony is required. Ordinary tools are freely available; no activation or platform ID lookup is required."
-		if sourceErr != nil {
-			message += " Main must restore the original source: " + nativeFailureDetail(sourceErr)
-		}
-		_ = json.NewEncoder(out).Encode(map[string]any{"hookSpecificOutput": map[string]any{"hookEventName": in.Event, "additionalContext": message}})
-		return true, 0
-	}
-	// Only a proven same-repository different checkout rejects a shared
-	// original; missing/non-Git cwd does not invent a new source binding.
-	if stage == "S7" && sourceErr == nil && workpacket.ReviewResultUsesNormalAuthoring(selectedReview) {
-		sourceErr = nativeSharedCheckoutSourceError(contextForHook(in), root, source, in.CWD, "S7")
-	}
-	if ordinaryS7 && sourceErr == nil {
-		service, err := submission.NewContext(contextForHook(in), root, true)
-		if err != nil {
-			sourceErr = err
-		} else {
-			receipt, err := service.ReviewResultReceipt(owner, packet)
-			if err != nil {
-				sourceErr = err
-			} else if receipt.Accepted {
-				return true, 0
+			if sourceErr != nil {
+				message += " Main must restore the original source: " + nativeFailureDetail(sourceErr)
 			}
+			_ = json.NewEncoder(out).Encode(map[string]any{"hookSpecificOutput": map[string]any{"hookEventName": in.Event, "additionalContext": message}})
+			return true, 0
 		}
+		// Only a proven same-repository different checkout rejects a shared
+		// original; missing/non-Git cwd does not invent a new source binding.
+
+		var received submission.Receipt
+		replayed := false
 		if sourceErr == nil {
-			// Issuance is not professional completion. Leave an untouched/missing
-			// authoring file alone; Stop retains its original field diagnostics.
-			data, err := workpacket.ReadFile(source, selectedReview.AnswerPath, 20<<20)
-			if os.IsNotExist(err) {
-				return true, 0
-			}
+			service, err := submission.NewContext(contextForHook(in), root, true)
 			if err != nil {
 				sourceErr = err
 			} else {
-				var actual, pristine any
-				original, _ := json.Marshal(selectedReview.Draft)
-				if json.Unmarshal(data, &actual) == nil && json.Unmarshal(original, &pristine) == nil && reflect.DeepEqual(actual, pristine) {
+				var receipt submission.Receipt
+				if stage == "S7" {
+					receipt, sourceErr = service.ReviewResultReceipt(owner, packet)
+				}
+				if stage == "S8" {
+					receipt, sourceErr = service.ObserveHypothesisResultFrom(contextForHook(in), owner, answer, source, nil, ordinaryReview)
+				}
+				if stage != "S8" && sourceErr == nil && receipt.Accepted && receipt.WorkComplete {
+					// The answer is already received. That forbids a second
+					// reception only; it does not silence the original consumer.
+					// The original consumer diagnostic and the original S7 exit
+					// preparation still belong to this event.
+					applies, compareErr := reviewPacketAppliesToCurrent(root, snap.State, packet, contextForHook(in))
+					if compareErr != nil {
+						message := "S7 original answer is already received; its relationship to the current responsibility is unknown: " + compareErr.Error() + ". Preserve the accepted answer; Main restores the original plan materials before continuing the outlet."
+						fmt.Fprintln(diagnostic, message)
+						_ = json.NewEncoder(out).Encode(map[string]any{"hookSpecificOutput": map[string]any{"hookEventName": in.Event, "additionalContext": message}})
+						return true, 0
+					}
+					if !applies {
+						return true, 0
+					}
+					received = receipt
+					replayed = true
+					fmt.Fprintln(diagnostic, stage+" native professional answer received by the original consumer. "+receipt.NextAction)
+				} else {
+					switch stage {
+					case "S5":
+						receipt, sourceErr = service.Save(contextForHook(in), owner, answer)
+					case "S7":
+						receipt, sourceErr = service.SaveReviewResultFrom(contextForHook(in), owner, answer, source, nil)
+					case "S8":
+						// The original consumer above already returned this attempt's
+						// outcome; never query or receive it again in this event.
+					}
+				}
+				if ordinaryReview && len(receipt.FieldErrors) > 0 && (stage != "S7" || !s7ResultHasProfessionalExpression(answer)) {
 					return true, 0
 				}
-			}
-		}
-	}
-	var received submission.Receipt
-	if sourceErr == nil {
-		service, err := submission.NewContext(contextForHook(in), root, true)
-		if err != nil {
-			sourceErr = err
-		} else {
-			var receipt submission.Receipt
-			switch stage {
-			case "S5":
-				receipt, sourceErr = service.Save(contextForHook(in), owner, answer)
-			case "S7":
-				receipt, sourceErr = service.SaveReviewResultFrom(contextForHook(in), owner, answer, source, nil)
-			case "S8":
-				receipt, sourceErr = service.SaveHypothesisResultFrom(contextForHook(in), owner, answer, source, nil)
-			}
-			if len(receipt.FieldErrors) != 0 && (stage != "S7" || sourceErr == nil) {
-				sourceErr = &workpacket.AnswerError{Label: stage + " answer", Fields: receipt.FieldErrors}
-			}
-			if sourceErr == nil && !receipt.Accepted {
-				sourceErr = fmt.Errorf("original professional consumer did not accept this answer: %s", receipt.Error)
-			}
-			if sourceErr == nil {
-				received = receipt
-				fmt.Fprintln(diagnostic, stage+" native professional answer received by the original consumer. "+receipt.NextAction)
-			}
-		}
-	}
-	if sourceErr != nil {
-		if stage == "S5" {
-			submission.RecordPlanningDiagnostic(root, snap.State, nativeS5DiagnosticKind(packet), fmt.Sprintf("owner %s; answer %s: %s", owner, answer, nativeFailureDetail(sourceErr)))
-			return true, nativeS5HandoffFailure(owner, answer, sourceErr, diagnostic)
-		}
-		if stage == "S7" {
-			var receiptGap *submission.ReviewResultReceiptError
-			if errors.As(sourceErr, &receiptGap) {
-				return true, nativeS7SubmittedReceiptFailure(root, in, snap.State, receiptGap, out, diagnostic)
-			}
-			if ordinaryS7 {
-				message := fmt.Sprintf("S7 automatic original-answer observation for owner %s, packet %s, answer %s could not verify reception: %s. Preserve the original answer and any accepted receipt. Main must restore the original packet/source/receiver and inspect the original receipt. Ordinary tools remain available; no submit or done action is required.", owner, packet, answer, nativeFailureDetail(sourceErr))
-				var fields *workpacket.AnswerError
-				if errors.As(sourceErr, &fields) {
-					message = fmt.Sprintf("S7 automatic original-answer observation for owner %s, packet %s, answer %s remains unreceived: %s. Correct the specified professional fields in that same original answer. Ordinary tools remain available; no submit or done action is required.", owner, packet, answer, nativeFailureDetail(sourceErr))
+				var committedGap *submission.ReviewResultReceiptError
+				if len(receipt.FieldErrors) != 0 && !errors.As(sourceErr, &committedGap) {
+					sourceErr = &workpacket.AnswerError{Label: stage + " answer", Fields: receipt.FieldErrors}
 				}
-				fmt.Fprintln(diagnostic, message)
-				_ = json.NewEncoder(out).Encode(map[string]any{"hookSpecificOutput": map[string]any{"hookEventName": in.Event, "additionalContext": message}})
+				if sourceErr == nil && !receipt.Accepted {
+					sourceErr = fmt.Errorf("original professional consumer did not accept this answer: %s", receipt.Error)
+				}
+				if sourceErr == nil {
+					received = receipt
+					fmt.Fprintln(diagnostic, stage+" native professional answer received by the original consumer. "+receipt.NextAction)
+				}
+			}
+		}
+		if sourceErr != nil {
+			if ordinaryReview && (os.IsNotExist(sourceErr) || len(received.FieldErrors) > 0) {
 				return true, 0
 			}
-			submission.RecordPlanningDiagnostic(root, snap.State, nativeS7DiagnosticKind(packet), fmt.Sprintf("owner %s; packet %s; answer %s: %s", owner, packet, answer, nativeFailureDetail(sourceErr)))
-			return true, nativeS7HandoffFailure(owner, answer, sourceErr, diagnostic)
+			if stage == "S5" {
+				submission.RecordPlanningDiagnostic(root, snap.State, nativeS5DiagnosticKind(packet), fmt.Sprintf("owner %s; answer %s: %s", owner, answer, nativeFailureDetail(sourceErr)))
+				return true, nativeS5HandoffFailure(owner, answer, sourceErr, diagnostic)
+			}
+			if stage == "S7" {
+				var receiptGap *submission.ReviewResultReceiptError
+				if errors.As(sourceErr, &receiptGap) {
+					return true, nativeS7SubmittedReceiptFailure(root, in, snap.State, receiptGap, out, diagnostic)
+				}
+				if ordinaryReview {
+					message := fmt.Sprintf("S7 automatic original-answer observation for owner %s, packet %s, answer %s could not verify reception: %s. Preserve the original answer and any accepted receipt. Main must restore the original packet/source/receiver and inspect the original receipt. Ordinary tools remain available; no submit or done action is required.", owner, packet, answer, nativeFailureDetail(sourceErr))
+					var fields *workpacket.AnswerError
+					if errors.As(sourceErr, &fields) {
+						message = fmt.Sprintf("S7 automatic original-answer observation for owner %s, packet %s, answer %s remains unreceived: %s. Correct the specified professional fields in that same original answer. Ordinary tools remain available; no submit or done action is required.", owner, packet, answer, nativeFailureDetail(sourceErr))
+					}
+					fmt.Fprintln(diagnostic, message)
+					_ = json.NewEncoder(out).Encode(map[string]any{"hookSpecificOutput": map[string]any{"hookEventName": in.Event, "additionalContext": message}})
+					return true, 0
+				}
+				submission.RecordPlanningDiagnostic(root, snap.State, nativeS7DiagnosticKind(packet), fmt.Sprintf("owner %s; packet %s; answer %s: %s", owner, packet, answer, nativeFailureDetail(sourceErr)))
+				return true, nativeS7HandoffFailure(owner, answer, sourceErr, diagnostic)
+			}
+			if stage == "S8" {
+				if ordinaryReview {
+					message := fmt.Sprintf("S8 original-answer observation for %s at %s could not receive a new delivery: %s. Preserve any accepted receipt and prior observations. Main owns source or preparation recovery; genuine unfinished work may continue on its original responsibility. Ordinary tools remain available; no return-reference, resubmit or repeated Stop action is required.", owner, answer, nativeFailureDetail(sourceErr))
+					fmt.Fprintln(diagnostic, message)
+					_ = json.NewEncoder(out).Encode(map[string]any{"hookSpecificOutput": map[string]any{"hookEventName": in.Event, "additionalContext": message}})
+					return true, 0
+				}
+				submission.RecordPlanningDiagnostic(root, snap.State, "S8 native Stop "+packet, fmt.Sprintf("owner %s; answer %s: %s", owner, answer, nativeFailureDetail(sourceErr)))
+				return true, nativeS8HandoffFailure(owner, answer, sourceErr, diagnostic)
+			}
+			return true, nativeStopFailure(stage+" native professional handoff", in.StopHookActive, sourceErr, diagnostic)
+		}
+		if stage == "S5" {
+			submission.RecordPlanningDiagnostic(root, snap.State, nativeS5DiagnosticKind(packet), "")
+		}
+		if stage == "S7" {
+			submission.RecordPlanningDiagnostic(root, snap.State, nativeS7DiagnosticKind(packet), "")
+			// Reception is already durable. Continue only the original clean-round
+			// exit; a continuation failure never turns it into an unreceived answer.
+			statePath := filepath.Join(root, ".claude/loop-state.json")
+			journalPath := filepath.Join(root, ".claude/loop-events.jsonl")
+			completionContext, cancelCompletion := hookCompletionContext(contextForHook(in))
+			defer cancelCompletion()
+			current, err := runtime.NewStore(statePath, journalPath).WithContext(completionContext).Snapshot()
+			handoff := ""
+			handoffReported := false
+			if err != nil {
+				handoff = "S7 ReviewResult is received; Main restores current Runtime access before continuing the original clean-round exit: " + err.Error() + ". Recovery: " + s7CaptureShellQuote(filepath.Join(root, ".claude/bin/loop-harness")) + " runtime review-continue --root " + s7CaptureShellQuote(root)
+				fmt.Fprintln(diagnostic, handoff)
+				handoffReported = true
+			} else {
+				applies, compareErr := reviewPacketAppliesToCurrent(root, current.State, packet, completionContext)
+				if compareErr != nil {
+					handoff = "Original S7 answer is accepted; its relationship to the current responsibility is unknown: " + compareErr.Error() + ". Main restores the original plan materials and continues the original outlet; the Reviewer need not resubmit."
+					fmt.Fprintln(diagnostic, handoff)
+					handoffReported = true
+				} else if !applies {
+					handoff = "原 S7 晚到答卷已收；Main 查阅原 Result 与发现后决定补充调查或后续处理。"
+				} else if !s7SuccessorPending(root, current.State) {
+					// The original exit is already prepared. A replay after the
+					// promotion must not run another transition.
+					handoff = "S7 original exit is already prepared; this accepted answer does not run another transition."
+				} else {
+					var continuationErr error
+					current, handoff, continuationErr = continueS7AcceptanceResult(completionContext, root, statePath, journalPath, current)
+					if handoff != "" {
+						fmt.Fprintln(diagnostic, handoff)
+						handoffReported = true
+					}
+					if continuationErr == nil {
+						handoff = ""
+					}
+				}
+			}
+			if ordinaryReview {
+				if replayed {
+					// The answer was already received. The original consumer keeps
+					// its Main-facing facts, but the actor's own model context stays
+					// silent: an accepted replay must not project the whole receipt
+					// again, and it must not rerun Gate checks or S10 material
+					// preparation. L4-workflow-convergence.md:191 — "已收只续未完成
+					// 后继"; L4-hook-platform-wiring.md:113 — "已收交接直接复用原事实,
+					// 不重接收或重转阶段".
+					if handoff != "" && !handoffReported {
+						fmt.Fprintln(diagnostic, handoff)
+					}
+				} else {
+					// A failed snapshot cannot supply a current stage. Reception remains
+					// durable and its concrete recovery is carried to this actual Worker.
+					nativeS7NaturalReceipt(root, in, current, owner, packet, answer, received, handoff, out)
+				}
+			}
 		}
 		if stage == "S8" {
-			submission.RecordPlanningDiagnostic(root, snap.State, "S8 native Stop "+packet, fmt.Sprintf("owner %s; answer %s: %s", owner, answer, nativeFailureDetail(sourceErr)))
-			return true, nativeS8HandoffFailure(owner, answer, sourceErr, diagnostic)
+			submission.RecordPlanningDiagnostic(root, snap.State, "S8 native Stop "+packet, "")
 		}
-		return true, nativeStopFailure(stage+" native professional handoff", in.StopHookActive, sourceErr, diagnostic)
+		return true, 0
 	}
-	if stage == "S5" {
-		submission.RecordPlanningDiagnostic(root, snap.State, nativeS5DiagnosticKind(packet), "")
+	if len(selected) == 1 && !unknown {
+		return handle(selected[0], out)
 	}
-	if stage == "S7" {
-		submission.RecordPlanningDiagnostic(root, snap.State, nativeS7DiagnosticKind(packet), "")
-		// Reception is already durable. Continue only the original clean-round
-		// exit; a continuation failure never turns it into an unreceived answer.
-		statePath := filepath.Join(root, ".claude/loop-state.json")
-		journalPath := filepath.Join(root, ".claude/loop-events.jsonl")
-		completionContext, cancelCompletion := hookCompletionContext(contextForHook(in))
-		defer cancelCompletion()
-		current, err := runtime.NewStore(statePath, journalPath).WithContext(completionContext).Snapshot()
-		handoff := ""
-		if err != nil {
-			handoff = "S7 ReviewResult is received; Main restores current Runtime access before continuing the original clean-round exit: " + err.Error() + ". Recovery: " + s7CaptureShellQuote(filepath.Join(root, ".claude/bin/loop-harness")) + " runtime review-continue --root " + s7CaptureShellQuote(root)
-			fmt.Fprintln(diagnostic, handoff)
-		} else {
-			var continuationErr error
-			current, handoff, continuationErr = continueS7AcceptanceResult(completionContext, root, statePath, journalPath, current)
-			if handoff != "" {
-				fmt.Fprintln(diagnostic, handoff)
-			}
-			if continuationErr == nil {
-				handoff = ""
+	var messages []string
+	code := 0
+	for i, c := range selected {
+		if i > 0 {
+			in.Context = context.WithValue(contextForHook(in), nativeRoutingKey{}, &nativeRoutingRead{root: root})
+			var err error
+			snap, err = nativeRoutingSnapshot(root, in)
+			if err != nil {
+				fmt.Fprintln(diagnostic, "Remaining original responsibilities are unknown because Runtime could not be read:", err)
+				unknown = true
+				break
 			}
 		}
-		if ordinaryS7 {
-			// A failed snapshot cannot supply a current stage. Reception remains
-			// durable and its concrete recovery is carried to this actual Worker.
-			nativeS7NaturalReceipt(root, in, current, owner, packet, answer, received, handoff, out)
+		var output bytes.Buffer
+		_, itemCode := handle(c, &output)
+		if itemCode != 0 {
+			code = itemCode
+		}
+		messages = append(messages, nativeReviewOutputMessages(output.Bytes())...)
+	}
+	if unknown {
+		message := "Some original responsibilities remain unknown; Main inspects the original dispatch and preserves any accepted results."
+		fmt.Fprintln(diagnostic, message)
+		if ordinaryReview || in.Event == "SubagentStart" {
+			messages = append(messages, message)
 		}
 	}
-	if stage == "S8" {
-		submission.RecordPlanningDiagnostic(root, snap.State, "S8 native Stop "+packet, "")
+	if len(messages) != 0 {
+		_ = json.NewEncoder(out).Encode(map[string]any{"hookSpecificOutput": map[string]any{"hookEventName": in.Event, "additionalContext": strings.Join(messages, "\n")}})
 	}
-	return true, 0
+	return true, code
 }
 
-// A resumed native professional can receive new original task references. Use the latest
-// actual task that names a current exact reference, never a tool_result or role.
-// Bound transcript IO, and keep the final message for explicit handoff evidence.
+// An untouched questionnaire is not a failed professional answer. A stated
+// conclusion (even an invalid one) is an actual expression and must receive
+// the original consumer's field feedback on the same natural event.
+func s7ResultHasProfessionalExpression(path string) bool {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	var draft struct {
+		Answer map[string]json.RawMessage `json:"answer"`
+	}
+	if json.Unmarshal(data, &draft) != nil {
+		return false
+	}
+	expressed := func(raw json.RawMessage) bool {
+		text := strings.TrimSpace(string(raw))
+		return text != "" && text != "null" && text != `""`
+	}
+	if expressed(draft.Answer["verdict"]) {
+		return true
+	}
+	var claims []map[string]json.RawMessage
+	if json.Unmarshal(draft.Answer["claim_results"], &claims) == nil {
+		for _, claim := range claims {
+			if expressed(claim["conclusion"]) || expressed(claim["observed"]) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// The original platform task selects the responsibility. Later coordinator
+// messages and the Worker's final text are not a new dispatch.
 func nativeReviewTaskText(in policy.Input, refs []string) string {
-	defer metrics.Span(contextForHook(in), "hook/native_routes/task_text")()
-	text, _ := nativeTaskTextDiagnostic(in, refs, true)
+	text, _ := nativeReviewOriginalTaskText(in, refs)
 	return text
+}
+
+// nativeReviewOriginalTaskText reports the original task text and whether it
+// came from that proven original task (the platform sidechain) instead of the
+// actor's final statement.
+func nativeReviewOriginalTaskText(in policy.Input, refs []string) (string, bool) {
+	defer metrics.Span(contextForHook(in), "hook/native_routes/task_text")()
+	file, err := os.Open(in.AgentTranscriptPath)
+	if err != nil {
+		// The platform transcript is unavailable. Keep the platform's own
+		// fallback text source instead of returning an empty task, so the exact
+		// registered reference carried by the payload can still select the
+		// original responsibility.
+		return in.LastAssistantMessage, false
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return in.LastAssistantMessage, false
+	}
+	reader := &nativeTaskTranscript{ctx: contextForHook(in), reader: file, size: info.Size()}
+	text, _, _ := reader.earliestUsing("", func(line []byte, final string) (string, bool, bool) {
+		return nativeReviewOriginalTask(line, in.AgentID, final)
+	})
+	return text, true
 }
 
 // Project durable personal acceptance and the original Main-owned outlet only.
@@ -456,6 +655,7 @@ func nativeReviewTaskText(in policy.Input, refs []string) string {
 // never rerun Gate checks or S10 material preparation.
 func nativeS7NaturalReceipt(root string, in policy.Input, snapshot runtime.Snapshot, owner, packet, answer string, receipt submission.Receipt, continuation string, out io.Writer) {
 	message := fmt.Sprintf("S7 original ReviewResult receipt: packet %s; owner %s; answer %s; accepted=%t; work_complete=%t; responsibility_status=%s. Your assigned Reviewer answer is received; preserve it and any observations. No further save, submit or done action is required for this accepted answer.", packet, owner, answer, receipt.Accepted, receipt.WorkComplete, receipt.ResponsibilityStatus)
+	message += " " + receipt.NextAction
 	if snapshot.State == nil {
 		message += " Current Runtime stage is unavailable. Main owns recovery of the original continuation. " + continuation
 	} else {
@@ -463,7 +663,7 @@ func nativeS7NaturalReceipt(root string, in policy.Input, snapshot runtime.Snaps
 		phase := stringValue(mapFieldCLI(snapshot.State, "lifecycle")["phase"])
 		message += fmt.Sprintf(" Current Runtime state=%s phase=%s. Main owns round-wide and subsequent-stage responsibility; the Reviewer does not inherit that work.", stage, phase)
 		if stage == "verification" && mapFieldCLI(mapFieldCLI(snapshot.State, "review"), "plan")["status"] == "clean" {
-			message += " The machine CleanRound is recorded; original S7 exit remains pending. Main restores its recorded cause and resumes the original exit with: " + s7CaptureShellQuote(filepath.Join(root, ".claude/bin/loop-harness")) + " runtime review-continue --root " + s7CaptureShellQuote(root)
+			message += " The original ReviewPlan is recorded as clean; the S7 exit remains pending. Main restores its recorded cause and resumes the original exit with: " + s7CaptureShellQuote(filepath.Join(root, ".claude/bin/loop-harness")) + " runtime review-continue --root " + s7CaptureShellQuote(root)
 		} else if stage == "acceptance" {
 			message += " Original TR-009 has entered S10 acceptance; Main follows its original audit questionnaire or material recovery."
 		}
@@ -489,4 +689,17 @@ func nativeS7SubmittedReceiptFailure(root string, in policy.Input, state map[str
 	fmt.Fprintln(diagnostic, message)
 	_ = json.NewEncoder(out).Encode(map[string]any{"hookSpecificOutput": map[string]any{"hookEventName": in.Event, "additionalContext": message}})
 	return 0
+}
+
+func reviewPacketAppliesToCurrent(root string, state map[string]any, packetID string, ctx context.Context) (bool, error) {
+	index, err := runtime.ProjectIssuedReviewResultPacketIndex(state, "")
+	if err != nil {
+		return false, err
+	}
+	for _, p := range index {
+		if p.ID == packetID {
+			return review.IssuedResultAppliesToCurrent(root, state, workpacket.ReviewResultPacket{ID: p.ID, Binding: p.Binding}, ctx)
+		}
+	}
+	return false, fmt.Errorf("original Reviewer packet %s is missing from the responsibility index", packetID)
 }

@@ -37,7 +37,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/entroforge/go-system-builder/internal/assignmentinputs"
 	"github.com/entroforge/go-system-builder/internal/identity"
 	"github.com/entroforge/go-system-builder/internal/integration"
 	"github.com/entroforge/go-system-builder/internal/repair"
@@ -206,6 +205,19 @@ func AdvanceAgentWithContext(ctx context.Context, root, statePath, journalPath s
 	if err := json.Unmarshal(data, &message); err != nil {
 		return loopruntime.Snapshot{}, fmt.Errorf("decode Agent message: %w", err)
 	}
+	// The authored message_id names exactly one authored message and is
+	// required by the agent-message schema. It is this event's intent key: the
+	// same intent always produces the same identity, and two different
+	// authored messages never collide (G18 §1.2/§1.3).
+	var authored struct {
+		MessageID string `json:"message_id"`
+	}
+	if err := json.Unmarshal(data, &authored); err != nil {
+		return loopruntime.Snapshot{}, fmt.Errorf("decode Agent message identity: %w", err)
+	}
+	if strings.TrimSpace(authored.MessageID) == "" {
+		return loopruntime.Snapshot{}, fmt.Errorf("Agent message carries no message_id")
+	}
 	expectedType := expectedAgentMessageType(request.Event)
 	if expectedType == "" {
 		return loopruntime.Snapshot{}, fmt.Errorf(
@@ -299,12 +311,30 @@ func AdvanceAgentWithContext(ctx context.Context, root, statePath, journalPath s
 		agentTransitions = agentEntityTransitions(catalog)
 	}
 
+	// The event carries every fact its judgments are read from, so the Apply
+	// closure and the mutation's Precheck judge the same event the same way.
+	event := agentLifecycleEvent{
+		root:           root,
+		request:        request,
+		message:        message,
+		data:           data,
+		messageRef:     messageRef,
+		transitions:    agentTransitions,
+		blocker:        blockerCapability,
+		issuedTarget:   validateIssuedTarget,
+		runtimeID:      runtimeID,
+		generation:     generation,
+		commitRevision: commitRevision,
+	}
 	mutation := loopruntime.Mutation{
-		EventID:            fmt.Sprintf("evt-agent-%s-%s-r%d", request.AgentID, request.Event, commitRevision+1),
+		// The identity of an Agent lifecycle event is its owner, its operation
+		// and the authored message it answers. The Runtime write counter is a
+		// recorded audit coordinate only (G18 §1/§1.3).
+		EventID:            fmt.Sprintf("evt-agent-%s-%s-%s", request.AgentID, request.Event, authored.MessageID),
 		TransitionID:       "AGENT-LIFECYCLE",
 		Event:              request.Event,
 		Actor:              "orchestrator",
-		IdempotencyKey:     fmt.Sprintf("runtime:agent:%s:%s:%d", request.AgentID, request.Event, commitRevision),
+		IdempotencyKey:     fmt.Sprintf("runtime:agent:%s:%s:%s", request.AgentID, request.Event, authored.MessageID),
 		RuntimeID:          runtimeID,
 		BaselineGeneration: generation,
 		From:               cursor,
@@ -312,142 +342,197 @@ func AdvanceAgentWithContext(ctx context.Context, root, statePath, journalPath s
 		EvidenceIDs:        evidenceIDs,
 		Message:            fmt.Sprintf("Recorded a schema-valid Agent lifecycle event (%s)", request.Event),
 		OccurredAt:         occurredAt,
+		// G18 §1/§3.2: the Agent lifecycle event id names the owner, the
+		// operation and the authored message it answers, so a repeated event
+		// produces the same id and the journal's global event-id uniqueness
+		// check answers before the Apply closure can refuse it with the
+		// domain's own outcome. The store calls this judgment under its lock,
+		// after the revision CAS, so the caller keeps the domain outcome and
+		// the refused repeat writes neither Runtime state nor a journal fact.
+		Precheck: func(state map[string]any) error {
+			return event.refusal(state)
+		},
 		Apply: func(state map[string]any) error {
-			currentBaseline, _ := state["baseline"].(map[string]any)
-			if state["runtime_id"] != runtimeID || dispatch.Number(currentBaseline["generation"]) != generation {
-				return fmt.Errorf("Agent lifecycle runtime/generation changed before its original CAS")
-			}
-			if err := validateIssuedTarget(state); err != nil {
-				return err
-			}
-			record, canonical, err := assignmentrecord.ForOwner(state, request.AgentID)
+			agent, resolvedTo, err := event.judge(state)
 			if err != nil {
 				return err
 			}
-			var authored map[string]any
-			if err := json.Unmarshal(data, &authored); err != nil {
+			if err := applyAgentEventParams(root, agent, fmt.Sprint(state["schema_version"]), request, message, commitRevision); err != nil {
 				return err
 			}
-			_, hasCanonicalPlan := authored["assignment_record_contract"]
-			if request.Event == "readback_submitted" && message.MessageType == "plan_report" && (canonical || hasCanonicalPlan) {
-				if err := plancheckpoint.Validate(root, loopruntime.Snapshot{State: state}, request.AgentID, messageRef); err != nil {
+			if capability != nil {
+				if err := capability.ApplyLifecycleCAS(ctx, root, state, data, request.AgentID, message.TaskID, commitRevision, generation); err != nil {
 					return err
+				}
+				if request.Event == "work_blocked" && blockerCapability != nil && blockerCapability.ClearResolvedBlockerIndex() {
+					// A Resume successor proves the immediately preceding resolution
+					// and retires its Agent pointer index in this same original CAS.
+					// The immutable history remains in evidence and the journal.
+					agent["blocker_resolved_ref"] = nil
 				}
 			}
-			if canonical && request.Event == "activation_sent" {
-				if err := assignmentrecord.VerifySources(record, func(ref string) ([]byte, error) {
-					return assignmentinputs.Read(root, ref)
-				}); err != nil {
-					return err
-				}
-				var projection map[string]any
-				if err := json.Unmarshal(data, &projection); err != nil {
-					return err
-				}
-				if err := assignmentrecord.ValidateProjection(record, projection); err != nil {
-					return err
-				}
-				if record.DispatchMode == "plan_checkpoint" {
-					entities, _ := state["entities"].(map[string]any)
-					agents, _ := entities["agents"].([]any)
-					for _, raw := range agents {
-						a, _ := raw.(map[string]any)
-						if a["id"] == request.AgentID {
-							ref, _ := a["readback_ref"].(string)
-							if err := plancheckpoint.Validate(root, loopruntime.Snapshot{State: state}, request.AgentID, ref); err != nil {
-								return err
-							}
-						}
-					}
+			if err := workstate.RecordAgentActivity(state, agent, resolvedTo, request.Event); err != nil {
+				return fmt.Errorf("record Agent work state and lifecycle event: %w", err)
+			}
+			if messageRef != "" {
+				agent[agentEventEvidenceKey(request.Event)] = messageRef
+				if request.Event == "readback_submitted" && agent["dispatch_mode"] == "plan_checkpoint" {
+					// Commit the observation and authoritative readback in the same Writer mutation.
+					agent["plan_reported_ref"] = messageRef
 				}
 			}
-			entities, ok := state["entities"].(map[string]any)
-			if !ok {
-				return fmt.Errorf("runtime entities must be an object")
+			agent["updated_at"] = occurredAt.UTC().Format(time.RFC3339Nano)
+			if request.Event == "completion_acknowledged" {
+				// The accepted Result reference and actual ACK event are the
+				// authority. New results clear the prior ACK in the original
+				// Result receiver, so no per-report digest index is needed.
+				delete(agent, "completion_acknowledged_reports")
 			}
-			agents, _ := entities["agents"].([]any)
-			for _, raw := range agents {
-				agent, _ := raw.(map[string]any)
-				if agent["id"] != request.AgentID {
-					continue
-				}
-				taskIDs, _ := agent["task_ids"].([]any)
-				if message.TaskID != "" && !stringArrayContains(taskIDs, message.TaskID) {
-					return fmt.Errorf("Agent message TASK is outside assignment")
-				}
-				projection, err := workstate.AgentProjection(agent, fmt.Sprint(state["schema_version"]))
-				if err != nil {
-					return fmt.Errorf("resolve Agent authorization activity: %w", err)
-				}
-				currentState := projection.Activity
-				resolvedTo, found := agentTransitions.resolve(currentState, request.Event)
-				if blockerCapability != nil && projection.Status == workstate.Active {
-					resolvedTo, found = "blocked", true
-				}
-				if !found {
-					return fmt.Errorf(
-						"Agent event %s is not legal from state %s (canonical Agent states: spawned, reading, understanding_submitted, understanding_approved, activated, working, reported, done, blocked, stopped)",
-						request.Event, currentState)
-				}
-				if err := applyAgentEventParams(root, agent, fmt.Sprint(state["schema_version"]), request, message, commitRevision); err != nil {
-					return err
-				}
-				if capability != nil {
-					if err := capability.ApplyLifecycleCAS(ctx, root, state, data, request.AgentID, message.TaskID, commitRevision, generation); err != nil {
-						return err
-					}
-					if request.Event == "work_blocked" && blockerCapability != nil && blockerCapability.ClearResolvedBlockerIndex() {
-						// A Resume successor proves the immediately preceding resolution
-						// and retires its Agent pointer index in this same original CAS.
-						// The immutable history remains in evidence and the journal.
-						agent["blocker_resolved_ref"] = nil
-					}
-				}
-				if err := workstate.RecordAgentActivity(state, agent, resolvedTo, request.Event); err != nil {
-					return fmt.Errorf("record Agent work state and lifecycle event: %w", err)
-				}
-				if messageRef != "" {
-					agent[agentEventEvidenceKey(request.Event)] = messageRef
-					if request.Event == "readback_submitted" && agent["dispatch_mode"] == "plan_checkpoint" {
-						// Commit the observation and authoritative readback in the same Writer mutation.
-						agent["plan_reported_ref"] = messageRef
-					}
-				}
-				agent["updated_at"] = occurredAt.UTC().Format(time.RFC3339Nano)
-				config, configErr := loopruntime.DispatchConfig(state)
-				if configErr != nil {
-					return configErr
-				}
-				life, _ := state["lifecycle"].(map[string]any)
-				if config != nil && life["state"] == "building" && request.Event == "completion_acknowledged" {
-					bindings := map[string]any{}
-					tasks, _ := entities["tasks"].([]any)
-					for _, rawTask := range tasks {
-						task, _ := rawTask.(map[string]any)
-						owners, _ := task["owner_agent_ids"].([]any)
-						if !stringArrayContains(owners, request.AgentID) {
-							continue
-						}
-						ref, _ := task["completion_report_ref"].(string)
-						entries, _ := state["evidence"].([]any)
-						for _, rawEvidence := range entries {
-							ev, _ := rawEvidence.(map[string]any)
-							producers, _ := ev["produced_by"].([]any)
-							baseline, _ := state["baseline"].(map[string]any)
-							if ref != "" && ev["path"] == ref && ev["kind"] == "completion_report" && ev["status"] == "valid" && ev["invalidated_by"] == nil && stringArrayContains(producers, request.AgentID) && dispatch.Number(ev["baseline_generation"]) == dispatch.Number(baseline["generation"]) {
-								bindings[ref] = ev["sha256"]
-							}
-						}
-					}
-					agent["completion_acknowledged_reports"] = bindings
-				}
-				state["updated_at"] = occurredAt.UTC().Format(time.RFC3339Nano)
-				return dispatch.ReconcilePressure(root, state)
-			}
-			return fmt.Errorf("Agent %s is not registered", request.AgentID)
+			state["updated_at"] = occurredAt.UTC().Format(time.RFC3339Nano)
+			return dispatch.ReconcilePressure(root, state)
 		},
 	}
 	return updateRuntime(store, request.ExpectedRevision, mutation)
+}
+
+// agentLifecycleEvent carries one Agent lifecycle event and the Runtime
+// coordinates it was read at. The Apply closure and the mutation's Precheck
+// judge the event from these facts, so the two cannot disagree about which
+// judgment answers first.
+type agentLifecycleEvent struct {
+	root           string
+	request        AgentEventRequest
+	message        agentMessage
+	data           []byte
+	messageRef     string
+	transitions    agentEntityTransitionsResolver
+	blocker        *repair.IssuedRepairResultBlockerCapability
+	issuedTarget   func(map[string]any) error
+	runtimeID      string
+	generation     int
+	commitRevision int
+}
+
+// judge runs the Agent lifecycle judgments that precede every write and
+// returns the judged Agent row and the state the event resolves to.
+//
+// The judgments run in the Apply closure's order and are read-only: they read
+// the Runtime state and write neither the Runtime nor a file.
+func (e agentLifecycleEvent) judge(state map[string]any) (map[string]any, string, error) {
+	currentBaseline, _ := state["baseline"].(map[string]any)
+	if state["runtime_id"] != e.runtimeID || dispatch.Number(currentBaseline["generation"]) != e.generation {
+		return nil, "", fmt.Errorf("Agent lifecycle runtime/generation changed before its original CAS")
+	}
+	if err := e.issuedTarget(state); err != nil {
+		return nil, "", err
+	}
+	record, canonical, err := assignmentrecord.ForOwner(state, e.request.AgentID)
+	if err != nil {
+		return nil, "", err
+	}
+	var authored map[string]any
+	if err := json.Unmarshal(e.data, &authored); err != nil {
+		return nil, "", err
+	}
+	_, hasCanonicalPlan := authored["assignment_record_contract"]
+	if e.request.Event == "readback_submitted" && e.message.MessageType == "plan_report" && (canonical || hasCanonicalPlan) {
+		if err := plancheckpoint.Validate(e.root, loopruntime.Snapshot{State: state}, e.request.AgentID, e.messageRef); err != nil {
+			return nil, "", err
+		}
+	}
+	if canonical && e.request.Event == "activation_sent" {
+		if err := assignmentrecord.ValidateRecord(record); err != nil {
+			return nil, "", err
+		}
+		var projection map[string]any
+		if err := json.Unmarshal(e.data, &projection); err != nil {
+			return nil, "", err
+		}
+		if err := assignmentrecord.ValidateProjection(record, projection); err != nil {
+			return nil, "", err
+		}
+		if record.DispatchMode == "plan_checkpoint" {
+			entities, _ := state["entities"].(map[string]any)
+			agents, _ := entities["agents"].([]any)
+			for _, raw := range agents {
+				a, _ := raw.(map[string]any)
+				if a["id"] == e.request.AgentID {
+					ref, _ := a["readback_ref"].(string)
+					if err := plancheckpoint.Validate(e.root, loopruntime.Snapshot{State: state}, e.request.AgentID, ref); err != nil {
+						return nil, "", err
+					}
+				}
+			}
+		}
+	}
+	entities, ok := state["entities"].(map[string]any)
+	if !ok {
+		return nil, "", fmt.Errorf("runtime entities must be an object")
+	}
+	agents, _ := entities["agents"].([]any)
+	for _, raw := range agents {
+		agent, _ := raw.(map[string]any)
+		if agent["id"] != e.request.AgentID {
+			continue
+		}
+		taskIDs, _ := agent["task_ids"].([]any)
+		if e.message.TaskID != "" && !stringArrayContains(taskIDs, e.message.TaskID) {
+			return nil, "", fmt.Errorf("Agent message TASK is outside assignment")
+		}
+		projection, err := workstate.AgentProjection(agent, fmt.Sprint(state["schema_version"]))
+		if err != nil {
+			return nil, "", fmt.Errorf("resolve Agent authorization activity: %w", err)
+		}
+		currentState := projection.Activity
+		resolvedTo, found := e.transitions.resolve(currentState, e.request.Event)
+		if e.blocker != nil && projection.Status == workstate.Active {
+			resolvedTo, found = "blocked", true
+		}
+		if !found {
+			return nil, "", fmt.Errorf(
+				"Agent event %s is not legal from state %s (canonical Agent states: spawned, reading, understanding_submitted, understanding_approved, activated, working, reported, done, blocked, stopped)",
+				e.request.Event, currentState)
+		}
+		return agent, resolvedTo, nil
+	}
+	return nil, "", fmt.Errorf("Agent %s is not registered", e.request.AgentID)
+}
+
+// refusal is the read-only mirror of the Apply closure's judgments. The Apply
+// closure keeps the authority under concurrency; this mirror is what the
+// mutation's Precheck runs, so a repeated Agent lifecycle event keeps the
+// domain's own outcome instead of the journal's global event-id collision.
+//
+// The judgments run in the Apply closure's order, so the first refusal is the
+// same one the Apply closure produces. The mirror writes nothing: it reads
+// the Runtime state and leaves both the Runtime and the journal untouched.
+func (e agentLifecycleEvent) refusal(state map[string]any) error {
+	agent, _, err := e.judge(state)
+	if err != nil {
+		return err
+	}
+	// The event params judgment stamps the activation revision on the Agent
+	// row, so the mirror runs it against a copy of the row: only its outcome
+	// is used and the locked Runtime state stays untouched.
+	shadow, err := shadowAgentRow(agent)
+	if err != nil {
+		return err
+	}
+	return applyAgentEventParams(e.root, shadow, fmt.Sprint(state["schema_version"]), e.request, e.message, e.commitRevision)
+}
+
+// shadowAgentRow copies the Agent row so a read-only judgment can run
+// against the facts without writing them.
+func shadowAgentRow(agent map[string]any) (map[string]any, error) {
+	data, err := json.Marshal(agent)
+	if err != nil {
+		return nil, fmt.Errorf("clone Agent row: %w", err)
+	}
+	var shadow map[string]any
+	if err := json.Unmarshal(data, &shadow); err != nil {
+		return nil, fmt.Errorf("decode cloned Agent row: %w", err)
+	}
+	return shadow, nil
 }
 
 // applyAgentEventParams applies event-specific param checks. These mirror
@@ -505,6 +590,12 @@ func applyAgentEventParams(root string, agent map[string]any, schemaVersion stri
 		if err := verifyActivationReadbackChain(root, agent, message); err != nil {
 			return err
 		}
+		// activation_revision is the audit coordinate of the activation commit
+		// (the Runtime revision in force when this activation happened). It is
+		// a projection only: it is not an assertion, not a gate, and it takes
+		// part in no identity construction. The Runtime revision is an audit
+		// coordinate and never proves professional correctness
+		// (L4-revision-usage.md:141).
 		agent["activation_revision"] = commitRevision + 1
 	case "understanding_rejected":
 		if currentState != "understanding_submitted" {
@@ -546,12 +637,8 @@ func applyAgentEventParams(root string, agent map[string]any, schemaVersion stri
 	return nil
 }
 
-// verifyActivationReadbackChain fail-closes the activation envelope's
-// hash-chain fields against the registered readback file: the envelope's
-// approved_readback_sha256 must equal the byte hash of the file recorded at
-// readback_submitted, and approved_readback_message_id must equal that
-// file's message_id. The fields were schema-required before but never
-// checked — ceremony; this makes them a guarantee.
+// verifyActivationReadbackChain links the activation to the original registered
+// readback message. Historical digest fields are not recomputed or validated.
 func verifyActivationReadbackChain(root string, agent map[string]any, message agentMessage) error {
 	return agentauth.VerifyActivationReadbackChain(root, agent, message)
 }

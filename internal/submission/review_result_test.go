@@ -20,12 +20,12 @@ func submissionReviewPacket(t *testing.T, owner string) workpacket.ReviewResultP
 	packet, err := workpacket.BuildReviewResult(workpacket.ReviewResultBinding{
 		RuntimeID: "loop-REQ-041", BaselineGeneration: 3,
 		ReviewPlanID: "review-plan-041-r1", ReviewPlanRef: ".claude/review/plan.json",
-		ReviewPlanSHA256: strings.Repeat("a", 64), ReviewPlanRevision: 2, ReviewRound: 1,
-		AssignmentID: "assignment-" + owner, AssignmentSHA256: strings.Repeat("b", 64),
-		OwnerAgentID: owner, ClaimIDs: []string{"claim-login"}, SubjectDigest: strings.Repeat("c", 64),
+		ReviewPlanRevision: 2,
+		AssignmentID:       "assignment-" + owner,
+		OwnerAgentID:       owner, ClaimIDs: []string{"claim-login"},
 	}, workpacket.ReviewResultInputs{
 		Claims:         json.RawMessage(`[{"claim_id":"claim-login","lens":"qa","target":"login","assertion":"login works","oracle":"visible home","method":"submit credentials","applicability":"required","source_refs":["REQ-041"]}]`),
-		FrozenSubjects: json.RawMessage(`[{"path":"docs/requirements/REQ-041.md","sha256":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}]`),
+		FrozenSubjects: json.RawMessage(`[{"path":"docs/requirements/REQ-041.md"}]`),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -57,7 +57,7 @@ func submissionReviewState(t *testing.T, packets ...workpacket.ReviewResultPacke
 		"entities":      map[string]any{"work_packets": rows},
 		"review": map[string]any{"round": 1, "assignments": assignments, "plan": map[string]any{
 			"plan_id": first.Binding.ReviewPlanID, "path": first.Binding.ReviewPlanRef,
-			"sha256": first.Binding.ReviewPlanSHA256, "revision": first.Binding.ReviewPlanRevision, "review_round": 1,
+			"revision": first.Binding.ReviewPlanRevision,
 		}},
 	}
 }
@@ -125,14 +125,14 @@ func TestReviewResultPathRetainsGlobalIndexChecks(t *testing.T) {
 	}
 }
 
-func TestReviewResultPathRequiresSelectedCanonicalBody(t *testing.T) {
+func TestReviewResultPathAcceptsOriginalIssuedBodyWithChangedGuidance(t *testing.T) {
 	root := t.TempDir()
 	packet := submissionReviewPacket(t, "reviewer-own")
 	state := submissionReviewState(t, packet)
 	row := state["entities"].(map[string]any)["work_packets"].([]any)[0].(map[string]any)
 	row["draft"].(map[string]any)["title"] = "forged title"
-	if _, _, _, err := currentReviewResultSourceForPathContext(context.Background(), root, state, packet.AnswerPath); err == nil {
-		t.Fatal("selection coordinates substituted for canonical packet validation")
+	if _, _, found, err := currentReviewResultSourceForPathContext(context.Background(), root, state, packet.AnswerPath); err != nil || !found {
+		t.Fatalf("changed guidance blocked original issued responsibility: %v", err)
 	}
 }
 
@@ -164,6 +164,12 @@ func TestSubmittedReviewResultReceiptFailurePreservesCommitCoordinates(t *testin
 			}
 			snapshot := loopruntime.Snapshot{Revision: 42, State: state}
 			receipt, err := submittedReviewResultReceipt(root, source, snapshot, packet, packet.Binding.OwnerAgentID, ctx)
+			if failure == "missing result" {
+				if err != nil || !receipt.Accepted || receipt.WorkComplete {
+					t.Fatalf("accepted original responsibility was lost: %+v %v", receipt, err)
+				}
+				return
+			}
 			var gap *ReviewResultReceiptError
 			if !errors.As(fmt.Errorf("caller: %w", err), &gap) || gap.PacketID != packet.ID || gap.OwnerAgentID != packet.Binding.OwnerAgentID || gap.AnswerPath != packet.AnswerPath || gap.SourceRoot != source || gap.Revision != 42 || gap.Cause == nil {
 				t.Fatalf("lost successful submission coordinates: receipt=%+v error=%v", receipt, err)

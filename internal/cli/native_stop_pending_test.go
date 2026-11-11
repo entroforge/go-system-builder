@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,27 +14,50 @@ import (
 	"github.com/entroforge/go-system-builder/internal/metrics"
 	"github.com/entroforge/go-system-builder/internal/policy"
 	"github.com/entroforge/go-system-builder/internal/runtime"
+	"github.com/entroforge/go-system-builder/internal/semantic"
 	"github.com/entroforge/go-system-builder/internal/submission"
-	"github.com/entroforge/go-system-builder/internal/workpacket"
 	"github.com/entroforge/go-system-builder/internal/workspace"
 )
 
-func stopFingerprintPending(t *testing.T, root string) string {
+func stopCommitPending(t *testing.T, root string) string {
 	t.Helper()
-	state, err := runtime.NewStore(filepath.Join(root, ".claude/loop-state.json"), filepath.Join(root, ".claude/loop-events.jsonl")).Snapshot()
+	statePath := filepath.Join(root, ".claude/loop-state.json")
+	journalPath := filepath.Join(root, ".claude/loop-events.jsonl")
+	writer := runtime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{})
+	before, err := writer.Snapshot()
 	if err != nil {
 		t.Fatal(err)
 	}
-	encoded, err := json.MarshalIndent(state.State, "", "  ")
+	life := before.State["lifecycle"].(map[string]any)
+	cursor := map[string]any{"state": life["state"], "phase": life["phase"]}
+	id := fmt.Sprintf("pending-fixture-%d", time.Now().UnixNano())
+	generation := 0
+	if baseline, ok := before.State["baseline"].(map[string]any); ok {
+		switch n := baseline["generation"].(type) {
+		case int:
+			generation = n
+		case float64:
+			generation = int(n)
+		}
+	}
+	after, err := writer.Update(before.Revision, runtime.Mutation{EventID: id, RequestID: id, TransitionID: "PENDING-FIXTURE", Event: "pending_fixture", Actor: "orchestrator", IdempotencyKey: id, RuntimeID: before.State["runtime_id"].(string), BaselineGeneration: generation, From: cursor, To: cursor, RetainLastTransition: true, OccurredAt: time.Now().UTC()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	hash := workpacket.Digest(append(encoded, '\n'))
-	marker := filepath.Join(root, ".claude/loop-state.json.fingerprint-pending.json")
-	data, err := json.Marshal(map[string]any{"schema_version": "1.0.0", "previous_state_sha256": hash, "previous_revision": state.Revision, "state_sha256": hash, "state": state.State})
+	journal, err := os.ReadFile(journalPath)
 	if err != nil {
 		t.Fatal(err)
 	}
+	lines := strings.Split(strings.TrimSpace(string(journal)), "\n")
+	var event map[string]any
+	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &event); err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(map[string]any{"schema_version": "1.0.0", "previous_revision": before.Revision, "request_id": event["request_id"], "idempotency_key": event["idempotency_key"], "retain_last_transition": true, "state": after.State, "journal_event": event})
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker := statePath + ".commit-pending.json"
 	if err := os.WriteFile(marker, data, 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -62,19 +86,19 @@ func TestNativeStopPendingS9AcceptedPlanContinuesSamePublicEvent(t *testing.T) {
 		t.Fatal(err)
 	}
 	var preparation bytes.Buffer
-	if err := importNativeS9PlanReport(t.Context(), root, worker, p, service, &preparation); err != nil {
+	if err := receiveNativeS9ReadyPlan(t.Context(), root, worker, p, service, &preparation, nil); err != nil {
 		t.Fatal(err)
 	}
 	if receipt, err := service.SaveRepairPlanReportFrom(t.Context(), p.Binding.OwnerAgentID, filepath.Join(root, p.AnswerPath), root, nil); err != nil || !receipt.Accepted {
 		t.Fatalf("original Plan: %+v %v", receipt, err)
 	}
-	if err := recordNativeS9Source(t.Context(), root, worker, repairLeadGit(t, root, "rev-parse", "HEAD"), p); err != nil {
+	if err := recordNativeS9OriginalLocation(t.Context(), root, p, worker); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := service.IssueRepairResults(t.Context(), p.Binding.OwnerAgentID); err != nil {
 		t.Fatal(err)
 	}
-	marker := stopFingerprintPending(t, root)
+	marker := stopCommitPending(t, root)
 	in.Event = "SubagentStop"
 	_, diag := stopPendingPublic(t, root, in)
 	if !strings.Contains(diag, "recovered the original pending Writer") {
@@ -96,8 +120,8 @@ func TestNativeStopPendingS9AcceptedPlanContinuesSamePublicEvent(t *testing.T) {
 func TestNativeStopPendingS8OnlyRecoversOriginalWriter(t *testing.T) {
 	root := investigationLeadTestRoot(t)
 	investigationLeadTestIngest(t, root)
+	marker := stopCommitPending(t, root)
 	before := repairDispatchRuntimeBytes(t, root)
-	marker := stopFingerprintPending(t, root)
 	ctx, timings := metrics.WithCallTimings(context.Background())
 	in := policy.Input{Context: ctx, Event: "SubagentStop", AgentID: "opaque-investigator", CWD: root, LastAssistantMessage: "original S8 task"}
 	var diag bytes.Buffer
@@ -115,7 +139,7 @@ func TestNativeStopPendingS8OnlyRecoversOriginalWriter(t *testing.T) {
 
 func TestNativeStopPendingOnlyExactEventAndActor(t *testing.T) {
 	root, _, _, _, _ := nativeS9WorkerFixture(t)
-	marker := stopFingerprintPending(t, root)
+	marker := stopCommitPending(t, root)
 	before, err := os.ReadFile(marker)
 	if err != nil {
 		t.Fatal(err)
@@ -140,7 +164,7 @@ func TestNativeStopPendingFailureAndCancellationRetainOriginalBoundary(t *testin
 	for _, mode := range []string{"invalid-marker", "canceled", "expired"} {
 		t.Run(mode, func(t *testing.T) {
 			root, _, _, in, _ := nativeS9WorkerFixture(t)
-			marker := stopFingerprintPending(t, root)
+			marker := stopCommitPending(t, root)
 			if mode == "invalid-marker" {
 				if err := os.WriteFile(marker, []byte("invalid durable marker"), 0600); err != nil {
 					t.Fatal(err)
@@ -164,15 +188,31 @@ func TestNativeStopPendingFailureAndCancellationRetainOriginalBoundary(t *testin
 			}
 			in.Event = "SubagentStop"
 			in.Context = ctx
-			var diag bytes.Buffer
-			nativeHookRoutes(root, in, &bytes.Buffer{}, &diag)
+			var out, diag bytes.Buffer
+			handled, code := nativeHookRoutes(root, in, &out, &diag)
 			repairDispatchAssertUnchanged(t, root, before)
 			after, err := os.ReadFile(marker)
 			if err != nil || !bytes.Equal(markerBefore, after) {
 				t.Fatalf("failed attempt changed pending: %v", err)
 			}
-			if mode == "invalid-marker" && !strings.Contains(diag.String(), "could not recover the original pending Writer") {
-				t.Fatal(diag.String())
+			if mode == "invalid-marker" {
+				// The degraded surface does not block, but it is not a silent
+				// pass either: the failure stays visible and names the recovery
+				// action Main still has to take
+				// (L4-hook-platform-wiring.md:162 — the stop hook grants no
+				// completion, so the original responsibility stays unfinished
+				// and the actor must be told how to continue it).
+				if !handled || code != 0 {
+					t.Fatalf("degraded pending recovery blocked the return: %t %d %s", handled, code, &diag)
+				}
+				for _, want := range []string{"could not recover the original pending Writer", "professional reception remains unconfirmed", "Main must restore the original Runtime source", "inspect its original receipts"} {
+					if !strings.Contains(diag.String(), want) {
+						t.Fatalf("degraded pending recovery lost the visible notice %q: %s", want, diag.String())
+					}
+				}
+				if !strings.Contains(out.String(), "Main must restore the original Runtime source") {
+					t.Fatalf("degraded pending recovery stayed silent to the actor: %s", out.String())
+				}
 			}
 			if strings.Contains(diag.String(), "answer received") || strings.Contains(diag.String(), "recovered the original pending Writer;") {
 				t.Fatal("failure claimed recovery or reception")
@@ -188,13 +228,13 @@ func TestNativeStopPendingFrozenS9RetainsSamePublicStopGate(t *testing.T) {
 		t.Fatal(err)
 	}
 	var preparation bytes.Buffer
-	if err := importNativeS9PlanReport(t.Context(), root, worker, plan, service, &preparation); err != nil {
+	if err := receiveNativeS9ReadyPlan(t.Context(), root, worker, plan, service, &preparation, nil); err != nil {
 		t.Fatal(err)
 	}
 	if receipt, err := service.SaveRepairPlanReportFrom(t.Context(), plan.Binding.OwnerAgentID, filepath.Join(root, plan.AnswerPath), root, nil); err != nil || !receipt.Accepted {
 		t.Fatalf("original Plan: %+v %v", receipt, err)
 	}
-	if err := recordNativeS9Source(t.Context(), root, worker, repairLeadGit(t, root, "rev-parse", "HEAD"), plan); err != nil {
+	if err := recordNativeS9OriginalLocation(t.Context(), root, plan, worker); err != nil {
 		t.Fatal(err)
 	}
 	snap := repairDispatchSnapshot(t, root)
@@ -211,10 +251,6 @@ func TestNativeStopPendingFrozenS9RetainsSamePublicStopGate(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := registry.Bootstrap(execution, binary); err != nil {
-		t.Fatal(err)
-	}
-	execution.BootstrapSHA256, err = workspace.BootstrapDigest(execution)
-	if err != nil {
 		t.Fatal(err)
 	}
 	if err := registry.ValidateBootstrap(execution); err != nil {
@@ -238,18 +274,57 @@ func TestNativeStopPendingFrozenS9RetainsSamePublicStopGate(t *testing.T) {
 		code := Run([]string{"hook", "--root", root, "--event", in.Event}, bytes.NewReader(body), &out, &diag)
 		return code, out.String() + diag.String()
 	}
-	before := repairDispatchRuntimeBytes(t, root)
+	baselineBefore := repairDispatchRuntimeBytes(t, root)
 	baselineCode, baseline := call()
-	if baselineCode != 2 {
-		t.Fatalf("fixture did not exercise original frozen unfinished Stop gate: %d %s", baselineCode, baseline)
+	// The retired frozen unfinished Stop gate is gone. L4-workflow-convergence.md:342 —
+	// "删除旧 C／D、frozen、typed、Candidate／Final、source pin 的并行接收、来源证明及
+	// 恢复接线"; L4-hook-platform-wiring.md:83 — "当前消费者按当前真实责任及派发关联
+	// 处理". The current consumer reports the honest fact instead of blocking the
+	// return: the answer has not been established as received and the work is not
+	// established as complete.
+	if baselineCode != 0 {
+		t.Fatalf("retired frozen unfinished Stop gate still blocks the return: %d %s", baselineCode, baseline)
 	}
-	marker := stopFingerprintPending(t, root)
+	for _, want := range []string{"has not been established as received", "not established as complete"} {
+		if !strings.Contains(baseline, want) {
+			t.Fatalf("unfinished return did not report %q: %s", want, baseline)
+		}
+	}
+	// The honest notice only projects the current fact; it is not a second
+	// consuming reader, so the retired gate must not write a reception fact.
+	// L4-hook-platform-wiring.md:83 — "显示 reader 只投影事实，不成为第二个认证
+	// 消费者".
+	repairDispatchAssertUnchanged(t, root, baselineBefore)
+
+	marker := stopCommitPending(t, root)
+	// The current pending helper commits the original transaction itself
+	// (internal/runtime/store.go:944) before it writes the durable marker, so the
+	// Runtime pair legitimately changes here. Snapshot after that commit: the
+	// invariant is that the recovery completes the original transaction exactly
+	// once and invents no new fact. L4-hook-platform-wiring.md:290 — "原 Writer 在
+	// 有限预算内识别并恢复原事务，保留原输入与已成立事实";
+	// L4-runtime-control-plane.md:299 — "若原 pending 事务能够确定性恢复，就完成原
+	// 事务".
+	before := repairDispatchRuntimeBytes(t, root)
 	code, feedback := call()
 	if code != baselineCode || !strings.Contains(feedback, "recovered the original pending Writer") {
 		t.Fatalf("pending swallowed frozen Stop: %d %s; baseline %d %s", code, feedback, baselineCode, baseline)
 	}
+	// The same public Stop gate is retained after the recovery: recovering the
+	// original pending Writer is not a professional reception, so the unfinished
+	// facts must still be reported as unfinished.
+	for _, want := range []string{"does not establish professional reception", "has not been established as received", "not established as complete"} {
+		if !strings.Contains(feedback, want) {
+			t.Fatalf("recovered Stop did not retain the public gate report %q: %s", want, feedback)
+		}
+	}
 	repairDispatchAssertUnchanged(t, root, before)
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
 		t.Fatalf("pending not retired: %v", err)
+	}
+	// The retired hash-proof pending path must not be resurrected: the current
+	// mechanism is the durable commit marker alone.
+	if _, err := os.Stat(filepath.Join(root, ".claude/loop-state.json.fingerprint-pending.json")); !os.IsNotExist(err) {
+		t.Fatalf("retired fingerprint pending marker reappeared: %v", err)
 	}
 }

@@ -104,8 +104,26 @@ func TestBugInvestigationStartedWithoutRuntimeRevision(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(journal), "-0\"") || strings.Contains(string(journal), ":-1") {
+	// G18 §1: the omitted revision must not reach the BUG event identity. The
+	// identity now names the BUG, the operation and the BUG's own attempt
+	// number, so the probe is scoped to the identity fields instead of the
+	// whole journal text, and it pins the exact committed identity.
+	if strings.Contains(string(journal), ":-1") {
 		t.Fatalf("omitted revision leaked into BUG event identity: %s", journal)
+	}
+	var event map[string]any
+	if err := json.Unmarshal(journal, &event); err != nil {
+		t.Fatal(err)
+	}
+	if event["event_id"] != "evt-bug-BUG-001-investigation_started-0" ||
+		event["idempotency_key"] != "runtime:bug:BUG-001:investigation_started:0" {
+		t.Fatalf("omitted revision leaked into BUG event identity: %s", journal)
+	}
+	for _, field := range []string{"event_id", "idempotency_key"} {
+		identity, _ := event[field].(string)
+		if strings.Contains(identity, ":-1") || strings.HasSuffix(identity, "-1") {
+			t.Fatalf("omitted revision leaked into BUG event identity: %s", journal)
+		}
 	}
 	assertBugState(t, root, "BUG-001", "investigating")
 }

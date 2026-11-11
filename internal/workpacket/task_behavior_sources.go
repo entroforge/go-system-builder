@@ -21,7 +21,6 @@ func taskBehaviorSources(a TaskAnalysisArtifact, p Packet) (map[string]string, e
 			} `json:"case"`
 			Sources []struct {
 				Path string `json:"path"`
-				SHA  string `json:"sha256"`
 			} `json:"sources"`
 		} `json:"example"`
 	}
@@ -47,17 +46,14 @@ func taskBehaviorSources(a TaskAnalysisArtifact, p Packet) (map[string]string, e
 		for _, ref := range e.Example.Sources {
 			formalREQ := false
 			for _, input := range p.Inputs {
-				if strings.HasPrefix(input.Path, "docs/requirements/REQ-") && input.Path == ref.Path && input.SHA256 == ref.SHA {
+				if strings.HasPrefix(input.Path, "docs/requirements/REQ-") && input.Path == ref.Path {
 					formalREQ = true
 				}
 			}
-			if !safeRelative(ref.Path) || (!strings.HasPrefix(ref.Path, "docs/design/prototypes/") && !formalREQ) || !digestPattern.MatchString(ref.SHA) {
+			if !safeRelative(ref.Path) || (!strings.HasPrefix(ref.Path, "docs/design/prototypes/") && !formalREQ) {
 				return nil, fmt.Errorf("behavior source escapes the current module package")
 			}
-			if prior, ok := result[ref.Path]; ok && prior != ref.SHA {
-				return nil, fmt.Errorf("behavior source hashes conflict")
-			}
-			result[ref.Path] = ref.SHA
+			result[ref.Path] = ""
 		}
 	}
 	return result, nil

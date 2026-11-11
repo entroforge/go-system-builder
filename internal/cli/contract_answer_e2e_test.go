@@ -32,7 +32,7 @@ func contractAnswerFromDesignFixture(t *testing.T, root string, design workpacke
 	stageCLI(t, "runtime", "stage-answer", "consume", "--root", root, "--agent", "Main", "--path", design.AnswerPath)
 	settleMainPlanningFollowups(t, root)
 	writeContractSource(t, root, "docs/design/README.md", "# Design sources\n")
-	writeContractSource(t, root, "docs/dev/contracts/CONTRACTS-039.md", "# Contract batch\n> 需求：REQ-039\n> 状态：locked\n> 版本：v1.0.0\n> Shared model policy: none\n> Shared model reason: This fixture delivers no shared wire model.\n\n## 合同清单\n\n| 合同ID | 类型 | 负责人 | 状态 | 版本 | 联调点 |\n|:---|:---|:---|:---|:---|:---|\n| BE-039 | 后端 | Main | locked | v1.0.0 | N/A |\n\n## 需求覆盖矩阵\n\n| REQ source_ref | FE 合同条款 | BE 合同条款 | SYNC 条款 |\n|:---|:---|:---|:---|\n")
+	writeContractSource(t, root, "docs/dev/contracts/CONTRACTS-039.md", "# Contract batch\n> 需求：REQ-039\n> 状态：locked\n> 版本：v1.0.0\n> Shared model policy: none\n> Shared model reason: This fixture delivers no shared wire model.\n\n## 合同清单\n\n| 合同ID | 类型 | 负责人 | 状态 | 版本 | 联调点 |\n|:---|:---|:---|:---|:---|:---|\n| BE-039 | 后端 | Main | locked | v1.0.0 | N/A |\n\n## 需求覆盖矩阵\n\n| REQ source_ref | FE 合同条款 | BE 合同条款 | SYNC 条款 |\n|:---|:---|:---|:---|\n| REQ-039 | — | BE-039 §1 | — |\n")
 	writeContractSource(t, root, "docs/dev/contracts/BE-039.md", "# Backend contract\n> 状态：locked\n> 版本：v1.0.0\n\n## Contract clauses\n\n| 本合同条款 | 条款 |\n|:---|:---|\n| §1 | Fixture service behavior |\n")
 	for _, setup := range configure {
 		setup(root)
@@ -193,39 +193,43 @@ func TestContractAnswerPendingAndOriginalPairRecovery(t *testing.T) {
 		t.Fatalf("pending original reception: %+v %v", old, err)
 	}
 	path, pair := latestStageCheckpoint(t, root)
-	for _, mutation := range []string{"replaced_without_decision", "wrong_owner", "wrong_professional_digest"} {
-		t.Run(mutation, func(t *testing.T) {
-			state := stageSnapshot(t, root).State
-			rows := state["entities"].(map[string]any)["submissions"].([]any)
-			for _, raw := range rows {
-				row := raw.(map[string]any)
-				if row["packet_id"] != p.ID {
-					continue
-				}
-				switch mutation {
-				case "replaced_without_decision":
-					row["control_status"] = "replaced"
-				case "wrong_owner":
-					row["owner"] = "other"
-				case "wrong_professional_digest":
-					row["content_sha256"] = strings.Repeat("0", 64)
-				}
+	for _, historical := range []any{nil, "obsolete", 7, []any{"unknown"}, map[string]any{"extra": true}} {
+		state := stageSnapshot(t, root).State
+		rows := state["entities"].(map[string]any)["submissions"].([]any)
+		for _, raw := range rows {
+			row := raw.(map[string]any)
+			if row["packet_id"] == p.ID {
+				row["content_sha256"] = historical
 			}
-			if err := runtime.ValidateCheckpointIndices(root, state, pair.JournalBytes); err == nil {
-				t.Fatal("forged S3 checkpoint accepted")
-			}
-		})
+		}
+		if err := runtime.ValidateCheckpointIndices(root, state, pair.JournalBytes); err != nil {
+			t.Fatalf("unrelated historical field blocked original Runtime pair: %v", err)
+		}
 	}
 	damageStagePair(t, root)
 	plan := checkpointPlan(t, root, path, pair.State)
 	stageCLI(t, "runtime", "recover", "apply", "--root", root, "--plan", plan, "--approved-by", "operator")
-	if !reflect.DeepEqual(stageSnapshot(t, root).State, before.State) {
-		t.Fatal("S2/S3 original pair facts changed during restore")
+	restoredSnapshot := stageSnapshot(t, root)
+	// The original recovery Writer records its own completion revision and
+	// journal event; all recovered professional and responsibility facts stay.
+	beforeFacts, restoredFacts := map[string]any{}, map[string]any{}
+	for key, value := range before.State {
+		if key != "revision" && key != "journal" {
+			beforeFacts[key] = value
+		}
+	}
+	for key, value := range restoredSnapshot.State {
+		if key != "revision" && key != "journal" {
+			restoredFacts[key] = value
+		}
+	}
+	if restoredSnapshot.Revision <= before.Revision || !reflect.DeepEqual(restoredFacts, beforeFacts) {
+		t.Fatal("S2/S3 original professional facts changed during recovery")
 	}
 	stageCLI(t, "runtime", "stage-answer", "recover", "--root", root, "--agent", "Main")
 	after := stageSnapshot(t, root)
 	next, _, err := runtime.FindSubmission(after.State, p.ID)
-	if err != nil || next.ControlStatus != "advanced" || old.Key != next.Key || old.EvidenceID != next.EvidenceID || old.ContentHash != next.ContentHash || len(after.State["evidence"].([]any)) != len(before.State["evidence"].([]any)) {
+	if err != nil || next.ControlStatus != "advanced" || old.Key != next.Key || old.EvidenceID != next.EvidenceID || len(after.State["evidence"].([]any)) != len(before.State["evidence"].([]any)) {
 		t.Fatalf("recovery changed professional reception: %+v %v", next, err)
 	}
 	assertDesignCheckpoint(t, root)
@@ -252,8 +256,8 @@ func TestContractAnswerConditionalADRPassesOriginalGate(t *testing.T) {
 	assertDesignCheckpoint(t, root)
 }
 
-func TestContractAnswerRejectsDraftAndSourceDriftBeforeReception(t *testing.T) {
-	for _, mode := range []string{"draft", "unknown_contract", "source_drift", "semantic_token"} {
+func TestContractAnswerRejectsActualSelectedSourceProblemsBeforeReception(t *testing.T) {
+	for _, mode := range []string{"draft", "unknown_contract", "semantic_token"} {
 		t.Run(mode, func(t *testing.T) {
 			root, p := newContractAnswerFixture(t, func(root string) {
 				if mode == "semantic_token" {
@@ -271,8 +275,11 @@ func TestContractAnswerRejectsDraftAndSourceDriftBeforeReception(t *testing.T) {
 				writeContractSource(t, root, "docs/dev/contracts/BE-039.md", "# Draft\n> Status: draft\n> Version: v1.0.0\n")
 			case "unknown_contract":
 				writeContractSource(t, root, "docs/dev/contracts/FE-039.md", "# Extra draft\n> Status: draft\n> Version: v1.0.0\n")
-			case "source_drift":
-				writeContractSource(t, root, "docs/design/prototypes/new-module/scenario-model.json", "{}\n")
+			}
+			// The declared source is the bound Git branch: make the intended
+			// professional error part of that source, not only the checkout.
+			if mode == "draft" || mode == "unknown_contract" {
+				fixtures.CommitCurrentFixture(t, root)
 			}
 			before := stageSnapshot(t, root)
 			s, err := submission.New(root)
@@ -371,8 +378,12 @@ func TestContractAnswerCommittedDesignCorrectionAfterS2UsesOriginalOutlet(t *tes
 	if packet.ID == "" {
 		t.Fatal("committed professional correction did not prepare S3")
 	}
-	if len(packet.Inputs.Designs) != 1 || packet.Inputs.Designs[0].SHA256 != workpacket.Digest(current) {
-		t.Fatal("S3 did not use current committed design", packet.Inputs.Designs)
+	if len(packet.Inputs.Designs) != 1 || packet.Inputs.Designs[0].Path != arch || packet.Inputs.Designs[0].Version == "" {
+		t.Fatal("S3 did not retain the actual design identity", packet.Inputs.Designs)
+	}
+	committedDesign, err := os.ReadFile(filepath.Join(root, arch))
+	if err != nil || !bytes.Equal(committedDesign, current) {
+		t.Fatalf("corrected professional design was not retained: %v", err)
 	}
 	if !reflect.DeepEqual(oldDocuments, prepared.State["documents"]) {
 		t.Fatal("original S2 documents were rewritten")
@@ -398,7 +409,7 @@ func TestContractAnswerCommittedDesignCorrectionAfterS2UsesOriginalOutlet(t *tes
 			}
 			evidencePath := row["path"].(string)
 			evidence, readErr := service.Files.ReadFile(evidencePath)
-			t.Logf("actual original evidence read: path=%s err=%v digest=%s index=%v", evidencePath, readErr, workpacket.Digest(evidence), row["sha256"])
+			t.Logf("actual original evidence read: path=%s err=%v", evidencePath, readErr)
 			var envelope struct {
 				Subjects []workpacket.Subject `json:"subject_refs"`
 			}

@@ -46,8 +46,8 @@ func runWorkspaceCommit(args []string, stdout, stderr io.Writer) int {
 		return fail(fmt.Errorf("bind Main first"))
 	}
 	e, ok := b.Execution(*id, workspace.RuntimeID(snap.State), workspace.Generation(snap.State))
-	if !ok || e.AgentID != *agent || e.Status != "ready" || e.BootstrapSHA256 == "" {
-		return fail(fmt.Errorf("commit requires the active bootstrapped Worker owner"))
+	if !ok || e.AgentID != *agent || e.Status != "ready" {
+		return fail(fmt.Errorf("commit requires the active ready Worker owner"))
 	}
 	submissionPaths, err := b.WorkerSubmissionPaths(e)
 	if err != nil {

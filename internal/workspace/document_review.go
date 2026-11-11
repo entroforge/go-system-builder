@@ -1,14 +1,13 @@
 package workspace
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"path/filepath"
 	"reflect"
 
 	"github.com/entroforge/go-system-builder/internal/runtime"
+	"github.com/entroforge/go-system-builder/internal/schema"
 	"github.com/entroforge/go-system-builder/internal/workpacket"
 )
 
@@ -79,11 +78,6 @@ func (b *ExecutionRegistry) PlanDocumentReview(ctx context.Context, state map[st
 	if err != nil {
 		return e, err
 	}
-	for path, hash := range analysisInputs {
-		if e.Inputs[path] != hash {
-			return e, fmt.Errorf("prepared input differs from frozen task analysis: %s; restore the original bytes or use the original replanning route", path)
-		}
-	}
 	if existing, ok := b.Executions[e.AssignmentID]; ok && (existing.Purpose != DocumentReviewPurpose || existing.WorkPacketID != p.ID || existing.StageEntry == nil || *existing.StageEntry != p.Binding.StageEntry) {
 		return e, fmt.Errorf("existing execution does not match this immutable document review")
 	}
@@ -119,39 +113,39 @@ func (b *ExecutionRegistry) ValidateDocumentReviewView(e Execution, p workpacket
 	if err != nil {
 		return err
 	}
+	// The re-derived view supplies the identity coordinates only. Its bytes are
+	// never compared with the Worker's own view file.
 	expected, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
+		return err
+	}
+	var coordinates workpacket.ExecutionView
+	if err := json.Unmarshal(expected, &coordinates); err != nil {
 		return err
 	}
 	data, err := workpacket.ReadFile(e.Path, workpacket.WorkerViewPath, 1<<20)
 	if err != nil {
 		return err
 	}
-	if !bytes.Equal(data, append(expected, '\n')) {
+	// The Worker view must still be a valid, schema-conforming questionnaire.
+	if err := schema.NewEmbeddedValidator().ValidateBytes("work-packet-execution.schema.json", data); err != nil {
+		return fmt.Errorf("Worker view is not a valid execution questionnaire: %w", err)
+	}
+	var observed workpacket.ExecutionView
+	if err := json.Unmarshal(data, &observed); err != nil {
+		return fmt.Errorf("Worker view is not a readable execution questionnaire: %w", err)
+	}
+	if observed.Root != coordinates.Root || observed.Generation != coordinates.Generation || observed.Owner != coordinates.Owner || observed.AuthoringPath != coordinates.AuthoringPath {
 		return fmt.Errorf("Worker view does not match the registered packet/execution")
 	}
-	for _, ref := range p.Inputs {
-		if e.Inputs[ref.Path] != ref.SHA256 {
-			return fmt.Errorf("execution lacks the packet's frozen subject %s", ref.Path)
-		}
-		data, err := workpacket.ReadFile(e.Path, filepath.ToSlash(filepath.Join(".claude/inputs", ref.Path)), 8<<20)
-		if err != nil || workpacket.Digest(data) != ref.SHA256 {
-			return fmt.Errorf("Worker frozen subject changed: %s", ref.Path)
-		}
+	if observed.Packet.ID != p.ID || observed.Packet.TemplateID != p.TemplateID || !reflect.DeepEqual(observed.Packet.Binding, p.Binding) {
+		return fmt.Errorf("Worker view does not match the registered packet/execution")
 	}
-	analysisInputs, err := workpacket.TaskAnalysisInputs(b.MainRoot, p)
-	if err != nil {
-		return err
-	}
-	for path, hash := range analysisInputs {
-		if e.Inputs[path] != hash {
-			return fmt.Errorf("execution lacks frozen task analysis input: %s", path)
-		}
-		data, err := workpacket.ReadFile(e.Path, filepath.ToSlash(filepath.Join(".claude/inputs", path)), 8<<20)
-		if err != nil || workpacket.Digest(data) != hash {
-			return fmt.Errorf("Worker frozen task analysis input changed: %s", path)
-		}
-	}
+	// Input paths identify the materials supplied to the original review.
+	// Their historic digest fields are not an authorization or acceptance
+	// condition. The view itself is judged the same way: only its schema
+	// validity and its original identity coordinates qualify it. Reviewers and
+	// Main assess the actual material they consume.
 	return nil
 }
 

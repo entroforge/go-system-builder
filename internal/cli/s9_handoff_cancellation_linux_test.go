@@ -25,7 +25,7 @@ func TestS9HandoffSpentProgressPreservesIndexesWithoutNewDocumentReads(t *testin
 	}
 	defer syscall.Close(watch)
 	paths := []string{filepath.Join(root, e.DeliveryRef)}
-	for _, ref := range repairArtifactRefs(repairPointerCLI(snap.State), "plan_report_refs", "plan_report_ref", "plan_report_sha256") {
+	for _, ref := range repairArtifactRefs(repairPointerCLI(snap.State), "plan_report_refs", "plan_report_ref") {
 		paths = append(paths, filepath.Join(root, ref.Path))
 	}
 	for _, row := range objectSliceAny(mapFieldCLI(snap.State, "entities")["work_packets"]) {

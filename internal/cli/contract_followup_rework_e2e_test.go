@@ -1,19 +1,19 @@
 package cli_test
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/entroforge/go-system-builder/internal/controller"
 	"github.com/entroforge/go-system-builder/internal/fileview"
 	"github.com/entroforge/go-system-builder/internal/qualitygate"
 	"github.com/entroforge/go-system-builder/internal/runtime"
-	"github.com/entroforge/go-system-builder/internal/semantic"
 	"github.com/entroforge/go-system-builder/internal/submission"
 	"github.com/entroforge/go-system-builder/internal/transition"
 	fixtures "github.com/entroforge/go-system-builder/tests/fixtures/req039"
@@ -49,64 +49,56 @@ func (s3IncompleteGate) Evaluate(_ context.Context, input qualitygate.Input) (qu
 }
 
 func TestS3NotReadyRetainsAcceptedFollowupAndReadRetries(t *testing.T) {
-	for _, legacy := range []bool{false, true} {
-		t.Run(fmt.Sprintf("legacy_no_transition=%t", legacy), func(t *testing.T) {
-			root, packet := newContractAnswerFixture(t)
-			stageJSON(t, root, packet.AnswerPath, completedContractDraft(packet))
-			s, err := submission.New(root)
-			if err != nil {
-				t.Fatal(err)
-			}
-			ctx, cancel := pendingMainFollowupContext(s, packet.ID)
-			receipt, err := s.SaveContracts(ctx, packet.AnswerPath)
-			cancel()
-			if err != nil || !receipt.Accepted {
-				t.Fatalf("original S3 reception: %+v %v", receipt, err)
-			}
-			before := stageSnapshot(t, root)
-			record, _, _ := runtime.FindSubmission(before.State, packet.ID)
-			if legacy {
-				writeLegacyS3Evaluation(t, root, record)
-				before = stageSnapshot(t, root)
-			}
-			result, err := controller.RunControlCycle(context.Background(), controller.ControlRequest{Root: root, CWD: root, Files: s.Files, Event: "PostToolUse", ToolName: "Write", SubmissionFollowupID: record.FollowupID, GateEvaluator: s3IncompleteGate{}})
-			if err != nil || result.Error != "" || result.QualityGate.TransitionCommitted {
-				t.Fatalf("incomplete S3 gate: %+v %v", result, err)
-			}
-			waiting := stageSnapshot(t, root)
-			if waiting.Revision != before.Revision {
-				t.Fatal("not-ready S3 consumed or rewrote the accepted followup")
-			}
-			if _, err := runtime.SubmissionFollowup(waiting.State, record.FollowupID); err != nil {
-				t.Fatalf("S3 followup no longer retryable: %v", err)
-			}
-			advanced, err := controller.RunControlCycle(context.Background(), controller.ControlRequest{Root: root, CWD: root, Files: s.Files, Event: "PreToolUse", ToolName: "Read"})
-			if err != nil || advanced.Error != "" || !advanced.QualityGate.TransitionCommitted {
-				t.Fatalf("ordinary listener did not resume original S3: %+v %v", advanced, err)
-			}
-			after, found, err := runtime.FindSubmission(advanced.Snapshot.State, packet.ID)
-			if err != nil || !found || after.ControlStatus != "advanced" || after.Key != record.Key || after.EvidenceID != record.EvidenceID || after.ContentHash != record.ContentHash {
-				t.Fatalf("resumption changed original reception: %+v %v", after, err)
-			}
-			assertPlanningTransitionJournalEvent(t, root, after.TransitionEventID, "PTR-PLAN-02", "contracts")
-			assertDesignCheckpoint(t, root)
-			stateBytes, _ := os.ReadFile(s.StatePath)
-			journalBytes, _ := os.ReadFile(s.JournalPath)
-			replay, err := s.SaveContracts(context.Background(), packet.AnswerPath)
-			if err != nil || !replay.Accepted || len(replay.WaitingOn) != 0 || strings.Contains(replay.NextAction, "recover") {
-				t.Fatalf("advanced S3 replay asked for system recovery: %+v %v", replay, err)
-			}
-			if data, _ := os.ReadFile(s.StatePath); string(data) != string(stateBytes) {
-				t.Fatal("advanced S3 replay changed Runtime")
-			}
-			if data, _ := os.ReadFile(s.JournalPath); string(data) != string(journalBytes) {
-				t.Fatal("advanced S3 replay changed journal")
-			}
-		})
+	root, packet := newContractAnswerFixture(t)
+	stageJSON(t, root, packet.AnswerPath, completedContractDraft(packet))
+	s, err := submission.New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := pendingMainFollowupContext(s, packet.ID)
+	receipt, err := s.SaveContracts(ctx, packet.AnswerPath)
+	cancel()
+	if err != nil || !receipt.Accepted {
+		t.Fatalf("original S3 reception: %+v %v", receipt, err)
+	}
+	before := stageSnapshot(t, root)
+	record, _, _ := runtime.FindSubmission(before.State, packet.ID)
+	result, err := controller.RunControlCycle(context.Background(), controller.ControlRequest{Root: root, CWD: root, Files: s.Files, Event: "PostToolUse", ToolName: "Write", SubmissionFollowupID: record.FollowupID, GateEvaluator: s3IncompleteGate{}})
+	if err != nil || result.Error != "" || result.QualityGate.TransitionCommitted {
+		t.Fatalf("incomplete S3 gate: %+v %v", result, err)
+	}
+	waiting := stageSnapshot(t, root)
+	if waiting.Revision != before.Revision {
+		t.Fatal("not-ready S3 consumed or rewrote the accepted followup")
+	}
+	if _, err := runtime.SubmissionFollowup(waiting.State, record.FollowupID); err != nil {
+		t.Fatalf("S3 followup no longer retryable: %v", err)
+	}
+	advanced, err := controller.RunControlCycle(context.Background(), controller.ControlRequest{Root: root, CWD: root, Files: s.Files, Event: "PreToolUse", ToolName: "Read"})
+	if err != nil || advanced.Error != "" || !advanced.QualityGate.TransitionCommitted {
+		t.Fatalf("ordinary listener did not resume original S3: %+v %v", advanced, err)
+	}
+	after, found, err := runtime.FindSubmission(advanced.Snapshot.State, packet.ID)
+	if err != nil || !found || after.ControlStatus != "advanced" || after.Key != record.Key || after.EvidenceID != record.EvidenceID {
+		t.Fatalf("resumption changed original reception: %+v %v", after, err)
+	}
+	assertPlanningTransitionJournalEvent(t, root, after.TransitionEventID, "PTR-PLAN-02", "contracts")
+	assertDesignCheckpoint(t, root)
+	stateBytes, _ := os.ReadFile(s.StatePath)
+	journalBytes, _ := os.ReadFile(s.JournalPath)
+	replay, err := s.SaveContracts(context.Background(), packet.AnswerPath)
+	if err != nil || !replay.Accepted || len(replay.WaitingOn) != 0 || strings.Contains(replay.NextAction, "recover") {
+		t.Fatalf("advanced S3 replay asked for system recovery: %+v %v", replay, err)
+	}
+	if data, _ := os.ReadFile(s.StatePath); string(data) != string(stateBytes) {
+		t.Fatal("advanced S3 replay changed Runtime")
+	}
+	if data, _ := os.ReadFile(s.JournalPath); string(data) != string(journalBytes) {
+		t.Fatal("advanced S3 replay changed journal")
 	}
 }
 
-func TestS3RecoverResumesLegacyEvaluationWithoutAnotherAnswer(t *testing.T) {
+func TestS3RecoverResumesPendingWithoutAnotherAnswer(t *testing.T) {
 	root, packet := newContractAnswerFixture(t)
 	stageJSON(t, root, packet.AnswerPath, completedContractDraft(packet))
 	s, err := submission.New(root)
@@ -121,45 +113,17 @@ func TestS3RecoverResumesLegacyEvaluationWithoutAnotherAnswer(t *testing.T) {
 	}
 	before := stageSnapshot(t, root)
 	record, _, _ := runtime.FindSubmission(before.State, packet.ID)
-	writeLegacyS3Evaluation(t, root, record)
 	writeContractSource(t, root, packet.AnswerPath, "mutable authoring file is no longer required for original recovery\n")
 	receipts, err := s.Recover(context.Background(), "Main", 2)
 	if err != nil || len(receipts) != 1 || !receipts[0].Accepted {
-		t.Fatalf("legacy S3 recovery: %+v %v", receipts, err)
+		t.Fatalf("pending S3 recovery: %+v %v", receipts, err)
 	}
 	after := stageSnapshot(t, root)
 	recovered, _, _ := runtime.FindSubmission(after.State, packet.ID)
-	if recovered.ControlStatus != "advanced" || recovered.EvidenceID != record.EvidenceID || recovered.ContentHash != record.ContentHash {
+	if recovered.ControlStatus != "advanced" || recovered.EvidenceID != record.EvidenceID {
 		t.Fatalf("recovery replaced original professional work: %+v", recovered)
 	}
 	assertDesignCheckpoint(t, root)
-}
-
-// Reconstruct the exact durable evaluation written by the previous S3
-// implementation through the original Writer/journal. This is a compatibility
-// fixture, not a claim that a model or a real TR-004 produced this record.
-func writeLegacyS3Evaluation(t *testing.T, root string, record runtime.SubmissionRecord) {
-	t.Helper()
-	writer := runtime.NewWriter(filepath.Join(root, ".claude/loop-state.json"), filepath.Join(root, ".claude/loop-events.jsonl"), root, semantic.RuntimeCandidateValidator{})
-	before := stageSnapshot(t, root)
-	_, err := writer.UpdateCurrent(runtime.Mutation{
-		EventID: "evt-submission-control-" + record.FollowupID, TransitionID: "SUBMISSION-EVALUATE", Event: "submission_evaluated", Actor: "hook_controller", IdempotencyKey: "submission-control:" + record.FollowupID,
-		RuntimeID: before.State["runtime_id"].(string), RetainLastTransition: true, OccurredAt: time.Now().UTC(),
-		Apply: func(state map[string]any) error {
-			rows := state["entities"].(map[string]any)["submissions"].([]any)
-			for _, raw := range rows {
-				row := raw.(map[string]any)
-				if row["packet_id"] == record.PacketID {
-					row["control_status"] = "no_transition"
-					return nil
-				}
-			}
-			return fmt.Errorf("original S3 reception missing")
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
 }
 
 func TestS3UncommittedOutputNamesCommitAndAcceptsSameAnswerAfterCommit(t *testing.T) {
@@ -169,6 +133,11 @@ func TestS3UncommittedOutputNamesCommitAndAcceptsSameAnswerAfterCommit(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The uncommitted working-tree copy declares a different version than the
+	// bound branch. The bound branch is the registered source of a git_tree
+	// contract, so the received evidence must carry the bound branch's
+	// version and must not silently record the uncommitted disk content.
+	data = bytes.Replace(data, []byte("> 版本：v1.0.0"), []byte("> 版本：v1.0.1"), 1)
 	data = append(data, []byte("\nProfessional rework retained in this S3 entry.\n")...)
 	writeContractSource(t, root, path, string(data))
 	stageJSON(t, root, packet.AnswerPath, completedContractDraft(packet))
@@ -181,11 +150,29 @@ func TestS3UncommittedOutputNamesCommitAndAcceptsSameAnswerAfterCommit(t *testin
 	if branchErr != nil {
 		t.Fatal(branchErr)
 	}
-	if err == nil || rejected.Accepted || !strings.Contains(rejected.Error, path) || !strings.Contains(rejected.Error, branch) || !strings.Contains(rejected.Error, "commit") || !strings.Contains(rejected.NextAction, filepath.Join(root, packet.AnswerPath)) || strings.Contains(rejected.NextAction, "具名修订") {
+	// L3-S3-contracts.md:432 and :520: a git_tree source is read from the
+	// bound development branch. An uncommitted working-tree change is not a
+	// rejection reason, and it does not require an extra checkout or commit
+	// action from the professional author.
+	if err != nil || !rejected.Accepted || !rejected.WorkComplete || rejected.CurrentStage != "S4" {
 		t.Fatalf("uncommitted professional output sent Main to a different route: %+v %v", rejected, err)
 	}
-	if _, found, err := runtime.FindSubmission(stageSnapshot(t, root).State, packet.ID); err != nil || found {
-		t.Fatalf("rejected output was received: found=%t %v", found, err)
+	// Reverse: no extra commit, checkout or named revision is demanded from
+	// the professional author, and the answer path is not turned into a
+	// hand-written repair instruction.
+	for _, forbidden := range []string{"commit this file to that ref", "git commit", "please commit", "must commit", "具名修订"} {
+		if strings.Contains(rejected.Error, forbidden) || strings.Contains(rejected.NextAction, forbidden) {
+			t.Fatalf("uncommitted professional output was routed to an extra %q requirement: %+v %v", forbidden, rejected, err)
+		}
+	}
+	// Reverse: the received S3 artifact comes from the bound branch. The
+	// uncommitted disk bytes are not silently recorded as received evidence.
+	record, found, err := runtime.FindSubmission(stageSnapshot(t, root).State, packet.ID)
+	if err != nil || !found {
+		t.Fatalf("professional output was not received: found=%t %v", found, err)
+	}
+	if got := contractEvidenceSubjectVersion(t, root, stageSnapshot(t, root).State, record.EvidenceID, path); got != "v1.0.0" {
+		t.Fatalf("received S3 artifact did not come from the bound branch %s: version=%s", branch, got)
 	}
 	fixtures.CommitCurrentFixture(t, root)
 	s, err = submission.New(root)
@@ -199,8 +186,65 @@ func TestS3UncommittedOutputNamesCommitAndAcceptsSameAnswerAfterCommit(t *testin
 	if current, _ := os.ReadFile(filepath.Join(root, path)); string(current) != string(data) {
 		t.Fatal("professional repair was rolled back")
 	}
-	record, found, err := runtime.FindSubmission(stageSnapshot(t, root).State, packet.ID)
-	if err != nil || !found || record.ControlStatus != "advanced" {
-		t.Fatalf("same packet did not advance: %+v %v", record, err)
+	// Reverse: the replay reuses the original reception fact. The same
+	// submission key and the same evidence id stay registered, and no second
+	// submission row appears.
+	replayed, found, err := runtime.FindSubmission(stageSnapshot(t, root).State, packet.ID)
+	if err != nil || !found || replayed.ControlStatus != "advanced" {
+		t.Fatalf("same packet did not advance: %+v %v", replayed, err)
 	}
+	if replayed.EvidenceID != record.EvidenceID || replayed.Key != record.Key {
+		t.Fatalf("the same answer created a new reception fact: %+v -> %+v", record, replayed)
+	}
+	if count := contractSubmissionRowCount(stageSnapshot(t, root).State, packet.ID); count != 1 {
+		t.Fatalf("the same answer added another submission row: %d", count)
+	}
+}
+
+// contractEvidenceSubjectVersion reads the version the received evidence
+// registered for one subject path.
+func contractEvidenceSubjectVersion(t *testing.T, root string, state map[string]any, evidenceID, path string) string {
+	t.Helper()
+	rows, _ := state["evidence"].([]any)
+	for _, raw := range rows {
+		row, _ := raw.(map[string]any)
+		if row["id"] != evidenceID {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(fmt.Sprint(row["path"]))))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var envelope struct {
+			Subjects []struct {
+				Path    string `json:"path"`
+				Version string `json:"version"`
+			} `json:"subject_refs"`
+		}
+		if err := json.Unmarshal(data, &envelope); err != nil {
+			t.Fatal(err)
+		}
+		for _, subject := range envelope.Subjects {
+			if subject.Path == path {
+				return subject.Version
+			}
+		}
+	}
+	t.Fatalf("evidence %s is not registered", evidenceID)
+	return ""
+}
+
+// contractSubmissionRowCount counts the registered submission rows of one
+// original packet.
+func contractSubmissionRowCount(state map[string]any, packetID string) int {
+	entities, _ := state["entities"].(map[string]any)
+	rows, _ := entities["submissions"].([]any)
+	count := 0
+	for _, raw := range rows {
+		row, _ := raw.(map[string]any)
+		if row["packet_id"] == packetID {
+			count++
+		}
+	}
+	return count
 }

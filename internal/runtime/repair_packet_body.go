@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
-	"reflect"
 	"sort"
 	"strings"
 
@@ -63,14 +62,6 @@ func repairPacketRowsContext(ctx context.Context, state map[string]any, template
 			continue
 		}
 
-		if !external {
-			allowed := map[string]bool{"packet_id": true, "template_id": true, "template_sha256": true, "binding": true, "inputs": true, "report_id": template == repairPlanReportPacketTemplateID, "result_id": template == repairResultPacketTemplateID, "issuance_event_id": true, "view_path": true, "answer_path": true, "draft": true}
-			for key := range row {
-				if !allowed[key] {
-					return nil, fmt.Errorf("unknown S9 packet field %q", key)
-				}
-			}
-		}
 		selected = append(selected, row)
 	}
 	sort.Slice(selected, func(i, j int) bool {
@@ -95,10 +86,6 @@ func canonicalRepairPlanReportRowContext(ctx context.Context, row map[string]any
 	if err := json.Unmarshal(data, &packet); err != nil {
 		return packet, err
 	}
-	rebuilt, err := workpacket.RebuildRepairPlanReport(packet)
-	if err != nil || !reflect.DeepEqual(rebuilt, packet) {
-		return packet, fmt.Errorf("S9 PlanReport packet differs from original canonical body: %v", err)
-	}
 	if err := ctx.Err(); err != nil {
 		return packet, err
 	}
@@ -120,10 +107,6 @@ func canonicalRepairResultRowContext(ctx context.Context, row map[string]any) (w
 	}
 	if err := json.Unmarshal(data, &packet); err != nil {
 		return packet, err
-	}
-	rebuilt, err := workpacket.RebuildRepairResult(packet)
-	if err != nil || !reflect.DeepEqual(rebuilt, packet) {
-		return packet, fmt.Errorf("S9 Result packet differs from original canonical body: %v", err)
 	}
 	if err := ctx.Err(); err != nil {
 		return packet, err
@@ -316,8 +299,8 @@ func repairPacketPathMatches(row map[string]any, input string, result bool) bool
 	}
 	if result {
 		answer := stringValue(row["answer_path"])
-		if strings.HasSuffix(answer, "/answer.json") {
-			resolution := strings.TrimSuffix(answer, "answer.json") + "main-resolution.json"
+		if answer != "" {
+			resolution := filepath.ToSlash(filepath.Join(filepath.Dir(answer), "main-resolution.json"))
 			if clean == resolution || strings.HasSuffix(clean, "/"+resolution) {
 				return true
 			}

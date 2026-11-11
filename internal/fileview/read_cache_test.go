@@ -12,7 +12,7 @@ import (
 	"github.com/entroforge/go-system-builder/internal/metrics"
 )
 
-func TestRequestReadCacheReusesOnlyPinnedGitObjects(t *testing.T) {
+func TestRequestReadCacheKeepsBranchAndDiskSourcesLive(t *testing.T) {
 	root := t.TempDir()
 	git := func(args ...string) {
 		t.Helper()
@@ -49,16 +49,16 @@ func TestRequestReadCacheReusesOnlyPinnedGitObjects(t *testing.T) {
 	first[0] = 'X'
 	gitReads := timings.Snapshot()["source/git"].Count
 	again, err := view.ReadFile("docs/source.txt")
-	if err != nil || string(again) != "original" || timings.Snapshot()["source/git"].Count != gitReads {
-		t.Fatalf("blob reuse changed bytes or reran Git: %q %v", again, err)
+	if err != nil || string(again) != "original" || timings.Snapshot()["source/git"].Count <= gitReads {
+		t.Fatalf("branch read did not use live Git source: %q %v", again, err)
 	}
 	dir, err := view.ReadDir("docs")
 	if err != nil || len(dir) != 1 {
 		t.Fatalf("directory: %v %v", dir, err)
 	}
 	gitReads = timings.Snapshot()["source/git"].Count
-	if _, err := view.ReadDir("docs"); err != nil || timings.Snapshot()["source/git"].Count != gitReads {
-		t.Fatalf("directory was not reused: %v", err)
+	if _, err := view.ReadDir("docs"); err != nil || timings.Snapshot()["source/git"].Count <= gitReads {
+		t.Fatalf("branch directory was not read live: %v", err)
 	}
 	write(".claude/evidence.json", "first")
 	if _, err := view.ReadFile(".claude/evidence.json"); err != nil {
@@ -75,7 +75,7 @@ func TestRequestReadCacheReusesOnlyPinnedGitObjects(t *testing.T) {
 			defer wg.Done()
 			data, err := view.ReadFile("docs/source.txt")
 			if err != nil || string(data) != "original" {
-				t.Errorf("concurrent pinned read: %q %v", data, err)
+				t.Errorf("concurrent branch read: %q %v", data, err)
 				return
 			}
 			data[0] = 'Y'
@@ -93,15 +93,18 @@ func TestRequestReadCacheReusesOnlyPinnedGitObjects(t *testing.T) {
 	write("docs/source.txt", "updated")
 	git("add", "docs/source.txt")
 	git("commit", "-qm", "advance")
-	if err := view.Verify(); err == nil {
-		t.Fatal("Verify cached a mutable branch identity")
+	if err := view.Verify(); err != nil {
+		t.Fatalf("branch movement blocked source reading: %v", err)
+	}
+	if data, err := view.ReadFile("docs/source.txt"); err != nil || string(data) != "updated" {
+		t.Fatalf("existing view did not read updated branch: %q %v", data, err)
 	}
 	newView, err := NewContext(ctx, root, "refs/heads/dev", rules)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if data, err := newView.ReadFile("docs/source.txt"); err != nil || string(data) != "updated" {
-		t.Fatalf("new pinned commit used old bytes: %q %v", data, err)
+		t.Fatalf("new view used old branch bytes: %q %v", data, err)
 	}
 	// Reusing a source view under a new request must not share the old cache.
 	newCtx, newTimings := metrics.WithCallTimings(WithReadCache(context.Background()))

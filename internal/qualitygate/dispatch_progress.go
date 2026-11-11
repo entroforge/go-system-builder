@@ -12,6 +12,7 @@ import (
 // Only the TASK's current report and its owner's assignment can prove completion.
 type BuilderProgress struct {
 	State            workstate.Status
+	Unknown          bool
 	Integrated       bool
 	DeliveryRecorded bool
 	Reason           string
@@ -19,18 +20,11 @@ type BuilderProgress struct {
 	Canonical        bool
 }
 
-// dispatchCheckpoint is the subset of the Integrator checkpoint consumed by
-// dispatch projections.  Keep the report binding and merge receipt together:
-// a current Result cannot release a dependent task unless the receipt for the
-// same integration is still valid on the bound development branch.
-type dispatchCheckpoint = builderbatch.Checkpoint
-
 func HasDispatchPlan(state map[string]any) bool {
 	return builderbatch.HasDispatchPlan(state)
 }
 func PlannedBuilderProgress(input Input) map[string]BuilderProgress {
 	result := map[string]BuilderProgress{}
-	var legacy map[string]builderbatch.TaskProgress
 	entities, _ := input.Snapshot.State["entities"].(map[string]any)
 	tasks, _ := entities["tasks"].([]any)
 	stage, _ := currentStatePhase(input.Snapshot.State)
@@ -62,7 +56,7 @@ func PlannedBuilderProgress(input Input) map[string]BuilderProgress {
 				case builderOwnershipNone:
 					continue
 				case builderOwnershipUnresolved:
-					result[id] = BuilderProgress{State: workstate.Active, Reason: "Builder owner identity unresolved", Canonical: true}
+					result[id] = BuilderProgress{Unknown: true, Reason: "Builder owner identity unresolved; Main must inspect the current responsibility", Canonical: true}
 					continue
 				}
 			}
@@ -72,31 +66,23 @@ func PlannedBuilderProgress(input Input) map[string]BuilderProgress {
 					continue
 				}
 				if ownership == builderOwnershipUnresolved {
-					result[id] = BuilderProgress{State: workstate.Active, Reason: "Builder owner identity unresolved", Canonical: true}
+					result[id] = BuilderProgress{Unknown: true, Reason: "Builder owner identity unresolved; Main must inspect the current responsibility", Canonical: true}
 					continue
 				}
 			}
 			result[id] = canonicalProgressForTask(input, task, mode, modeErr)
 			continue
 		}
-		if legacy == nil {
-			legacy = builderbatch.ProjectLegacyTasks(input.Root, input.Snapshot.State, input.Files)
-		}
-		if progress, tracked := legacy[id]; tracked {
-			result[id] = BuilderProgress{
-				State: progress.State, Integrated: progress.Integrated,
-				DeliveryRecorded: progress.DeliveryRecorded, Reason: progress.Reason,
-				EvidenceID: progress.EvidenceID,
-			}
+		// The original owner has not yet established a current S6 assignment.
+		// Keep the task active; do not reconstruct a separate legacy batch.
+		switch taskBuilderOwnership(input.Snapshot.State, task) {
+		case builderOwnershipBuilder:
+			result[id] = BuilderProgress{State: workstate.Active, Reason: "current Builder responsibility is not yet available"}
+		case builderOwnershipUnresolved:
+			result[id] = BuilderProgress{Unknown: true, Reason: "TASK owner is unknown; Main must inspect the current responsibility"}
 		}
 	}
 	return result
-}
-
-// checkpointMergeValid keeps existing quality-gate callers on the same
-// checkpoint rules used by the shared legacy batch projection.
-func checkpointMergeValid(input Input, cp dispatchCheckpoint) bool {
-	return builderbatch.CheckpointMergeValid(input.Root, input.Snapshot.State, cp)
 }
 
 func boundDevelopmentBranch(state map[string]any) string {
@@ -152,11 +138,11 @@ func taskBuilderOwnership(state, task map[string]any) builderOwnership {
 	result := builderOwnershipNone
 	for _, owner := range owners {
 		kind := registeredBuilderOwner(state, task, owner)
-		if kind == builderOwnershipUnresolved {
-			return builderOwnershipUnresolved
-		}
 		if kind == builderOwnershipBuilder {
-			result = builderOwnershipBuilder
+			return builderOwnershipBuilder
+		}
+		if kind == builderOwnershipUnresolved {
+			result = builderOwnershipUnresolved
 		}
 	}
 	return result
@@ -179,6 +165,12 @@ func registeredBuilderOwner(state, task map[string]any, owner string) builderOwn
 	if err != nil || !found || !containsString(canonicalStringValues(team["agent_ids"]), owner) {
 		return builderOwnershipUnresolved
 	}
+	role := stringValue(agent["role"])
+	kind := stringValue(team["kind"])
+	// A known reviewer remains a reviewer when its S5 Team is retired.
+	if reviewerRole, knownReviewer := reviewerTeamRoles[kind]; knownReviewer && role == reviewerRole {
+		return builderOwnershipNone
+	}
 	teamStatus := stringValue(team["status"])
 	if teamStatus != "planned" && teamStatus != "active" {
 		return builderOwnershipUnresolved
@@ -191,13 +183,8 @@ func registeredBuilderOwner(state, task map[string]any, owner string) builderOwn
 		return builderOwnershipUnresolved
 	}
 
-	role := stringValue(agent["role"])
-	kind := stringValue(team["kind"])
 	if kind == "builder" && builderRoleFamilies[role] {
 		return builderOwnershipBuilder
-	}
-	if reviewerRole, knownReviewer := reviewerTeamRoles[kind]; knownReviewer && role == reviewerRole {
-		return builderOwnershipNone
 	}
 	return builderOwnershipUnresolved
 }

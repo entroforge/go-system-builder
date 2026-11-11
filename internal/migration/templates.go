@@ -102,10 +102,9 @@ func ValidateTemplates(root string) error {
 		{
 			path: "docs/reports/e2e/E2E-template.md",
 			required: []string{
-				// The E2E projection must keep the seven-field negative-CASE
-				// accounting and the cold-start digest binding discoverable.
+				// Keep the professional execution and recovery record discoverable.
 				"Real-Browser Flow Execution", "`persisted_effects`", "`recovery`",
-				"verification_artifact_digest", "capture_gaps",
+				"capture_gaps",
 			},
 		},
 		{

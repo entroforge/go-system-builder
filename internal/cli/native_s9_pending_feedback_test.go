@@ -2,7 +2,6 @@ package cli
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -10,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/entroforge/go-system-builder/internal/metrics"
 	"github.com/entroforge/go-system-builder/internal/policy"
 	"github.com/entroforge/go-system-builder/internal/submission"
+	"github.com/entroforge/go-system-builder/internal/workspace"
 )
 
 func TestNativeS9PendingPublicPreReturnsExecutableOriginalWriterRecovery(t *testing.T) {
@@ -62,40 +61,84 @@ func TestNativeS9PendingPublicPreReturnsExecutableOriginalWriterRecovery(t *test
 	if err := json.Unmarshal(out.Bytes(), &response); err != nil || response.Output.Event != request.Event {
 		t.Fatalf("missing model-side Hook context: %v %s", err, &out)
 	}
-	command := regexp.MustCompile(`'([^']+)' runtime stage-answer recover --root '([^']+)'`).FindStringSubmatch(response.Output.Context)
-	if len(command) != 3 || command[1] != filepath.Join(root, ".claude/bin/loop-harness") || command[2] != root {
-		t.Fatalf("pending feedback did not name the exact executable/root operation: %s", response.Output.Context)
+	// The same-event recovery continues the part that is actually unfinished:
+	// Main's own ChangeImpact preparation. The retired integration successor
+	// (`runtime workspace integrate`) was removed with the old wiring
+	// (L4-workflow-convergence.md:312 "删除旧 CLI 入口与旧接线"; :316 "旧接线
+	// 退役后必须不遗留悬空文本"), so the recovery must name the real unfinished
+	// entry instead.
+	impact := "`loop-harness runtime repair impact prepare --root " + s7CaptureShellQuote(root) + "`"
+	if !strings.Contains(response.Output.Context, impact) {
+		t.Fatalf("same-event recovery did not name the exact unfinished ChangeImpact preparation %q: %s", impact, response.Output.Context)
+	}
+	// The retired successor must not come back with its parameters.
+	retired := regexp.MustCompile(`'([^']+)' runtime workspace integrate --root '([^']+)' --assignment '([^']+)' --agent '([^']+)'`)
+	if retired.MatchString(response.Output.Context) {
+		t.Fatalf("retired integration successor reappeared in the same-event recovery: %s", response.Output.Context)
+	}
+	if strings.Contains(response.Output.Context, "using this exact command") {
+		t.Fatalf("retired copyable-successor wording reappeared in the same-event recovery: %s", response.Output.Context)
+	}
+	if !strings.Contains(diagnostic.String(), "recovered the original pending Writer") || !strings.Contains(response.Output.Context, "PlanReport receipt is accepted") {
+		t.Fatalf("same-event continuation lost original recovery/reception facts: %s %s", &diagnostic, response.Output.Context)
+	}
+	// The Worker's candidate is recorded and received. The current wording of
+	// that fact is the candidate action plus the registered candidate index
+	// (internal/cli/s9_handoff_projection.go:187-188 and :236-238); the retired
+	// wording "Worker candidate is recorded" no longer exists in production.
+	for _, want := range []string{"Original Candidate is received", "Registered candidate reference: "} {
+		if !strings.Contains(response.Output.Context, want) {
+			t.Fatalf("same-event continuation lost the recorded Worker candidate fact %q: %s %s", want, &diagnostic, response.Output.Context)
+		}
+	}
+	// The named candidate index is the original registered candidate path, not
+	// a generic description.
+	registry, err := workspace.Decode(repairDispatchSnapshot(t, root).State)
+	if err != nil || registry.Executions[p.Binding.ManifestAssignmentID].DeliveryRef == "" {
+		t.Fatalf("original registered candidate is unreadable: %v", err)
+	}
+	if candidate := filepath.Join(root, registry.Executions[p.Binding.ManifestAssignmentID].DeliveryRef); !strings.Contains(response.Output.Context, candidate) {
+		t.Fatalf("same-event continuation lost the registered candidate index %s: %s", candidate, response.Output.Context)
+	}
+	// The accepted contributions stay recorded and are not resubmitted.
+	for _, want := range []string{"Accepted contributions remain recorded", "do not resubmit Builder work"} {
+		if !strings.Contains(response.Output.Context, want) {
+			t.Fatalf("same-event recovery lost the accepted contribution fact %q: %s", want, response.Output.Context)
+		}
 	}
 	for _, check := range []struct {
 		path     string
 		expected []byte
-	}{{statePath, previousState}, {journalPath, previousJournal}, {markerPath, marker}, {flatPath, later}} {
+	}{{statePath, targetState}, {journalPath, targetJournal}, {flatPath, later}} {
 		actual, err := os.ReadFile(check.path)
 		if err != nil || !bytes.Equal(actual, check.expected) {
-			t.Fatalf("ordinary Pre changed %s: %v", check.path, err)
+			t.Fatalf("same-event recovery did not preserve the accepted pair/private input %s: %v", check.path, err)
 		}
+	}
+	if _, err := os.Stat(markerPath); !os.IsNotExist(err) {
+		t.Fatalf("same-event Writer recovery did not retire pending: %v", err)
 	}
 	for _, path := range []string{filepath.Join(worker, packet.AnswerPath), filepath.Join(worker, plan)} {
 		if _, err := os.Stat(path); !os.IsNotExist(err) {
 			t.Fatalf("ordinary Pre recreated professional input %s: %v", path, err)
 		}
 	}
-	// The same routing path stops at its one read-only pending snapshot. No
-	// domain reception, professional source reader or task-text reader is called.
-	ctx, timings := metrics.WithCallTimings(context.Background())
-	request.Context = ctx
-	if handled, code := nativeHookRoutes(root, request, &bytes.Buffer{}, &bytes.Buffer{}); !handled || code != 0 {
-		t.Fatalf("pending route did not retain its read-only outlet: %t %d", handled, code)
-	}
-	observed := timings.Snapshot()
-	if observed["hook/native_routes/initial_snapshot"].Count != 1 || observed["reception/s9"].Count != 0 || observed["source/read"].Count != 0 || observed["source/git"].Count != 0 || observed["hook/native_routes/task_text"].Count != 0 {
-		t.Fatalf("pending read entered business input/receiver work: %+v", observed)
-	}
-	// Execute the arguments recovered from actual model additionalContext through
-	// the public CLI, keeping its original receipt-array JSON output contract.
+	// Repeating the public observation keeps the accepted pair and the same
+	// unfinished-part entry; missing or changed private input cannot be re-read
+	// as a new answer or replace the already captured candidate.
 	out.Reset()
 	diagnostic.Reset()
-	args := []string{"runtime", "stage-answer", "recover", "--root", command[2]}
+	if code := Run([]string{"hook", "--root", root, "--event", request.Event}, bytes.NewReader(body), &out, &diagnostic); code != 0 {
+		t.Fatalf("replayed public Pre: %d %s %s", code, &out, &diagnostic)
+	}
+	if err := json.Unmarshal(out.Bytes(), &response); err != nil || !strings.Contains(response.Output.Context, impact) {
+		t.Fatalf("replayed Pre lost the exact ChangeImpact preparation entry: %v %s", err, &out)
+	}
+	// The explicit original recovery entry remains an idempotent fallback with
+	// its receipt-array JSON contract after automatic recovery has completed.
+	out.Reset()
+	diagnostic.Reset()
+	args := []string{"runtime", "stage-answer", "recover", "--root", root}
 	if code := Run(args, strings.NewReader(""), &out, &diagnostic); code != 0 {
 		t.Fatalf("actual model-supplied Writer command: %d %s %s", code, &out, &diagnostic)
 	}
@@ -103,7 +146,22 @@ func TestNativeS9PendingPublicPreReturnsExecutableOriginalWriterRecovery(t *test
 	if err := json.Unmarshal(out.Bytes(), &receipts); err != nil {
 		t.Fatalf("recovery changed original JSON array type: %v %s", err, &out)
 	}
-	if !strings.Contains(diagnostic.String(), "runtime workspace integrate") || !strings.Contains(diagnostic.String(), p.Binding.ManifestAssignmentID) {
+	if retired.MatchString(diagnostic.String()) {
+		t.Fatalf("explicit recovery brought the retired integration successor back: %s", &diagnostic)
+	}
+	// The explicit recovery channel names no retired integration successor at
+	// all, in any wording.
+	if strings.Contains(diagnostic.String(), "runtime workspace integrate") {
+		t.Fatalf("explicit recovery named the retired integration successor: %s", &diagnostic)
+	}
+	// The explicit recovery still delivers the recorded original successor
+	// facts instead of the retired command.
+	for _, want := range []string{"Original Candidate is received", "Registered candidate reference: "} {
+		if !strings.Contains(diagnostic.String(), want) {
+			t.Fatalf("explicit recovery lost the recorded original successor fact %q: %s", want, &diagnostic)
+		}
+	}
+	if !strings.Contains(diagnostic.String(), p.Binding.ManifestAssignmentID) {
 		t.Fatalf("explicit recovery did not immediately deliver original successor: %s", &diagnostic)
 	}
 	for _, check := range []struct {

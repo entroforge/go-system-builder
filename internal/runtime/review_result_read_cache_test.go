@@ -10,16 +10,14 @@ import (
 	"reflect"
 	"sync"
 	"testing"
-	"time"
 
-	"github.com/entroforge/go-system-builder/internal/metrics"
 	"github.com/entroforge/go-system-builder/internal/workpacket"
 )
 
 func TestReviewPacketReadCacheTracksExactRegistryAndLiveAssignments(t *testing.T) {
 	p := checkpointTestReviewPacket(t, t.TempDir())
 	state, _ := checkpointTestReviewState(t, p, nil)
-	ctx, timings := metrics.WithCallTimings(WithReviewResultReadCache(context.Background()))
+	ctx := WithReviewResultReadCache(context.Background())
 	got, err := CurrentReviewResultPacketsContext(ctx, state, p.Binding.OwnerAgentID)
 	if err != nil || len(got) != 1 || !reflect.DeepEqual(got[0], p) {
 		t.Fatalf("initial packet: %v %v", got, err)
@@ -33,9 +31,6 @@ func TestReviewPacketReadCacheTracksExactRegistryAndLiveAssignments(t *testing.T
 	if err != nil || !found || !reflect.DeepEqual(again, p) {
 		t.Fatalf("caller mutated cached packet: %v %v", found, err)
 	}
-	if timings.Snapshot()["runtime/review_packet_selected_build"].Count != 1 || timings.Snapshot()["runtime/review_packet_selected_hit"].Count != 1 {
-		t.Fatal(timings.Snapshot())
-	}
 	assignment := state["review"].(map[string]any)["assignments"].(map[string]any)[p.Binding.AssignmentID].(map[string]any)
 	assignment["agent_id"] = "different-owner"
 	got, err = CurrentReviewResultPacketsContext(ctx, state, p.Binding.OwnerAgentID)
@@ -47,8 +42,8 @@ func TestReviewPacketReadCacheTracksExactRegistryAndLiveAssignments(t *testing.T
 	rows := entities["work_packets"].([]any)
 	row := rows[0].(map[string]any)
 	row["unknown"] = true
-	if _, _, err := FindReviewResultPacketContext(ctx, state, p.ID); err == nil {
-		t.Fatal("unknown row field hidden by cache")
+	if same, found, err := FindReviewResultPacketContext(ctx, state, p.ID); err != nil || !found || !reflect.DeepEqual(same, p) {
+		t.Fatalf("unknown row extension changed original packet: %v %v", found, err)
 	}
 	delete(row, "unknown")
 	entities["work_packets"] = append(rows, map[string]any{"packet_id": p.ID, "template_id": "other-template"})
@@ -72,7 +67,7 @@ func TestReviewPacketReadCacheTracksExactRegistryAndLiveAssignments(t *testing.T
 	}
 }
 
-func TestReviewPacketReadCacheReReadsJournalAndPinnedEvidence(t *testing.T) {
+func TestReviewPacketReadDoesNotRequalifyHistoricalJournalOrSource(t *testing.T) {
 	root := t.TempDir()
 	p := checkpointTestReviewPacket(t, root)
 	state, journal := checkpointTestReviewState(t, p, nil)
@@ -80,20 +75,17 @@ func TestReviewPacketReadCacheReReadsJournalAndPinnedEvidence(t *testing.T) {
 	if err := os.WriteFile(journalPath, journal, 0600); err != nil {
 		t.Fatal(err)
 	}
-	ctx, timings := metrics.WithCallTimings(WithReviewResultReadCache(context.Background()))
+	ctx := WithReviewResultReadCache(context.Background())
 	for range 2 {
 		if err := VerifyReviewResultPacketIssueContext(ctx, root, state, p); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if timings.Snapshot()["runtime/journal_decode_build"].Count != 1 {
-		t.Fatalf("redecoded exact journal: %v", timings.Snapshot())
-	}
 	if err := os.WriteFile(journalPath, append(append([]byte(nil), journal...), []byte("broken\n")...), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := VerifyReviewResultPacketIssueContext(ctx, root, state, p); err == nil {
-		t.Fatal("journal corruption hidden by cache")
+	if err := VerifyReviewResultPacketIssueContext(ctx, root, state, p); err != nil {
+		t.Fatalf("historical journal change blocked already issued packet: %v", err)
 	}
 	if err := os.WriteFile(journalPath, journal, 0600); err != nil {
 		t.Fatal(err)
@@ -102,15 +94,15 @@ func TestReviewPacketReadCacheReReadsJournalAndPinnedEvidence(t *testing.T) {
 	if err := os.WriteFile(planPath, []byte("changed"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := VerifyReviewResultPacketIssueContext(ctx, root, state, p); err == nil {
-		t.Fatal("pinned evidence drift hidden by cache")
+	if err := VerifyReviewResultPacketIssueContext(ctx, root, state, p); err != nil {
+		t.Fatalf("later source change blocked already issued packet: %v", err)
 	}
 }
 
 func TestReviewPacketReadCacheConcurrent(t *testing.T) {
 	p := checkpointTestReviewPacket(t, t.TempDir())
 	state, _ := checkpointTestReviewState(t, p, nil)
-	ctx, timings := metrics.WithCallTimings(WithReviewResultReadCache(context.Background()))
+	ctx := WithReviewResultReadCache(context.Background())
 	var readers sync.WaitGroup
 	for range 16 {
 		readers.Add(1)
@@ -126,22 +118,18 @@ func TestReviewPacketReadCacheConcurrent(t *testing.T) {
 		}()
 	}
 	readers.Wait()
-	if timings.Snapshot()["runtime/review_packet_selected_build"].Count != 1 {
-		t.Fatal(timings.Snapshot())
+	if got, found, err := FindReviewResultPacketContext(ctx, state, p.ID); err != nil || !found || !reflect.DeepEqual(got, p) {
+		t.Fatalf("concurrent readers changed the original packet: %v %v", found, err)
 	}
 }
 
-func TestReviewPacketReadCacheCancelsWhileAnotherReaderBuilds(t *testing.T) {
+func TestReviewPacketReadHonorsCancellation(t *testing.T) {
 	p := checkpointTestReviewPacket(t, t.TempDir())
 	state, _ := checkpointTestReviewState(t, p, nil)
-	ctx := WithReviewResultReadCache(context.Background())
-	cache := ctx.Value(reviewResultReadCacheKey{}).(*reviewResultReadCache)
-	cache.gate <- struct{}{}
-	defer func() { <-cache.gate }()
-	ctx, cancel := context.WithTimeout(ctx, 20*time.Millisecond)
-	defer cancel()
-	if _, _, err := FindReviewResultPacketContext(ctx, state, p.ID); !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("waiting lookup: %v", err)
+	ctx, cancel := context.WithCancel(WithReviewResultReadCache(context.Background()))
+	cancel()
+	if _, _, err := FindReviewResultPacketContext(ctx, state, p.ID); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled lookup: %v", err)
 	}
 }
 

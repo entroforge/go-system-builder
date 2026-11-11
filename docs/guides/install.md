@@ -18,7 +18,7 @@
 
 首次绑定前，按项目惯例完成本地 Git 初始化与配置，并明确选择开发分支和最终发布上游。`req bind` 从所选开发分支的已提交树读取 REQ，所以锁定后的 REQ 必须先提交到该分支；若文件仅在工作区或暂存区，先在该本地分支提交它。绑定必须显式提供 `--dev-branch` 和 `--release-upstream`（远程目标包含 remote），两者都没有默认值。配置本地 Git 身份和例行命名本地分支不需要新的审批，也不授权推送或发布；审批人必须来自本次锁定/绑定授权，不能由 Git `user.name` 推断。
 
-安装器将 Skills/Agents 放到`.claude`，将`AGENTS-template.md`变成`AGENTS.md`，将主机二进制文件和生成的 Manual放在`.claude/bin`，并初始化唯一的inactive 状态的 Runtime。所有平台二进制文件与 shell/PowerShell 启动器一并保留；`.claude/bin/loop-harness` 自动选择 Linux/macOS 的本机版本，Windows 使用 `loop-harness.ps1`。不要用原生二进制覆盖启动器。安装前校验 `release-manifest.json` 的完整文件清单，安装后 `.claude/framework-installation.json` 记录转换后的文件摘要和原始清单摘要；这些摘要证明内容一致性，不替代发布来源认证。
+安装器将 Skills/Agents 放到`.claude`，将`AGENTS-template.md`变成`AGENTS.md`，将主机二进制文件和生成的 Manual放在`.claude/bin`，并初始化唯一的 inactive 状态的 Runtime。所有平台二进制文件与 shell/PowerShell 启动器一并保留；`.claude/bin/loop-harness` 自动选择 Linux/macOS 的本机版本，Windows 使用 `loop-harness.ps1`。不要用原生二进制覆盖启动器。安装检查实际需要的资源、结构和路径；旧发行包里的摘要清单不是安装资格，新安装不登记文件摘要。这些检查不声称认证下载来源或证明历史文件字节未变。
 
 安装后运行：
 
@@ -35,9 +35,9 @@
 
 全新 install/init 默认使用 Runtime `1.3.0` 和阶段问卷；Agent、TASK 与 S7 ReviewAssignment 的工作状态采用共享五态。正常使用无需额外开关：listener 给当前准确填写路径，Main 规划答卷保存时由原消费者接收；原生子代理保存并返回实际产物，由 SubagentStop 调用原消费者。初始化不会批准 REQ 或替代原人类决定。旧模式仅用于兼容，可在全新项目中显式选 `--packet=false`；不要修改 state JSON 或对活跃项目重复 init 切换模式。
 
-S5/S7/S8 使用本责任的专业问卷，S6/S9 使用原生 Agent/worktree 中的实际专业产物；不另交重复通用 PLAN，显式审批仍按原图执行。当前启动、返回、Main 集成与具名修订见[原生工作区指南](../workspace-integration.md)；已登记旧执行的 launcher、独立输入安装及目录迁移见[冻结执行恢复参考](../workspace-execution-recovery.md)。运行验收应说明实际版本、平台与执行范围，不能用安装成功或机制测试代替全阶段及产品验收。
+S5/S7/S8 使用本责任的专业问卷，S6/S9 使用原生 Agent/worktree 中的实际专业产物；不另交重复通用 PLAN，显式审批仍按原图执行。当前启动、返回、Main 集成与具名修订见[原生工作区指南](../workspace-integration.md)；实际集成与中断接续见[恢复参考](../workspace-execution-recovery.md)。运行验收应说明实际版本、平台与执行范围，不能用安装成功或机制测试代替全阶段及产品验收。
 
-初始化回执 `.claude/runtime-initialization.json` 绑定最初的 Schema、optimization 配置与 state 摘要；当前状态仍以 `.claude/loop-state.json` 为准，回执不能替代审批或完成。中断初始化重试保留原 marker 的版本/模式；显式 `--packet` 与 marker 不一致时拒绝。已有 1.1/1.2 Runtime 的兼容读取及原格式恢复不做原地迁移；新 Runtime 1.3 不会覆盖或重签旧状态。
+初始化回执 `.claude/runtime-initialization.json` 记录最初的 Schema 和 optimization 配置；当前状态仍以 `.claude/loop-state.json` 为准，回执不能替代审批或完成。中断初始化重试保留原 marker 的版本/模式；显式 `--packet` 与 marker 不一致时拒绝。已有 1.1/1.2 Runtime 的兼容读取及原格式恢复不做原地迁移；新 Runtime 1.3 不会覆盖旧状态。
 
 原人闸的 rollover/unbind 继续归档整个旧 state/journal 并清空新 inactive；新实例保留源 Schema 和 optimization 配置，不能借重置切换模式。已有发卷/接收索引时，文档导入无法恢复唯一前驱、激活或接续事实；当前拒绝这种 RR-A 重建，须保留原配对与 pending、恢复匹配的原事实。该限制不阻止有效 pending 事务原样恢复。
 

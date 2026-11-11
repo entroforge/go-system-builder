@@ -105,7 +105,11 @@ func BenchmarkCurrentReviewResultPacketBodyGrowth(b *testing.B) {
 			}
 			b.ReportMetric(float64(len(inlineState)), "state-inline-bytes")
 			b.ReportMetric(float64(len(indexState)), "state-index-bytes")
-			b.ReportMetric(float64(currentRef.SizeBytes), "current-body-bytes")
+			bodyBytes, err := workpacket.ReadFile(root, currentRef.Path, packetbody.Limit)
+			if err != nil {
+				b.Fatal(err)
+			}
+			b.ReportMetric(float64(len(bodyBytes)), "current-body-bytes")
 			b.ReportMetric(float64(reads)/float64(b.N), "body-read/op")
 			b.ReportMetric(float64(rebuilds)/float64(b.N), "selected-rebuild/op")
 			b.ReportMetric(float64(hits)/float64(b.N), "selected-cache-hit/op")

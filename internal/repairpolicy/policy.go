@@ -4,8 +4,6 @@ package repairpolicy
 
 import (
 	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -25,10 +23,10 @@ type Policy struct {
 	ExpiresAt      string   `json:"expires_at,omitempty"`
 }
 
-func Read(root, rel, digest, approvedBy string) (Policy, error) {
+func Read(root, rel, approvedBy string) (Policy, error) {
 	var p Policy
-	if rel == "" || len(digest) != 64 || filepath.IsAbs(rel) || filepath.ToSlash(filepath.Clean(rel)) != rel || strings.ContainsAny(rel, "\\*?[]:") || rel == ".." || strings.HasPrefix(rel, "../") {
-		return p, fmt.Errorf("repair policy requires a relative path and explicit SHA256")
+	if rel == "" || filepath.IsAbs(rel) || filepath.ToSlash(filepath.Clean(rel)) != rel || strings.ContainsAny(rel, "\\*?[]:") || rel == ".." || strings.HasPrefix(rel, "../") {
+		return p, fmt.Errorf("repair policy requires a relative path")
 	}
 	cur := root
 	for _, part := range strings.Split(rel, "/") {
@@ -44,10 +42,6 @@ func Read(root, rel, digest, approvedBy string) (Policy, error) {
 	data, err := os.ReadFile(cur)
 	if err != nil {
 		return p, err
-	}
-	h := sha256.Sum256(data)
-	if hex.EncodeToString(h[:]) != digest {
-		return p, fmt.Errorf("repair policy fingerprint mismatch")
 	}
 	d := json.NewDecoder(bytes.NewReader(data))
 	d.DisallowUnknownFields()

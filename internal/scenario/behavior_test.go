@@ -1,8 +1,8 @@
 package scenario_test
 
 import (
+	"encoding/json"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/entroforge/go-system-builder/internal/fileview"
@@ -12,6 +12,16 @@ import (
 type changingBehaviorReader struct {
 	fileview.Reader
 	reads int
+}
+
+func TestBehaviorSourceRetainsStandardJSONComposition(t *testing.T) {
+	var outer struct {
+		scenario.BehaviorSource
+		Extra string `json:"extra"`
+	}
+	if err := json.Unmarshal([]byte(`{"path":"docs/source","extra":"kept"}`), &outer); err != nil || outer.Path != "docs/source" || outer.Extra != "kept" {
+		t.Fatalf("outer source lost: %+v, %v", outer, err)
+	}
 }
 
 func (r *changingBehaviorReader) ReadFile(path string) ([]byte, error) {
@@ -25,13 +35,17 @@ func (r *changingBehaviorReader) ReadFile(path string) ([]byte, error) {
 	return data, err
 }
 
-func TestBehaviorProjectionRejectsSourceChangeDuringRead(t *testing.T) {
+func TestBehaviorProjectionReadsOriginalSourceOnce(t *testing.T) {
 	root := newScenarioRoot(t, "investor-workbench", "ordinary")
 	if _, err := scenario.GenerateModule(root, "investor-workbench"); err != nil {
 		t.Fatal(err)
 	}
 	reader := &changingBehaviorReader{Reader: fileview.Disk{Root: root}}
-	if _, err := scenario.ProjectBehaviorWithFiles(root, "investor-workbench", reader); err == nil || !strings.Contains(err.Error(), "changed during behavior projection") {
-		t.Fatalf("source change mixed old examples and new hashes: %v", err)
+	examples, err := scenario.ProjectBehaviorWithFiles(root, "investor-workbench", reader)
+	if err != nil || len(examples) == 0 {
+		t.Fatalf("projection did not use the readable source and cases: %v", err)
+	}
+	if reader.reads != 1 {
+		t.Fatalf("source read %d times; want once", reader.reads)
 	}
 }

@@ -11,7 +11,12 @@ import (
 	"github.com/entroforge/go-system-builder/internal/repair"
 )
 
-func TestNativeS9SharedTargetedCannotBeBorrowedByIsolatedStop(t *testing.T) {
+// The Targeted reception chain does not inspect Git state: the same original
+// responsibility is located by its registered coordinates, so a Stop raised
+// from another checkout reaches the same original consumer instead of being
+// rejected (L4-workflow-convergence.md:225「去掉按 Git 状态……认定能否接收」;
+// L4-agent-dispatch-governance.md:57「S7～S9 接收也不核 Git／ignore 状态」).
+func TestNativeS9SharedTargetedLocatesOriginalResponsibilityAcrossCheckouts(t *testing.T) {
 	root, snapshot, plan, _ := repairDispatchFixture(t)
 	snapshot.State["schema_version"] = "1.2.0"
 	mapFieldCLI(snapshot.State, "configuration")["optimization"] = map[string]any{"packet": true}
@@ -33,9 +38,9 @@ func TestNativeS9SharedTargetedCannotBeBorrowedByIsolatedStop(t *testing.T) {
 		units = append(units, repair.RepairUnitResult{UnitID: id, Status: "pass", EvidenceRefs: []string{"test://synthetic-source-guard-repair"}})
 	}
 	_, finalRef, err := repair.SubmitRepairResult(root, repair.RepairResultRequest{
-		Contract: repair.ContractRef{Path: stringValue(pointer["contract_ref"]), SHA256: stringValue(pointer["contract_sha256"])},
-		Session:  repair.ArtifactRef{Path: stringValue(pointer["path"]), SHA256: stringValue(pointer["sha256"])},
-		Plan:     repair.ArtifactRef{Path: stringValue(pointer["plan_ref"]), SHA256: stringValue(pointer["plan_sha256"])},
+		Contract: repair.ContractRef{Path: stringValue(pointer["contract_ref"])},
+		Session:  repair.ArtifactRef{Path: stringValue(pointer["path"])},
+		Plan:     repair.ArtifactRef{Path: stringValue(pointer["plan_ref"])},
 		ResultID: "repair-result-targeted-source-guard", ProducerAgentID: "source-guard-builder", AssignmentID: original,
 		UnitResults: units, Result: "pass", ChangedArtifacts: []repair.ChangedArtifact{},
 		BeforeFixChecks: []repair.RepairCheck{{Name: "synthetic pre-fix observation", Command: "test -f internal/api/one.go", Result: "fail", EvidenceRefs: []string{"test://synthetic-source-guard-red"}}},
@@ -44,19 +49,19 @@ func TestNativeS9SharedTargetedCannotBeBorrowedByIsolatedStop(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	pointer["result_refs"] = []any{map[string]any{"path": finalRef.Path, "sha256": finalRef.SHA256}}
+	pointer["result_refs"] = []any{map[string]any{"path": finalRef.Path}}
 	// Synthetic Impact establishes the current independent observation slots;
 	// TASK/manifest source authority above comes from the actual dispatch path.
 	impact := repair.ChangeImpactRequest{ImpactID: "impact-targeted-source-guard", RuntimeID: stringValue(snapshot.State["runtime_id"]), ReqID: "REQ-039", BaselineGeneration: 1,
 		SourceCaseIDs: []string{stringValue(pointer["case_id"])}, ChangeTypes: []string{"implementation"},
-		ChangedArtifacts:          []repair.ArtifactRef{{ID: "changed-one", Path: "internal/api/one.go", SHA256: strings.Repeat("a", 64)}},
+		ChangedArtifacts:          []repair.ArtifactRef{{ID: "changed-one", Path: "internal/api/one.go"}},
 		Decisions:                 []repair.ImpactDecision{{SourceID: "changed-one", TargetID: "root-1", Relation: "invalidates", RuleID: "IM-ROOT", Decision: "reverify", Scope: []string{"internal/api/one.go"}, Rationale: "synthetic source observation", RecoveryEvidence: []string{"test://source-guard"}}},
 		RequiredReverificationIDs: []string{"reverify-source-guard"}, AnalyzedBy: "Main"}
 	_, impactRef, err := repair.CreateChangeImpact(root, impact)
 	if err != nil {
 		t.Fatal(err)
 	}
-	pointer["impact_ref"], pointer["impact_sha256"], pointer["status"] = impactRef.Path, impactRef.SHA256, "targeted_reverification"
+	pointer["impact_ref"], pointer["status"] = impactRef.Path, "targeted_reverification"
 	pointer["required_reverification_ids"] = []any{"reverify-source-guard"}
 	mapFieldCLI(snapshot.State, "lifecycle")["phase"] = "targeted_reverification"
 	putInitMap(t, filepath.Join(root, ".claude/loop-state.json"), snapshot.State)
@@ -74,10 +79,6 @@ func TestNativeS9SharedTargetedCannotBeBorrowedByIsolatedStop(t *testing.T) {
 		draft.AssertionResults[i].EvidenceRefs = []string{"test://synthetic-observed-environment-blocker"}
 	}
 	writeRepairLeadJSON(t, path, draft)
-	originalBytes, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
 	worker := filepath.Join(t.TempDir(), "isolated-targeted")
 	repairLeadGit(t, root, "worktree", "add", "-b", "targeted-source-guard", worker, "HEAD")
 	invoke := func(cwd string) string {
@@ -89,25 +90,50 @@ func TestNativeS9SharedTargetedCannotBeBorrowedByIsolatedStop(t *testing.T) {
 		}
 		return diagnostic.String()
 	}
-	before := repairDispatchRuntimeBytes(t, root)
 	nested := filepath.Join(worker, "nested", "actual-stop-cwd")
 	if err := os.MkdirAll(nested, 0700); err != nil {
 		t.Fatal(err)
 	}
-	for _, cwd := range []string{worker, nested} {
-		if diagnostic := invoke(cwd); !strings.Contains(diagnostic, "no source binding for actual native worktree") || !strings.Contains(diagnostic, "no answer was inspected or received") {
-			t.Fatalf("isolated Stop borrowed Main's original (cwd %s): %s", cwd, diagnostic)
+	// The retired checkout guard must not come back in any form: the Stop
+	// from the other checkout is located by the registered coordinates and
+	// reaches the same original consumer.
+	diagnostic := invoke(worker)
+	for _, retired := range []string{"no source binding for actual native worktree", "no answer was inspected or received"} {
+		if strings.Contains(diagnostic, retired) {
+			t.Fatalf("the reception chain still judges the responsibility by Git state (%q): %s", retired, diagnostic)
 		}
-		repairDispatchAssertUnchanged(t, root, before)
 	}
-	if raw, err := os.ReadFile(path); err != nil || !bytes.Equal(raw, originalBytes) {
-		t.Fatal("source rejection inspected or rewrote the original answer", err)
-	}
-	if diagnostic := invoke(root); !strings.Contains(diagnostic, "committed through the original Runtime Writer") {
-		t.Fatalf("shared Main Stop did not reach original Targeted consumer: %s", diagnostic)
+	if !strings.Contains(diagnostic, "committed through the original Runtime Writer") {
+		t.Fatalf("the other checkout did not reach the original Targeted consumer: %s", diagnostic)
 	}
 	accepted := repairDispatchSnapshot(t, root)
-	if len(repairArtifactRefs(repairPointerCLI(accepted.State), "targeted_reverification_artifacts", "", "")) != 1 {
-		t.Fatal("shared Stop did not retain its original independent observation")
+	first := repairArtifactRefs(repairPointerCLI(accepted.State), "targeted_reverification_artifacts", "")
+	if len(first) != 1 {
+		t.Fatal("the original Stop did not retain its original independent observation")
+	}
+	// The same registered coordinate stays reachable from a deeper directory
+	// of the other checkout, and the already accepted observation is kept: the
+	// unchanged original answer is recognised as already received and no new
+	// fact is written.
+	before := repairDispatchRuntimeBytes(t, root)
+	diagnostic = invoke(nested)
+	for _, retired := range []string{"no source binding for actual native worktree", "no answer was inspected or received"} {
+		if strings.Contains(diagnostic, retired) {
+			t.Fatalf("the reception chain still judges the responsibility by Git state (%q): %s", retired, diagnostic)
+		}
+	}
+	if !strings.Contains(diagnostic, "already received") {
+		t.Fatalf("the deeper checkout did not find the already received original answer: %s", diagnostic)
+	}
+	repairDispatchAssertUnchanged(t, root, before)
+	accepted = repairDispatchSnapshot(t, root)
+	kept := false
+	for _, ref := range repairArtifactRefs(repairPointerCLI(accepted.State), "targeted_reverification_artifacts", "") {
+		if ref.Path == first[0].Path {
+			kept = true
+		}
+	}
+	if !kept {
+		t.Fatal("the accepted original independent observation was replaced instead of preserved")
 	}
 }

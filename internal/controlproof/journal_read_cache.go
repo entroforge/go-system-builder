@@ -1,8 +1,8 @@
 package controlproof
 
 import (
+	"bytes"
 	"context"
-	"crypto/sha256"
 
 	"github.com/entroforge/go-system-builder/internal/metrics"
 )
@@ -10,7 +10,7 @@ import (
 type journalReadCacheKey struct{}
 type journalReadCache struct {
 	gate       chan struct{}
-	digest     [32]byte
+	data       []byte
 	first      int
 	valid      bool
 	inspection JournalInspection
@@ -37,7 +37,6 @@ func InspectJournalSegmentDataFromContext(ctx context.Context, data []byte, firs
 	if cache == nil {
 		return inspectJournalSegmentDataFromContext(ctx, data, firstSequence)
 	}
-	digest := sha256.Sum256(data)
 	select {
 	case cache.gate <- struct{}{}:
 	case <-ctx.Done():
@@ -47,7 +46,7 @@ func InspectJournalSegmentDataFromContext(ctx context.Context, data []byte, firs
 	if err := ctx.Err(); err != nil {
 		return JournalInspection{}, err
 	}
-	if cache.valid && cache.digest == digest && cache.first == firstSequence {
+	if cache.valid && bytes.Equal(cache.data, data) && cache.first == firstSequence {
 		defer metrics.Span(ctx, "runtime/journal_decode_hit")()
 		return cloneJournalInspection(ctx, cache.inspection)
 	}
@@ -59,7 +58,7 @@ func InspectJournalSegmentDataFromContext(ctx context.Context, data []byte, firs
 	if err := ctx.Err(); err != nil {
 		return JournalInspection{}, err
 	}
-	cache.digest, cache.first, cache.valid, cache.inspection = digest, firstSequence, true, inspection
+	cache.data, cache.first, cache.valid, cache.inspection = append(cache.data[:0], data...), firstSequence, true, inspection
 	return cloneJournalInspection(ctx, inspection)
 }
 

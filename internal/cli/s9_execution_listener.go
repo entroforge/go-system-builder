@@ -41,8 +41,8 @@ func s9QuestionnaireReadOrder(root string, state map[string]any, request policy.
 	}
 	phase := stringValue(mapFieldCLI(state, "lifecycle")["phase"])
 	status := stringValue(repairPointerCLI(state)["status"])
-	result := phase == "fixing"
-	packetPhase := phase == "planning" || phase == "reproducing" || phase == "fixing" && (status == "repairing" || status == "blocked")
+	result := phase == "fixing" || stringValue(repairPointerCLI(state)["impact_ref"]) != ""
+	packetPhase := phase == "planning" || phase == "reproducing" || result && (status == "repairing" || status == "blocked" || status == "targeted_reverification" || status == "ready_for_full_review" || status == "closed")
 	if packets, err := s9CurrentQuestionnaires(root, state, owner, result, contextForHook(request)); err == nil && packetPhase {
 		nativePackets := s9ListenerNativePlans(root, state)
 		for _, packet := range packets {
@@ -54,12 +54,14 @@ func s9QuestionnaireReadOrder(root string, state map[string]any, request policy.
 					appendPath(resolveRootPath(root, fact.registeredRef))
 				}
 				if native, ok := s9ListenerNativePacket(state, nativePackets, packet); ok {
-					brief, _, _ := nativeS9Paths(native)
+					brief := nativeS9BriefPath(native)
 					appendPath(resolveRootPath(root, brief))
 				} else {
 					source, _, _ := s9ListenerResultSource(root, state, packet)
 					if source != "" {
-						appendPath(resolveRootPath(source, packet.view))
+						if packet.view != "" {
+							appendPath(resolveRootPath(source, packet.view))
+						}
 						appendPath(resolveRootPath(source, packet.answer))
 					}
 				}
@@ -79,12 +81,14 @@ func s9QuestionnaireReadOrder(root string, state map[string]any, request policy.
 				}
 				if main && factErr == nil && fact.kind == "" {
 					if native, ok := s9ListenerNativePacket(state, nativePackets, packet); ok {
-						brief, _, _ := nativeS9Paths(native)
+						brief := nativeS9BriefPath(native)
 						appendPath(resolveRootPath(root, brief))
 					} else if contextForHook(request).Err() != nil {
 						source, _, _ := s9ListenerResultSource(root, state, packet)
 						if source != "" {
-							appendPath(resolveRootPath(source, packet.view))
+							if packet.view != "" {
+								appendPath(resolveRootPath(source, packet.view))
+							}
 							appendPath(resolveRootPath(source, packet.answer))
 						}
 					}
@@ -92,21 +96,25 @@ func s9QuestionnaireReadOrder(root string, state map[string]any, request policy.
 				continue
 			}
 			if native, ok := s9ListenerNativePacket(state, nativePackets, packet); ok {
-				brief, _, _ := nativeS9Paths(native)
+				brief := nativeS9BriefPath(native)
 				appendPath(resolveRootPath(root, brief))
-				appendPath(resolveRootPath(root, native.ViewPath))
+				if native.ViewPath != "" {
+					appendPath(resolveRootPath(root, native.ViewPath))
+				}
 				continue
 			}
 			source, _, _ := s9ListenerResultSource(root, state, packet)
 			if source != "" {
 				appendPath(resolveRootPath(source, packet.answer))
-				appendPath(resolveRootPath(source, packet.view))
+				if packet.view != "" {
+					appendPath(resolveRootPath(source, packet.view))
+				}
 			}
 		}
 	}
 	pointer := repairPointerCLI(state)
 	if main {
-		for _, ref := range repairArtifactRefs(pointer, "result_refs", "result_ref", "result_sha256") {
+		for _, ref := range repairArtifactRefs(pointer, "result_refs", "result_ref") {
 			appendPath(resolveRootPath(root, ref.Path))
 		}
 		for _, key := range []string{"impact_ref", "handoff_ref"} {

@@ -60,6 +60,5 @@
     "the actual diff leaves the approved prospective scope"
   ],
   "approved_by": null,
-  "approved_at": null,
-  "approval_hash": null
+  "approved_at": null
 }

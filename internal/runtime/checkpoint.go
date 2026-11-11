@@ -3,12 +3,13 @@ package runtime
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
-	"reflect"
 	"strings"
 
 	"github.com/entroforge/go-system-builder/internal/workpacket"
@@ -29,8 +30,6 @@ type RuntimeCheckpoint struct {
 	Revision      int    `json:"revision"`
 	StatePath     string `json:"state_path"`
 	JournalPath   string `json:"journal_path"`
-	StateSHA256   string `json:"state_sha256"`
-	JournalSHA256 string `json:"journal_sha256"`
 }
 
 type checkpointIndex struct {
@@ -64,6 +63,84 @@ func hasIssuedIndices(state map[string]any) bool {
 		}
 	}
 	return false
+}
+
+// A checkpoint is reusable only after its actual path is in the original
+// Writer's index and corresponds to the same Runtime revision and sequence.
+// Attempt components distinguish preserved unknown publication remnants.
+func checkpointBelongsToEvent(manifest, baseDir string) bool {
+	if !validCheckpointManifestPath(manifest) {
+		return false
+	}
+	dir := strings.TrimSuffix(manifest, "/manifest.json")
+	if dir == baseDir {
+		return true
+	}
+	const root = ".claude/runtime-checkpoints/"
+	if !strings.HasPrefix(dir, root+"alternate-") {
+		return false
+	}
+	suffix := strings.TrimPrefix(dir, root)
+	index := strings.IndexByte(suffix, '/')
+	if index < 0 || suffix[index+1:] != strings.TrimPrefix(baseDir, root) {
+		return false
+	}
+	return validCheckpointAlternate(suffix[:index])
+}
+
+func validCheckpointAlternate(name string) bool {
+	if !strings.HasPrefix(name, "alternate-") || len(name) == len("alternate-") {
+		return false
+	}
+	for _, c := range strings.TrimPrefix(name, "alternate-") {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// claimCheckpointDirectory atomically reserves a new directory. A directory
+// left by an interrupted, unindexed attempt is unknown and is never removed,
+// compared or reused as evidence of completion.
+func claimCheckpointDirectory(ctx context.Context, root, baseDir string) (string, error) {
+	const prefix = ".claude/runtime-checkpoints/"
+	if !strings.HasPrefix(baseDir, prefix+"cp/") || !validCheckpointManifestPath(baseDir+"/manifest.json") {
+		return "", errors.New("invalid checkpoint publication directory")
+	}
+	storage, _, err := workpacket.OpenParent(root, checkpointIndexPath, true)
+	if err != nil {
+		return "", fmt.Errorf("open checkpoint storage: %w", err)
+	}
+	storage.Close()
+	for attempt := 0; ; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		dir := baseDir
+		if attempt > 0 {
+			dir = fmt.Sprintf("%salternate-%d/%s", prefix, attempt, strings.TrimPrefix(baseDir, prefix))
+		}
+		parent, name, err := workpacket.OpenParent(root, dir, true)
+		if errors.Is(err, workpacket.ErrPacketPathOccupied) {
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+		err = parent.Mkdir(name, 0700)
+		if err == nil {
+			err = workpacket.SyncDirectory(parent)
+		}
+		closeErr := parent.Close()
+		if errors.Is(err, os.ErrExist) {
+			continue
+		}
+		if err != nil || closeErr != nil {
+			return "", errors.Join(err, closeErr)
+		}
+		return dir, nil
+	}
 }
 
 // publishCheckpointLocked runs before removing the original durable marker.
@@ -116,34 +193,71 @@ func (s *Store) publishCheckpointLocked() error {
 	if err != nil {
 		return err
 	}
-	stateHash, journalHash := sha256Hex(stateBytes), sha256Hex(journalBytes)
-	id := sha256Hex([]byte(stateHash + ":" + journalHash))
-	dir := ".claude/runtime-checkpoints/" + id
-	if err := s.publishCheckpointPacketBodies(state, dir); err != nil {
-		return err
+	// Runtime identity, revision and journal sequence are persisted before this
+	// point, so a retry selects the same checkpoint without hashing content.
+	encoded := base64.RawURLEncoding.EncodeToString([]byte(stringValue(state["runtime_id"])))
+	parts := []string{"cp"}
+	for len(encoded) > 120 {
+		parts = append(parts, encoded[:120])
+		encoded = encoded[120:]
 	}
-	manifest := RuntimeCheckpoint{SchemaVersion: "1.0.0", RuntimeID: stringValue(state["runtime_id"]), Generation: generation, Revision: revision, StatePath: dir + "/state.json", JournalPath: dir + "/events.jsonl", StateSHA256: stateHash, JournalSHA256: journalHash}
-	manifestPath := dir + "/manifest.json"
-	manifestBytes, err := jsonDocumentBytes(manifest)
-	if err != nil {
-		return err
-	}
-	for _, asset := range []struct {
-		path  string
-		data  []byte
-		limit int64
-	}{{manifest.StatePath, stateBytes, checkpointStateLimit}, {manifest.JournalPath, journalBytes, checkpointJournalLimit}, {manifestPath, manifestBytes, 4096}} {
-		existing, err := workpacket.PublishBounded(s.root, asset.path, asset.data, asset.limit)
-		if err != nil {
-			return fmt.Errorf("publish checkpoint: %w", err)
-		}
-		if !bytes.Equal(existing, asset.data) {
-			return errors.New("immutable checkpoint asset conflict")
-		}
-	}
+	parts = append(parts, encoded, fmt.Sprintf("r%d-s%d", revision, journal.TailSequence))
+	baseDir := ".claude/runtime-checkpoints/" + strings.Join(parts, "/")
+	// A previously indexed checkpoint for this exact Runtime event is the
+	// original Writer's completed publication. Reuse that fact; an unknown
+	// same-named directory is never read or claimed as proof of this event.
 	index, err := readCheckpointIndex(s.root)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
+	}
+	for _, old := range index.Manifests {
+		if !checkpointBelongsToEvent(old, baseDir) {
+			continue
+		}
+		data, err := workpacket.ReadFile(s.root, old, 4096)
+		var prior map[string]any
+		if err == nil && json.Unmarshal(data, &prior) == nil && prior["schema_version"] == "1.0.0" &&
+			stringValue(prior["runtime_id"]) == stringValue(state["runtime_id"]) && checkpointNumber(prior["baseline_generation"], generation) && checkpointNumber(prior["revision"], revision) &&
+			stringValue(prior["state_path"]) == strings.TrimSuffix(old, "/manifest.json")+"/state.json" && stringValue(prior["journal_path"]) == strings.TrimSuffix(old, "/manifest.json")+"/events.jsonl" {
+			return nil
+		}
+	}
+	var manifestPath string
+	for {
+		dir, err := claimCheckpointDirectory(s.Context(), s.root, baseDir)
+		if err != nil {
+			return err
+		}
+		if err := s.publishCheckpointPacketBodies(state, dir); err != nil {
+			if errors.Is(err, errCheckpointPublicationOccupied) {
+				continue
+			}
+			return err
+		}
+		manifest := RuntimeCheckpoint{SchemaVersion: "1.0.0", RuntimeID: stringValue(state["runtime_id"]), Generation: generation, Revision: revision, StatePath: dir + "/state.json", JournalPath: dir + "/events.jsonl"}
+		manifestPath = dir + "/manifest.json"
+		manifestBytes, err := jsonDocumentBytes(manifest)
+		if err != nil {
+			return err
+		}
+		occupied := false
+		for _, asset := range []struct {
+			path  string
+			data  []byte
+			limit int64
+		}{{manifest.StatePath, stateBytes, checkpointStateLimit}, {manifest.JournalPath, journalBytes, checkpointJournalLimit}, {manifestPath, manifestBytes, 4096}} {
+			created, err := workpacket.PublishNewBounded(s.root, asset.path, asset.data, asset.limit)
+			if err != nil {
+				return fmt.Errorf("publish checkpoint: %w", err)
+			}
+			if !created {
+				occupied = true
+				break
+			}
+		}
+		if !occupied {
+			break
+		}
 	}
 	next := checkpointIndex{SchemaVersion: "1.0.0", Manifests: []string{manifestPath}}
 	for _, old := range index.Manifests {
@@ -165,21 +279,25 @@ func (s *Store) publishCheckpointLocked() error {
 	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	tmp := ".index-pending.json"
-	// Runtime lock owns this temporary projection; interrupted publication is
-	// safely rewritten before index rename. Symlinks are never followed.
-	if info, err := parent.Lstat(tmp); err == nil && !info.Mode().IsRegular() {
-		return errors.New("checkpoint temporary index is not regular")
-	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
+	// A leftover index temporary may belong to an interrupted or unrelated
+	// writer. Allocate our own and never remove an unknown neighbor.
+	var tmp string
+	var f *os.File
+	for attempt := 1; ; attempt++ {
+		if err := s.Context().Err(); err != nil {
+			return err
+		}
+		tmp = fmt.Sprintf(".index-pending-%d.json", attempt)
+		f, err = parent.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0600)
+		if errors.Is(err, os.ErrExist) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		break
 	}
-	if err := parent.Remove(tmp); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	f, err := parent.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0600)
-	if err != nil {
-		return err
-	}
+	defer parent.Remove(tmp)
 	_, writeErr := f.Write(data)
 	if err := errors.Join(writeErr, f.Sync(), f.Close()); err != nil {
 		return err
@@ -190,41 +308,110 @@ func (s *Store) publishCheckpointLocked() error {
 	if err := workpacket.SyncDirectory(parent); err != nil {
 		return err
 	}
-	// Also remove directories left by interrupted publication; at most the two
-	// indexed complete pairs survive a successful publication.
-	d, err := parent.Open(".")
-	if err != nil {
-		return err
+	// Retire only checkpoints previously named by the index. Never remove
+	// unknown neighboring data; directories containing packet bodies or other
+	// files are retained for explicit maintenance rather than recursively erased.
+	kept := map[string]bool{}
+	for _, manifest := range next.Manifests {
+		kept[manifest] = true
 	}
-	entries, readErr := d.ReadDir(-1)
-	err = errors.Join(readErr, d.Close())
-	if err != nil {
-		return err
-	}
-	keep := map[string]bool{}
-	for _, path := range next.Manifests {
-		keep[filepath.Base(filepath.Dir(path))] = true
-	}
-	for _, entry := range entries {
-		if isCheckpointID(entry.Name()) && !keep[entry.Name()] {
-			if !entry.IsDir() {
-				return errors.New("checkpoint directory is not regular")
-			}
-			if err := parent.RemoveAll(entry.Name()); err != nil {
-				return err
-			}
+	for _, old := range index.Manifests {
+		if kept[old] || !validCheckpointManifestPath(old) {
+			continue
 		}
+		pruneSimpleIndexedCheckpoint(s.root, old)
 	}
+
 	return workpacket.SyncDirectory(parent)
 }
 
+func checkpointNumber(value any, expected int) bool {
+	n, err := integerField(map[string]any{"value": value}, "value")
+	return err == nil && n == expected
+}
+
+// pruneSimpleIndexedCheckpoint is opportunistic: failures do not turn a
+// completed business transaction into a failed acceptance. Only a fully
+// recognized simple checkpoint is removed; any extra content is preserved.
+func pruneSimpleIndexedCheckpoint(root, manifest string) {
+	dir := strings.TrimSuffix(manifest, "/manifest.json")
+	base, _, err := workpacket.OpenParent(root, manifest, false)
+	if err != nil {
+		return
+	}
+	defer base.Close()
+	d, err := base.Open(".")
+	if err != nil {
+		return
+	}
+	entries, readErr := d.ReadDir(-1)
+	_ = d.Close()
+	if readErr != nil || len(entries) != 3 {
+		return
+	}
+	allowed := map[string]bool{"state.json": true, "events.jsonl": true, "manifest.json": true}
+	for _, entry := range entries {
+		if !allowed[entry.Name()] || !entry.Type().IsRegular() {
+			return
+		}
+	}
+	for _, entry := range entries {
+		if err := base.Remove(entry.Name()); err != nil {
+			return
+		}
+	}
+	// Remove the now-empty directory only; nested/unknown data cannot be erased.
+	parent, name, err := workpacket.OpenParent(root, dir, false)
+	if err != nil {
+		return
+	}
+	defer parent.Close()
+	_ = parent.Remove(name)
+}
+
 func isCheckpointID(id string) bool {
+	if strings.HasPrefix(id, "cp-") {
+		for _, c := range id {
+			if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' || c == '_') {
+				return false
+			}
+		}
+		return len(id) > len("cp-")
+	}
 	if len(id) != 64 {
 		return false
 	}
 	for _, c := range id {
 		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
 			return false
+		}
+	}
+	return true
+}
+
+func validCheckpointManifestPath(manifest string) bool {
+	const prefix = ".claude/runtime-checkpoints/"
+	if !strings.HasPrefix(manifest, prefix) || path.Clean(manifest) != manifest || !strings.HasSuffix(manifest, "/manifest.json") {
+		return false
+	}
+	parts := strings.Split(strings.TrimSuffix(strings.TrimPrefix(manifest, prefix), "/manifest.json"), "/")
+	if len(parts) > 1 && validCheckpointAlternate(parts[0]) {
+		parts = parts[1:]
+	}
+	if len(parts) == 1 {
+		return isCheckpointID(parts[0])
+	}
+	if len(parts) < 3 || parts[0] != "cp" {
+		return false
+	}
+	for _, part := range parts[1:] {
+		if part == "" || len(part) > 120 {
+			return false
+		}
+		for _, c := range part {
+			if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' || c == '_') {
+				return false
+			}
 		}
 	}
 	return true
@@ -244,8 +431,7 @@ func readCheckpointIndex(root string) (checkpointIndex, error) {
 	}
 	seen := map[string]bool{}
 	for _, path := range index.Manifests {
-		id := filepath.Base(filepath.Dir(path))
-		if !isCheckpointID(id) || path != ".claude/runtime-checkpoints/"+id+"/manifest.json" || seen[path] {
+		if !validCheckpointManifestPath(path) || seen[path] {
 			return index, errors.New("invalid checkpoint manifest path")
 		}
 		seen[path] = true
@@ -262,8 +448,8 @@ func LatestRuntimeCheckpoint(root string) (string, error) {
 	return index.Manifests[0], nil
 }
 
-// ReadRuntimeCheckpoint requires the latest complete source and validates its
-// exact pair. Older snapshots cannot roll back accepted work or transitions.
+// ReadRuntimeCheckpoint checks the latest available source against retained
+// Runtime, journal and responsibility facts.
 func ReadRuntimeCheckpoint(root, path string, validator CandidateValidator) (CheckpointPair, error) {
 	latest, err := LatestRuntimeCheckpoint(root)
 	if err != nil {
@@ -277,9 +463,7 @@ func ReadRuntimeCheckpoint(root, path string, validator CandidateValidator) (Che
 		return CheckpointPair{}, err
 	}
 	var manifest RuntimeCheckpoint
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&manifest); err != nil {
+	if err := json.Unmarshal(data, &manifest); err != nil {
 		return CheckpointPair{}, err
 	}
 	dir := strings.TrimSuffix(path, "/manifest.json")
@@ -293,9 +477,6 @@ func ReadRuntimeCheckpoint(root, path string, validator CandidateValidator) (Che
 	journalBytes, err := workpacket.ReadFile(root, manifest.JournalPath, checkpointJournalLimit)
 	if err != nil {
 		return CheckpointPair{}, err
-	}
-	if sha256Hex(stateBytes) != manifest.StateSHA256 || sha256Hex(journalBytes) != manifest.JournalSHA256 || filepath.Base(dir) != sha256Hex([]byte(manifest.StateSHA256+":"+manifest.JournalSHA256)) {
-		return CheckpointPair{}, errors.New("checkpoint fingerprint mismatch")
 	}
 	var state map[string]any
 	if err := json.Unmarshal(stateBytes, &state); err != nil {
@@ -362,15 +543,12 @@ func ValidateCheckpointRestore(root string, pair CheckpointPair) error {
 	}
 	var current map[string]any
 	if err == nil && json.Unmarshal(currentData, &current) == nil {
-		if current["runtime_id"] != pair.State["runtime_id"] || !reflect.DeepEqual(current["bound_req"], pair.State["bound_req"]) || !reflect.DeepEqual(current["baseline"], pair.State["baseline"]) {
+		currentREQ, _ := current["bound_req"].(map[string]any)
+		checkpointREQ, _ := pair.State["bound_req"].(map[string]any)
+		currentBaseline, _ := current["baseline"].(map[string]any)
+		checkpointBaseline, _ := pair.State["baseline"].(map[string]any)
+		if stringValue(current["runtime_id"]) != stringValue(pair.State["runtime_id"]) || stringValue(currentREQ["id"]) != stringValue(checkpointREQ["id"]) || stringValue(currentREQ["path"]) != stringValue(checkpointREQ["path"]) || stringValue(currentREQ["version"]) != stringValue(checkpointREQ["version"]) || fmt.Sprint(currentBaseline["generation"]) != fmt.Sprint(checkpointBaseline["generation"]) {
 			return errors.New("checkpoint disagrees with current Runtime identity/baseline/REQ")
-		}
-		revision, err := integerField(current, "revision")
-		if err != nil || revision > pair.Manifest.Revision {
-			return errors.New("checkpoint would roll back a newer Runtime")
-		}
-		if revision == pair.Manifest.Revision && !reflect.DeepEqual(current, pair.State) {
-			return errors.New("same-revision Runtime facts differ from checkpoint")
 		}
 	}
 	journal, err := inspectJournalData(pair.JournalBytes)
@@ -383,6 +561,14 @@ func ValidateCheckpointRestore(root string, pair CheckpointPair) error {
 		return err
 	}
 	paths = append(paths, journalPath)
+	// The committed event coordinate of the active Runtime is read from the
+	// same journal files that already carry its known events. A revision
+	// counter is only an audit coordinate, so it never decides whether a
+	// restore rolls back committed progress.
+	liveTailSequence := 0
+	liveTailEventID := ""
+	liveTailKnown := false
+	unknownEvent := false
 	for _, path := range paths {
 		data, err := os.ReadFile(path)
 		if errors.Is(err, os.ErrNotExist) {
@@ -401,11 +587,38 @@ func ValidateCheckpointRestore(root string, pair CheckpointPair) error {
 			}
 			// Even valid events in an otherwise damaged journal must not be lost.
 			id := stringValue(event["event_id"])
-			index, ok := journal.EventIndex[id]
-			if id != "" && (!ok || !reflect.DeepEqual(event, journal.Events[index])) {
-				return errors.New("checkpoint would discard or change a known journal event")
+			_, ok := journal.EventIndex[id]
+			if id != "" && !ok {
+				unknownEvent = true
+			}
+			sequence, err := integerField(event, "sequence")
+			if err != nil || sequence < 1 || id == "" {
+				continue
+			}
+			if !liveTailKnown || sequence > liveTailSequence {
+				liveTailKnown = true
+				liveTailSequence = sequence
+				liveTailEventID = id
 			}
 		}
+	}
+	// A restore must not roll back committed progress. The committed event
+	// coordinate decides, exactly as the recovery path decides it: an active
+	// Runtime that holds later committed events than the checkpoint keeps its
+	// progress. A journal that cannot be read leaves the coordinate unknown and
+	// never becomes a new reason to refuse the restore.
+	if liveTailKnown {
+		checkpointTailSequence := journal.TailSequence
+		checkpointTailEventID := ""
+		if len(journal.Events) > 0 {
+			checkpointTailEventID = stringValue(journal.Events[len(journal.Events)-1]["event_id"])
+		}
+		if liveTailSequence > checkpointTailSequence || (liveTailSequence == checkpointTailSequence && liveTailEventID != checkpointTailEventID) {
+			return errors.New("checkpoint would roll back committed Runtime progress")
+		}
+	}
+	if unknownEvent {
+		return errors.New("checkpoint would discard a known journal event")
 	}
 	return nil
 }

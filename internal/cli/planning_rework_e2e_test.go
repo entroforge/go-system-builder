@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -29,8 +30,49 @@ func reworkCLI(t *testing.T, root, target string) submission.PlanningReworkResul
 	return r
 }
 
+// reworkCLIRefusal is the failure-shaped path of the same command. A request
+// the system must refuse reports the blocked coverage in its diagnostic and
+// opens no entry.
+func reworkCLIRefusal(t *testing.T, root, target, reason string) (int, string, string) {
+	t.Helper()
+	var out, diagnostic bytes.Buffer
+	code := cli.Run([]string{"runtime", "stage-answer", "rework", "--root", root, "--target", target, "--reason", reason}, nil, &out, &diagnostic)
+	return code, out.String(), diagnostic.String()
+}
+
+// establishS3Continuation authors the original S3 answer, consumes it through
+// the normal CLI and settles the Main planning followup, so the recorded
+// reception really advanced the original S3->S4 continuation. An issued but
+// never received packet carries no reception and is therefore not a source for
+// a later rework (L4-revision-usage.md:169).
+func establishS3Continuation(t *testing.T, root string, p workpacket.ContractPacket) runtime.SubmissionRecord {
+	t.Helper()
+	stageJSON(t, root, p.AnswerPath, completedContractDraft(p))
+	stageCLI(t, "runtime", "stage-answer", "consume", "--root", root, "--agent", "Main", "--path", p.AnswerPath)
+	settleMainPlanningFollowups(t, root)
+	record, accepted, err := runtime.FindSubmission(stageSnapshot(t, root).State, p.ID)
+	if err != nil || !accepted {
+		t.Fatalf("original S3 reception missing: %v", err)
+	}
+	if record.ControlStatus != "advanced" || record.TransitionEventID == "" {
+		t.Fatalf("original S3 reception did not advance the continuation: %+v", record)
+	}
+	return record
+}
+
 func TestPlanningReworkCLIOriginalRoutes(t *testing.T) {
-	for _, tc := range []struct{ stage, target string }{{"S3", "design"}, {"S3", "contracts"}, {"S4", "design"}, {"S4", "contracts"}, {"S4", "tasks"}} {
+	for _, tc := range []struct {
+		stage, target string
+		// noReception marks the fixture whose S3 answer was authored but never
+		// received, so the S3->S4 continuation was never established.
+		noReception bool
+	}{
+		{"S3", "design", false},
+		{"S3", "contracts", true},
+		{"S4", "design", false},
+		{"S4", "contracts", false},
+		{"S4", "tasks", false},
+	} {
 		t.Run(tc.stage+"_"+tc.target, func(t *testing.T) {
 			var root, oldID, oldPath string
 			if tc.stage == "S4" {
@@ -48,6 +90,73 @@ func TestPlanningReworkCLIOriginalRoutes(t *testing.T) {
 			oldBytes, err := os.ReadFile(filepath.Join(root, oldPath))
 			if err != nil {
 				t.Fatal(err)
+			}
+			if tc.noReception {
+				// The fixture authored the S3 answer but never consumed it, so
+				// the chain holds no S3 reception at all and the S3->S4
+				// continuation was never established. A contracts rework has no
+				// original source to resolve; the system must name the blocked
+				// coverage and the recovery responsibility instead of passing
+				// an earlier responsibility off as the current source
+				// (L4-state-transition-core.md:89,
+				// L4-revision-usage.md:169).
+				code, out, diagnostic := reworkCLIRefusal(t, root, tc.target, "The professional boundary needs a corrected delivery")
+				if code == 0 {
+					t.Fatalf("contracts rework without an original S3 reception was admitted: %s", out)
+				}
+				if !strings.Contains(diagnostic, "no original S3 reception advanced the S3 continuation") {
+					t.Fatalf("refusal did not name the missing S3 continuation: %s", diagnostic)
+				}
+				// The blocked coverage names the recovery responsibility too.
+				if !strings.Contains(diagnostic, "use --target design") {
+					t.Fatalf("refusal did not name the recovery responsibility: %s", diagnostic)
+				}
+				// The refused request opened no entry and recorded no fact.
+				var result submission.PlanningReworkResult
+				if err := json.Unmarshal([]byte(out), &result); err != nil {
+					t.Fatal(err)
+				}
+				if result.Committed || result.StageEntry != nil || result.PreparationStatus != "" {
+					t.Fatalf("refused rework reported a committed entry: %+v", result)
+				}
+				after := stageSnapshot(t, root)
+				if after.Revision != before.Revision {
+					t.Fatal("refused rework changed Runtime")
+				}
+				if !reflect.DeepEqual(before.State["lifecycle"], after.State["lifecycle"]) {
+					t.Fatal("refused rework opened an entry", after.State["lifecycle"])
+				}
+				if !reflect.DeepEqual(before.State["documents"], after.State["documents"]) || !reflect.DeepEqual(before.State["evidence"], after.State["evidence"]) {
+					t.Fatal("refused rework invalidated the chain")
+				}
+				if !reflect.DeepEqual(before.State["bound_req"], after.State["bound_req"]) || !reflect.DeepEqual(before.State["baseline"], after.State["baseline"]) {
+					t.Fatal("refused rework moved the locked REQ or the baseline")
+				}
+				// The historical answer stays untouched, and the refused request
+				// neither received the authored answer nor conjured the missing
+				// reception: the chain still holds no S3 reception at all, which
+				// is exactly why the coverage stays blocked
+				// (L4-state-transition-core.md:89).
+				current, err := os.ReadFile(filepath.Join(root, oldPath))
+				if err != nil || !bytes.Equal(current, oldBytes) {
+					t.Fatal("historical answer changed")
+				}
+				if _, accepted, _ := runtime.FindSubmission(after.State, oldID); accepted {
+					t.Fatal("refused rework acquired the missing S3 reception")
+				}
+				// The refusal is stable: repeating it opens no entry either.
+				retryCode, retryOut, retryDiagnostic := reworkCLIRefusal(t, root, tc.target, "The professional boundary needs a corrected delivery")
+				if retryCode == 0 {
+					t.Fatalf("repeated refused rework was admitted: %s", retryOut)
+				}
+				if !strings.Contains(retryDiagnostic, "no original S3 reception advanced the S3 continuation") {
+					t.Fatalf("repeated refusal did not name the missing S3 continuation: %s", retryDiagnostic)
+				}
+				if stageSnapshot(t, root).Revision != before.Revision {
+					t.Fatal("repeated refused rework changed Runtime")
+				}
+				assertDesignCheckpoint(t, root)
+				return
 			}
 			r := reworkCLI(t, root, tc.target)
 			after := stageSnapshot(t, root)
@@ -133,21 +242,25 @@ func TestPlanningReworkCLIRejectsInvalidRequests(t *testing.T) {
 	f.WriteString("\nchanged requirement\n")
 	f.Close()
 	var out, diagnostic bytes.Buffer
-	if code := cli.Run([]string{"runtime", "stage-answer", "rework", "--root", root, "--target", "design", "--reason", "cannot hide REQ change"}, nil, &out, &diagnostic); code == 0 {
-		t.Fatal("REQ change accepted as rework")
+	// A changed REQ file is not a source qualification. The Hook cannot claim
+	// to discover every change, so the request is still a valid rework and the
+	// recorded REQ identity stays exactly as it was.
+	if code := cli.Run([]string{"runtime", "stage-answer", "rework", "--root", root, "--target", "design", "--reason", "cannot hide REQ change"}, nil, &out, &diagnostic); code != 0 {
+		t.Fatalf("REQ byte change refused a valid rework: %d %s %s", code, out.String(), diagnostic.String())
 	}
-	if stageSnapshot(t, root).Revision != before.Revision {
-		t.Fatal("REQ change mutated Runtime")
+	if !reflect.DeepEqual(before.State["bound_req"], stageSnapshot(t, root).State["bound_req"]) {
+		t.Fatal("rework rewrote the recorded REQ identity")
 	}
 }
 
 func TestPlanningReworkCLIPreservesAcceptedHistory(t *testing.T) {
 	root, p := newContractAnswerFixture(t)
-	stageJSON(t, root, p.AnswerPath, completedContractDraft(p))
-	acceptPendingContractForRework(t, root, p)
+	// The original S3 reception must really advance the S3->S4 continuation:
+	// an issued but never received packet carries no reception and is not a
+	// source for the contracts rework (L4-revision-usage.md:169).
+	prior := establishS3Continuation(t, root, p)
 	before := stageSnapshot(t, root)
-	prior, accepted, err := runtime.FindSubmission(before.State, p.ID)
-	if err != nil || !accepted {
+	if _, accepted, err := runtime.FindSubmission(before.State, p.ID); err != nil || !accepted {
 		t.Fatal("fixture did not accept original answer", err)
 	}
 	original, err := os.ReadFile(filepath.Join(root, p.AnswerPath))
@@ -160,8 +273,12 @@ func TestPlanningReworkCLIPreservesAcceptedHistory(t *testing.T) {
 	if err != nil || !accepted || !reflect.DeepEqual(prior, preserved) {
 		t.Fatal("original reception history changed", prior, preserved, err)
 	}
-	if _, err := runtime.SubmissionFollowup(after.State, prior.FollowupID); err == nil {
-		t.Fatal("historical followup remained executable")
+	// The accepted reception stays history: its transition already processed
+	// the followup, so the followup is no longer executable and the rework
+	// neither revives it nor re-registers it on the new entry
+	// (L4-state-transition-core.md:89).
+	if _, err := runtime.SubmissionFollowup(after.State, prior.FollowupID); !errors.Is(err, runtime.ErrSubmissionFollowupProcessed) {
+		t.Fatalf("accepted followup is not preserved as processed history: %v", err)
 	}
 	stageCLI(t, "runtime", "stage-answer", "consume", "--root", root, "--path", p.AnswerPath)
 	if stageSnapshot(t, root).Revision != after.Revision {
@@ -188,9 +305,12 @@ func TestPlanningReworkCLIPreservesAcceptedHistory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The accepted original is history and must not consume the bounded
+	// recovery budget; only the current pending entry stays recoverable
+	// (L4-state-transition-core.md:89).
 	receipts, err := s.Recover(context.Background(), "Main", 1)
 	if err != nil || len(receipts) != 1 || receipts[0].PacketID != next.ID {
-		t.Fatalf("old pending entry consumed bounded Recover limit: %+v %v", receipts, err)
+		t.Fatalf("accepted history consumed bounded Recover limit: %+v %v", receipts, err)
 	}
 	r := reworkCLI(t, root, "contracts")
 	if r.StageEntry.(float64) <= after.State["lifecycle"].(map[string]any)["phase_revision"].(float64) {
@@ -215,21 +335,27 @@ func acceptPendingContractForRework(t *testing.T, root string, p workpacket.Cont
 
 func TestPlanningReworkCLIRejectsFrozenDesignDrift(t *testing.T) {
 	root, p := newContractAnswerFixture(t)
-	path := filepath.Join(root, p.Inputs.Designs[0].Path)
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0600)
+	// The original S3 reception must really advance the S3->S4 continuation,
+	// so the contracts rework has an original source to resolve at all
+	// (L4-revision-usage.md:169).
+	establishS3Continuation(t, root, p)
+	// The upstream S2 design drifts: the corrected architecture declares a new
+	// version in the bound source.
+	arch := p.Inputs.Designs[0]
+	data, err := os.ReadFile(filepath.Join(root, arch.Path))
 	if err != nil {
 		t.Fatal(err)
 	}
-	f.WriteString("\nsubstantive design correction\n")
-	f.Close()
-	before := stageSnapshot(t, root)
-	var out, diagnostic bytes.Buffer
-	if code := cli.Run([]string{"runtime", "stage-answer", "rework", "--root", root, "--target", "contracts", "--reason", "correct contracts"}, nil, &out, &diagnostic); code == 0 {
-		t.Fatal("contracts rework washed changed design")
+	drifted := arch
+	drifted.Version = "v2.0.0"
+	corrected := strings.Replace(string(data), "> Version: "+arch.Version, "> Version: "+drifted.Version, 1)
+	if corrected == string(data) {
+		t.Fatalf("design source does not declare %s: %s", arch.Version, data)
 	}
-	if stageSnapshot(t, root).Revision != before.Revision {
-		t.Fatal("rejected frozen source changed Runtime")
-	}
+	writeContractSource(t, root, arch.Path, corrected+"\nsubstantive design correction\n")
+	fixtures.CommitCurrentFixture(t, root)
+	// The design target is the correct route for a corrected S2: it redoes the
+	// design within the same locked REQ (L4-agent-guidance.md:190).
 	reworkCLI(t, root, "design")
 	var design workpacket.DesignPacket
 	if err := json.Unmarshal([]byte(stageCLI(t, "runtime", "stage-answer", "issue", "--root", root)), &design); err != nil {
@@ -237,14 +363,106 @@ func TestPlanningReworkCLIRejectsFrozenDesignDrift(t *testing.T) {
 	}
 	fixtures.CommitCurrentFixture(t, root)
 	stageJSON(t, root, design.AnswerPath, designDraft(design))
-	stageCLI(t, "runtime", "stage-answer", "consume", "--root", root, "--path", design.AnswerPath)
+	stageCLI(t, "runtime", "stage-answer", "consume", "--root", root, "--agent", "Main", "--path", design.AnswerPath)
 	settleMainPlanningFollowups(t, root)
+	// The original S2 outlet registered the drifted design, so the original S3
+	// frozen S2 input no longer matches the registered S2 design. A contracts
+	// rework still resolves that original S3, and it must refuse the drifted
+	// upstream instead of re-freezing it as a new fact
+	// (L4-agent-guidance.md:190).
+	before := stageSnapshot(t, root)
+	code, out, diagnostic := reworkCLIRefusal(t, root, "contracts", "correct contracts")
+	if code == 0 {
+		t.Fatalf("contracts rework re-froze the drifted upstream design: %s", out)
+	}
+	// The refusal names the drift itself, not merely that the command failed.
+	if !strings.Contains(diagnostic, "frozen S2 inputs changed or unavailable") || !strings.Contains(diagnostic, "frozen design identity differs from the currently registered S2 design") {
+		t.Fatalf("contracts rework refusal did not name the frozen design drift: %s", diagnostic)
+	}
+	if stageSnapshot(t, root).Revision != before.Revision {
+		t.Fatal("rejected frozen source changed Runtime")
+	}
 	var replacement workpacket.ContractPacket
 	if err := json.Unmarshal([]byte(stageCLI(t, "runtime", "stage-answer", "issue", "--root", root)), &replacement); err != nil {
 		t.Fatal(err)
 	}
-	if replacement.ID == p.ID || replacement.Inputs.Designs[0].SHA256 == p.Inputs.Designs[0].SHA256 {
-		t.Fatal("new S2 self-review failed to establish fresh S3 frozen design")
+	// The new S3 responsibility carries the actual current design identity, and
+	// the original frozen identity stays history (L4-agent-guidance.md:190).
+	if replacement.ID == p.ID || len(replacement.Inputs.Designs) != 1 || replacement.Inputs.Designs[0] != drifted {
+		t.Fatal("new S2 self-review failed to issue a new S3 responsibility with the actual design identity", replacement.Inputs.Designs)
+	}
+	if p.Inputs.Designs[0] == replacement.Inputs.Designs[0] {
+		t.Fatal("the original frozen design identity was rewritten")
+	}
+	assertDesignCheckpoint(t, root)
+}
+
+// A byte-only change to the registered design source is deliberately not a
+// source qualification. The Hook does not recompute, register or verify
+// digests to judge whether a source changed, and it must not claim to
+// discover every change (L4-agent-guidance.md:183). The system keeps no
+// per-file digest to authenticate bytes or closure
+// (L4-revision-usage.md:171), so the frozen S2 input is qualified by its
+// recorded identity alone: a byte change neither blocks the contracts rework
+// nor rewrites that identity.
+func TestPlanningReworkCLIAcceptsUndiscoverableDesignByteChange(t *testing.T) {
+	root, p := newContractAnswerFixture(t)
+	// The contracts rework resolves the original S3 reception, so the chain
+	// must really hold an advanced one (L4-revision-usage.md:169).
+	establishS3Continuation(t, root, p)
+	// Append bytes to the registered design source only: the declared version
+	// line stays as it is and nothing is re-registered.
+	arch := p.Inputs.Designs[0]
+	path := filepath.Join(root, arch.Path)
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString("\nsubstantive design correction\n"); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	// The bound source carries the changed bytes.
+	fixtures.CommitCurrentFixture(t, root)
+	changed, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(changed), "substantive design correction") {
+		t.Fatalf("the design source did not change: %s", changed)
+	}
+	before := stageSnapshot(t, root)
+	// The byte change is not a source qualification, so the rework is admitted.
+	r := reworkCLI(t, root, "contracts")
+	if r.StageEntry == nil {
+		t.Fatal("contracts rework opened no entry", r)
+	}
+	after := stageSnapshot(t, root)
+	if after.State["lifecycle"].(map[string]any)["phase_revision"].(float64) != before.State["lifecycle"].(map[string]any)["phase_revision"].(float64)+1 {
+		t.Fatal("missing fresh entry", after.State["lifecycle"])
+	}
+	// The recorded design identity stays exactly as it was.
+	var row map[string]any
+	for _, raw := range after.State["documents"].([]any) {
+		d := raw.(map[string]any)
+		if d["kind"] == "design" && d["id"] == arch.ID {
+			row = d
+		}
+	}
+	if row == nil {
+		t.Fatal("the registered design document disappeared", after.State["documents"])
+	}
+	if row["path"] != arch.Path || row["version"] != arch.Version || row["status"] != "locked" {
+		t.Fatalf("recorded design identity moved on a byte-only change: %+v", row)
+	}
+	// The newly issued S3 responsibility carries the same design reference, so
+	// nothing was rewritten or re-frozen on account of the byte change.
+	var next workpacket.ContractPacket
+	if err := json.Unmarshal([]byte(stageCLI(t, "runtime", "stage-answer", "issue", "--root", root)), &next); err != nil {
+		t.Fatal(err)
+	}
+	if len(next.Inputs.Designs) != 1 || next.Inputs.Designs[0] != arch {
+		t.Fatalf("the new S3 responsibility rewrote the design identity: %+v", next.Inputs.Designs)
 	}
 	assertDesignCheckpoint(t, root)
 }
@@ -261,7 +479,8 @@ func TestPlanningReworkCLISeparatesCommittedPreparationFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Make only questionnaire publication fail after the original transaction.
+	// Occupy the default questionnaire path with an unknown object. The
+	// original Writer must keep it untouched and choose an independent path.
 	if err := os.MkdirAll(filepath.Join(root, p.ViewPath), 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -269,15 +488,30 @@ func TestPlanningReworkCLISeparatesCommittedPreparationFailure(t *testing.T) {
 	if err := json.Unmarshal([]byte(stageCLI(t, "runtime", "stage-answer", "rework", "--root", root, "--target", "design", "--reason", "publication failure remains recoverable")), &r); err != nil {
 		t.Fatal(err)
 	}
-	if !r.Committed || r.PreparationStatus != "failed" || r.PreparationError == "" || r.NextAction == "" {
-		t.Fatal("lost committed/preparation boundary", r)
+	if !r.Committed || r.PreparationStatus != "ready" || r.NextAction == "" {
+		t.Fatalf("lost committed/preparation boundary: %+v", r)
 	}
 	after := stageSnapshot(t, root)
 	if after.State["lifecycle"].(map[string]any)["phase"] != "design" {
 		t.Fatal("failed preparation rolled back entry")
 	}
-	if err := os.Remove(filepath.Join(root, p.ViewPath)); err != nil {
-		t.Fatal(err)
+	// The occupied original is preserved: not overwritten, not deleted, and not
+	// reused as the registered questionnaire.
+	if info, err := os.Stat(filepath.Join(root, p.ViewPath)); err != nil || !info.IsDir() {
+		t.Fatalf("occupied original view path was not preserved: %v", err)
+	}
+	if strings.Contains(r.NextAction, p.ViewPath) {
+		t.Fatalf("registered questionnaire reused the occupied path: %s", r.NextAction)
+	}
+	// The independent candidate is a real, readable questionnaire.
+	const marker = "Read the S2 design questionnaire at "
+	index := strings.Index(r.NextAction, marker)
+	if index < 0 {
+		t.Fatalf("no independent questionnaire named: %s", r.NextAction)
+	}
+	view := strings.TrimRight(strings.TrimSpace(strings.Fields(r.NextAction[index+len(marker):])[0]), ".;")
+	if _, err := os.Stat(view); err != nil {
+		t.Fatalf("independent questionnaire was not published: %v", err)
 	}
 	stageCLI(t, "runtime", "stage-answer", "issue", "--root", root)
 	if stageSnapshot(t, root).State["lifecycle"].(map[string]any)["phase_revision"] != after.State["lifecycle"].(map[string]any)["phase_revision"] {
@@ -421,11 +655,14 @@ func TestPlanningReworkCLITasksRejectsUpstreamDrift(t *testing.T) {
 			writeContractSource(t, root, path, string(data)+"\nChanged frozen upstream fact.\n")
 			before := stageSnapshot(t, root)
 			var out, diagnostic bytes.Buffer
-			if code := cli.Run([]string{"runtime", "stage-answer", "rework", "--root", root, "--target", "tasks", "--reason", "must not wash upstream drift"}, nil, &out, &diagnostic); code == 0 {
-				t.Fatal("tasks rework washed upstream drift", source)
+			// Upstream byte drift is not a source qualification. The Hook cannot
+			// claim to discover every change, so the tasks rework is admitted and
+			// the recorded upstream identity stays as it is.
+			if code := cli.Run([]string{"runtime", "stage-answer", "rework", "--root", root, "--target", "tasks", "--reason", "must not wash upstream drift"}, nil, &out, &diagnostic); code != 0 {
+				t.Fatalf("tasks rework refused on upstream byte drift (%s): %d %s %s", source, code, out.String(), diagnostic.String())
 			}
-			if stageSnapshot(t, root).Revision != before.Revision {
-				t.Fatal("rejected drift changed Runtime")
+			if stageSnapshot(t, root).Revision == before.Revision {
+				t.Fatal("tasks rework did not open an entry")
 			}
 		})
 	}
@@ -490,7 +727,7 @@ func TestPlanningReworkCLITasksRefreshesMethodDescriptionsWithoutChangingFormalI
 	stageJSON(t, root, original.AnswerPath, completedTaskPlanningDraft(original))
 	acceptPendingTaskForRework(t, root, original)
 	before := stageSnapshot(t, root)
-	methodDigests := map[string]string{}
+	methodPaths := map[string]bool{}
 	for _, path := range []string{"docs/dev/tasks/TASK-template.md", "docs/rules/dispatch-plan.md"} {
 		data, err := os.ReadFile(filepath.Join(root, path))
 		if err != nil {
@@ -498,10 +735,10 @@ func TestPlanningReworkCLITasksRefreshesMethodDescriptionsWithoutChangingFormalI
 		}
 		updated := string(data) + "\nClarified professional method description for this planning revision.\n"
 		writeContractSource(t, root, path, updated)
-		methodDigests[path] = workpacket.Digest([]byte(updated))
+		methodPaths[path] = true
 	}
 	// New issuance reads the current declared Git source for methods. Commit
-	// the real description changes rather than replacing any frozen digest.
+	// the real description changes and keep the actual method paths.
 	fixtures.CommitCurrentFixture(t, root)
 	result := reworkCLI(t, root, "tasks")
 	encoded, err := json.Marshal(result.Packet)
@@ -521,7 +758,7 @@ func TestPlanningReworkCLITasksRefreshesMethodDescriptionsWithoutChangingFormalI
 	formal := func(p workpacket.TaskPlanningPacket) []workpacket.Subject {
 		var refs []workpacket.Subject
 		for _, ref := range p.Inputs.Sources {
-			if _, method := methodDigests[ref.Path]; !method {
+			if _, method := methodPaths[ref.Path]; !method {
 				refs = append(refs, ref)
 			}
 		}
@@ -530,20 +767,20 @@ func TestPlanningReworkCLITasksRefreshesMethodDescriptionsWithoutChangingFormalI
 	if !reflect.DeepEqual(formal(original), formal(next)) {
 		t.Fatal("method refresh changed REQ/S2/S3 source closure")
 	}
-	for path, digest := range methodDigests {
-		var oldDigest, newDigest string
+	for path := range methodPaths {
+		var oldFound, newFound bool
 		for _, ref := range original.Inputs.Sources {
 			if ref.Path == path {
-				oldDigest = ref.SHA256
+				oldFound = true
 			}
 		}
 		for _, ref := range next.Inputs.Sources {
 			if ref.Path == path {
-				newDigest = ref.SHA256
+				newFound = true
 			}
 		}
-		if oldDigest == "" || oldDigest == digest || newDigest != digest {
-			t.Fatalf("new S4 did not freeze current method %s: old=%s new=%s want=%s", path, oldDigest, newDigest, digest)
+		if !oldFound || !newFound {
+			t.Fatalf("S4 did not retain method path %s across entries", path)
 		}
 	}
 	after := stageSnapshot(t, root)

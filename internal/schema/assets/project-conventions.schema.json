@@ -21,12 +21,11 @@
   "$defs": {
     "reference": {
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "kind",
         "id",
-        "path",
-        "sha256"
+        "path"
       ],
       "properties": {
         "kind": {
@@ -52,10 +51,6 @@
         "version": {
           "type": "string",
           "minLength": 1
-        },
-        "sha256": {
-          "type": "string",
-          "pattern": "^[a-f0-9]{64}$"
         }
       },
       "allOf": [
@@ -80,20 +75,15 @@
     },
     "example": {
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
-        "path",
-        "sha256"
+        "path"
       ],
       "properties": {
         "path": {
           "type": "string",
           "minLength": 1,
           "pattern": "^[^\\\\:\\x00]+$"
-        },
-        "sha256": {
-          "type": "string",
-          "pattern": "^[a-f0-9]{64}$"
         }
       }
     },

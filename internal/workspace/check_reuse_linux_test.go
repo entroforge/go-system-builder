@@ -27,10 +27,7 @@ func TestEnabledWorkerActualRunThenExactReuseOnSupportedHost(t *testing.T) {
 	if err := b.Bootstrap(e, executable); err != nil {
 		t.Fatal(err)
 	}
-	e.BootstrapSHA256, err = BootstrapDigest(e)
-	if err != nil {
-		t.Fatal(err)
-	}
+
 	b.Executions[e.AssignmentID] = e
 	state["workspace"] = Encode(b)
 	saveControlState(t, b.MainRoot, state)
@@ -66,7 +63,22 @@ func TestEnabledWorkerActualRunThenExactReuseOnSupportedHost(t *testing.T) {
 	}
 	captured = nil
 	changed, err := b.RunCheck(ctx, e, 0, io.Discard)
-	if err != nil || changed == first || captured == nil {
-		t.Fatal("changed input was reused", err)
+	if err != nil || changed != first || captured != nil {
+		t.Fatal("unrelated file was treated as proof that the original check is inapplicable", err)
+	}
+	// The actual checked input is known to have changed. The existing fresh
+	// guard makes the original runner execute instead of reusing the old PASS.
+	if err := os.Remove(filepath.Join(e.Path, "input.md")); err != nil {
+		t.Fatal(err)
+	}
+	ctx = checkexec.WithReuseGuard(ctx, checkexec.ReuseGuard{Fresh: true})
+	captured = nil
+	failed, err := b.RunCheck(ctx, e, 0, io.Discard)
+	if err == nil || failed == "" || failed == first || captured == nil || captured.Path != failed {
+		t.Fatalf("fresh check of missing input did not produce an actual failed receipt: path=%q capture=%+v error=%v", failed, captured, err)
+	}
+	verified, verifyErr := checkexec.VerifyToolReceipt(filepath.Join(b.MainRoot, ".claude/evidence/workspace-checks"), *captured)
+	if verifyErr != nil || verified.Passed {
+		t.Fatalf("missing-input receipt is not a verified failure: %+v, %v", verified, verifyErr)
 	}
 }

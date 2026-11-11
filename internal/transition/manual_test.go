@@ -9,9 +9,8 @@ import (
 
 func TestManualHeaderContainsNoVolatileTimestamp(t *testing.T) {
 	manual := transition.RenderManual(&transition.LoopDefinition{}, transition.ManualOptions{
-		TargetPath:           "loop-harness.md",
-		HarnessVersion:       "dev",
-		LoopDefinitionSHA256: strings.Repeat("a", 64),
+		TargetPath:     "loop-harness.md",
+		HarnessVersion: "dev",
 	})
 	if strings.Contains(manual, "**Generated**") {
 		t.Fatalf("manual output must be deterministic; got volatile timestamp header: %s", manual)
@@ -69,9 +68,9 @@ func TestManualS7RecoveryGuidanceNamesRepairFactsAndTypedEvidence(t *testing.T) 
 	for _, want := range []string{
 		"coverage_inventory",
 		"e2e_assets",
-		"capture step --finding <id> --claim <id>",
-		"explicitly named legacy/recovery command rejects an artifact",
-		"runtime s7-budget-decision",
+		"Record actual observations and cite useful sources",
+		"Follow the specific feedback",
+		"no review-count budget or decision application is required",
 	} {
 		if !strings.Contains(manual, want) {
 			t.Fatalf("S7 manual guidance must contain %q, got:\n%s", want, manual)
@@ -89,10 +88,10 @@ func TestManualNativeS6AndQuestionnaireS7S9Flow(t *testing.T) {
 		"Ordinary save hooks do not receive native S6 delivery",
 		"Main explicitly runs `runtime task-integrate --assignment-id <id>`",
 		"s6 prepare --revise-assignment <id> --revision-intent-key <stable-key>",
-		"exact Hook-supplied ReviewPlan path",
-		"Do not run `runtime review-result submit`",
-		"independent Targeted verification per approved Contract",
-		"no extra Handoff report",
+		"exact supplied original ReviewPlan",
+		"Each Reviewer saves its own original professional answer once",
+		"independent Targeted",
+		"extra Handoff report",
 	} {
 		if !strings.Contains(manual, want) {
 			t.Fatalf("normal questionnaire path must contain %q, got:\n%s", want, manual)
@@ -161,7 +160,7 @@ func TestManualApprovedAmendmentUsesOriginalReceiverAndCurrentQuestionnaire(t *t
 
 func TestManualCleanRoundUsesOriginalCompletionAndNamedRecovery(t *testing.T) {
 	manual := transition.RenderManual(&transition.LoopDefinition{Transitions: []transition.TransitionSpec{{ID: "TR-009", From: "verification", To: "acceptance", RequiredEvidence: []string{"clean_round_record"}}}}, transition.ManualOptions{})
-	for _, want := range []string{"final accepted ReviewResult", "runtime review-continue", "runtime audit-prepare", "material recovery does not repeat TR-009"} {
+	for _, want := range []string{"necessary responsibility completion and accepted no-Finding conclusions", "runtime review-continue", "runtime audit-prepare", "material recovery does not repeat TR-009"} {
 		if !strings.Contains(manual, want) {
 			t.Fatalf("clean-round handoff omitted %q", want)
 		}
@@ -169,5 +168,35 @@ func TestManualCleanRoundUsesOriginalCompletionAndNamedRecovery(t *testing.T) {
 	section := manual[strings.Index(manual, "### `TR-009`"):]
 	if strings.Contains(section, "Evidence bindings (copy into") || strings.Contains(section, "If a binding is missing, retry") {
 		t.Fatal("clean-round handoff asks author to copy machine bindings")
+	}
+}
+
+func TestManualS9NaturalReceptionPreservesOtherStageContracts(t *testing.T) {
+	manual := transition.RenderManual(&transition.LoopDefinition{}, transition.ManualOptions{})
+	for _, want := range []string{
+		"Applicable PreToolUse listens for ready original Plan/Result answers",
+		"successful PostToolUse and Stop/SubagentStop fallback through the original consumers",
+		"reception requires no extra submission, re-save or returned reference",
+		"The verifier saves its exact original Targeted answer",
+		"missing nonessential observation or evidence fields do not reject it",
+		"A fail without classification remains an unknown cause",
+		"do not repeat the independent work or add Final/Changeset proof",
+		"S5/S6 retain their original ordinary-tool reception contract",
+		"Each Investigator saves its original result for Pre/successful Post/Stop reception",
+		"Ordinary save hooks do not receive native S6 delivery",
+	} {
+		if !strings.Contains(manual, want) {
+			t.Fatalf("S9 natural reception guidance missing %q", want)
+		}
+	}
+	for _, stale := range []string{
+		"then saves and returns its private Result with the exact brief and absolute Result reference",
+		"The verifier returns its exact answer for Stop reception",
+		"Ordinary Worker tools do not receive answers",
+		"follow the supplied `runtime repair handoff complete --root <Main-root>` recovery",
+	} {
+		if strings.Contains(manual, stale) {
+			t.Fatalf("manual contains stale S9 guidance %q", stale)
+		}
 	}
 }

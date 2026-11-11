@@ -7,9 +7,9 @@ description: Safely diagnose, plan, and rebuild a damaged Loop Runtime when loop
 
 Use this skill whenever the Runtime control plane is not trustworthy. Treat
 `loop-state.json` as a rebuildable projection, not as permission to guess or
-to edit the file by hand. The recovery workflow is deliberately low-freedom:
-inspect first, classify the failure, build a fingerprinted plan, obtain
-explicit approval, then apply atomically.
+to edit the file by hand. Inspect and classify the actual failure, prepare the
+original recovery plan, and use the applicable authorized recovery entry.
+Do not calculate or register fingerprints as a recovery qualification.
 
 ## Authorities
 
@@ -61,14 +61,14 @@ Classify the result:
 |:---|:---|
 | State is readable/semantic-valid and only journal tail is missing | `runtime reconcile`, after verifying the exact missing event |
 | State, journal, or JSON encoding is malformed; BOM is present; schema/semantic validation fails | `recover plan` → `recover apply`; issued packet/reception indices require the latest original checkpoint |
-| A recovery/commit/fingerprint/rollover pending marker exists | Complete it through an explicit writer/recovery path; never repair it from a read-only command |
+| A recovery, commit or rollover pending marker exists | Complete it through its original writer/recovery path; a historical fingerprint marker retains its own original location |
 | Source files changed after planning | Reject the plan and inspect/plan again |
 | Trusted sources disagree or replay reaches an unknown gate | Stop; surface the conflict/unknown gate; do not guess |
 
 If classification is uncertain, choose recovery plan/apply. It is safer to
 quarantine and rebuild conservatively than to mutate an ambiguous Runtime.
 
-### 2. Build a content-addressed plan
+### 2. Build the original recovery plan
 
 ```bash
 .claude/bin/loop-harness runtime recover plan \
@@ -88,28 +88,27 @@ changed known facts or a Runtime already closed by bind/unbind/rollover.
 
 Review the generated plan before approval. Confirm all of the following:
 
-- REQ path, ID, locked status, version, and SHA-256 are correct.
-- Runtime, journal, pending markers, definition, policy, documents, and
-  imported evidence are listed with fingerprints.
+- REQ path, ID, locked status and version identify the actual requirement.
+- Runtime, journal, pending markers, definition, policy, documents and
+  imported evidence identify the actual available sources and responsibilities.
 - The base mode is explicit: pending completion, exact replay, artifact
   reconstruction, or conservative seed.
 - `target_cursor`, `confidence`, `replay_trace`, and `import_findings` are
   conservative and contiguous. REQ-only recovery must stop at
   `planning.design` / S2.
-- Candidate state and journal are under the plan directory and have recorded
-  SHA-256 values.
+- Candidate state and journal are available at the original plan paths.
 - Artifact reconstruction does not revive agents, leases, activations, or
   unverified BUG/TASK progress. A checkpoint restores only their exact original
   durable facts, with stopped Workers and validated sources.
 
 Never modify a plan to make it pass review. A changed input invalidates it.
 
-### 3. Apply only with explicit approval
+### 3. Apply through the original authorized entry
 
 ```bash
 .claude/bin/loop-harness runtime recover apply \
   --root . \
-  --plan .claude/recovery/rr-<plan-hash>/plan.json \
+  --plan <actual-plan-path> \
   --approved-by <human-operator>
 ```
 
@@ -131,18 +130,17 @@ After apply, verify the manifest and quarantine paths, then run:
 .claude/bin/loop-harness ready --root .
 ```
 
-Check that the bound REQ digest matches disk, state revision and journal tail
-agree, imported evidence is current and fingerprinted, recovered agents are
-inactive, and the next cursor is a formal gate result rather than an inferred
-milestone. Record recovery manifest, plan hash, quarantine path, and
-verification output as evidence.
+Check the actual bound REQ and available original evidence, state revision and
+journal relationship, recovered agent state and next cursor. Report the recovery
+manifest, quarantine path and actual verification output. Missing historical
+information remains unknown; do not require a digest to establish it.
 
 ## Stop and escalate
 
 Stop without mutation when the REQ is not locked, a plan input drifts, trusted
 sources conflict, replay has no progress/repeats a cursor, a gate is unknown,
 or the requested progress depends on an unresolved business decision. Report
-the exact artifact, expected/actual hash, cursor, and safe next action.
+the actual artifact, observed conflict or unknown, cursor, and safe next action.
 
 Load [runtime-recovery-reference.md](references/runtime-recovery-reference.md)
 when exact error codes, implementation seams, recovery-source precedence, or

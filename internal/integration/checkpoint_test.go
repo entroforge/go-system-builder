@@ -43,12 +43,12 @@ func TestCheckpointStoreCASStale(t *testing.T) {
 
 // TestCheckpointStoreIdempotentKey verifies the canonical key shape.
 func TestCheckpointStoreIdempotentKey(t *testing.T) {
-	k := IdempotencyKey("a", "b", "c", 1)
+	k := IdempotencyKey("a", "c", 1)
 	if !strings.HasPrefix(k, "ckpt:") {
 		t.Fatalf("key must start with ckpt: prefix, got %q", k)
 	}
-	if len(k) != len("ckpt:")+16 {
-		t.Fatalf("key length unexpected: %q", k)
+	if k == IdempotencyKey("ab", "c", 1) || k == IdempotencyKey("a", "c", 2) {
+		t.Fatal("different original responsibilities must have distinct keys")
 	}
 }
 

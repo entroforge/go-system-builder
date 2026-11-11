@@ -45,10 +45,7 @@ func TestLaunchUsesOnlyChildDirectoryAndRegisteredSession(t *testing.T) {
 	if err = b.Bootstrap(e, exe); err != nil {
 		t.Fatal(err)
 	}
-	e.BootstrapSHA256, err = BootstrapDigest(e)
-	if err != nil {
-		t.Fatal(err)
-	}
+
 	e.PlatformSessionID, err = NewSessionID()
 	if err != nil {
 		t.Fatal(err)
@@ -111,7 +108,7 @@ func TestS9LaunchUsesCurrentProfessionalQuestionWithoutGenericChain(t *testing.T
 		t.Run(scenario.name, func(t *testing.T) {
 			b, ctx := repository(t)
 			state := map[string]any{
-				"bound_req":  map[string]any{"workspace": Binding{b.MainRoot, b.Branch, "main", b.BoundHead}.Map()},
+				"bound_req":  map[string]any{"workspace": Binding{ProjectRoot: b.MainRoot, DevBranch: b.Branch, ReleaseUpstream: "main"}.Map()},
 				"runtime_id": "loop-test", "revision": 0, "baseline": map[string]any{"generation": 1},
 				"configuration": map[string]any{"optimization": map[string]any{"packet": true}},
 				"lifecycle":     map[string]any{"state": "bug_resolution", "phase": scenario.phase},
@@ -157,10 +154,7 @@ func TestS9LaunchUsesCurrentProfessionalQuestionWithoutGenericChain(t *testing.T
 			if err := b.Bootstrap(e, executable); err != nil {
 				t.Fatal(err)
 			}
-			e.BootstrapSHA256, err = BootstrapDigest(e)
-			if err != nil {
-				t.Fatal(err)
-			}
+
 			e.PlatformSessionID, err = NewSessionID()
 			if err != nil {
 				t.Fatal(err)

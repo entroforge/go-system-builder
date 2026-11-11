@@ -41,10 +41,10 @@ func TestFindingEncounterModeDiscrimination(t *testing.T) {
 	  "evidence_refs": ["trace.jsonl"],
 	  "encounter": %s
 	}`
-	// user_flow without entrypoint/timeline/terminal_state must fail.
+	// Additional encounter detail is useful but is not a reception prerequisite.
 	bad := `{"journey_summary": "enter -> edit -> save -> refresh", "wall_action": "click save", "first_bad_checkpoint": "value empty"}`
-	if err := validator.ValidateBytes("finding.schema.json", []byte(fmt.Sprintf(base, bad))); err == nil {
-		t.Fatal("user_flow finding without entrypoint/timeline/terminal_state must be rejected")
+	if err := validator.ValidateBytes("finding.schema.json", []byte(fmt.Sprintf(base, bad))); err != nil {
+		t.Fatalf("finding with an observable encounter was rejected: %v", err)
 	}
 	good := `{
 	  "journey_summary": "enter -> edit -> save -> refresh",
@@ -56,5 +56,23 @@ func TestFindingEncounterModeDiscrimination(t *testing.T) {
 	}`
 	if err := validator.ValidateBytes("finding.schema.json", []byte(fmt.Sprintf(base, good))); err != nil {
 		t.Fatalf("complete user_flow encounter must validate: %v", err)
+	}
+}
+
+// A Reviewer may report an unreproducible observation with context in their
+// own words; optional details do not become a reason to reject that finding.
+func TestFindingSchemaAcceptsUnreproducibleObservationAndExtraContext(t *testing.T) {
+	finding := `{
+		"schema_version":"1.0.0", "finding_id":"finding-observation-1",
+		"claim_id":"claim-1", "lens":"qa", "severity":"P3",
+		"expected":"source reference is present", "observed":"claim not reproduced",
+		"observation_mode":"document_inspection", "reproducibility":"not_reproducible",
+		"encounter":{"journey_summary":"checked the current artifact",
+			"last_good":"artifact present", "wall":"inspected it", "first_bad":"none observed",
+			"timeline":[{"sequence":1,"action":"read","observed_checkpoint":"present","extra_context":"original note"}]},
+		"professional_context":"first-hand observation"
+	}`
+	if err := schema.NewEmbeddedValidator().ValidateBytes("finding.schema.json", []byte(finding)); err != nil {
+		t.Fatalf("finding with honest unreproducible observation and context: %v", err)
 	}
 }

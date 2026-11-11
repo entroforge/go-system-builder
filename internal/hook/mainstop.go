@@ -19,6 +19,11 @@ import (
 const (
 	RuleMainStopPendingDispatch  = "main_stop_pending_dispatch"
 	RuleMainStopUnconsumedResult = "main_stop_unconsumed_result"
+	// RuleMainStopStaticWaveUnsettled marks a behavior-wave Assignment that
+	// is not unlocked because the static wave has not settled yet. It is
+	// distinct from RuleMainStopPendingDispatch: that one is dispatchable
+	// now, this one waits for the static set to reach its dispositions.
+	RuleMainStopStaticWaveUnsettled = "main_stop_static_wave_unsettled"
 )
 
 // MainStopDecision prevents the orchestrator from ending a turn while the
@@ -82,8 +87,15 @@ func mainStopDecisionForState(state map[string]any, input policy.Input, plans ..
 		}
 		version := stringValue(state["schema_version"])
 		if pendingDispatch(id, row, version) && plan != nil {
-			if locks, err := assignment.ReviewDispatchPrerequisite(state, plan, id); err == nil && locks == "" {
+			locks, err := assignment.ReviewDispatchPrerequisite(state, plan, id)
+			switch {
+			case err == nil && locks == "":
 				return mainStopPendingDispatch(id), true
+			case assignment.IsStaticWaveUnsettled(err):
+				// The static wave has not settled, so this behavior-wave
+				// Assignment is not unlocked yet. Main still carries an
+				// undispatched review responsibility and must not finish.
+				return mainStopStaticWaveUnsettled(id), true
 			}
 		}
 		if unconsumedResult(id, row, version) {
@@ -121,6 +133,17 @@ func mainStopPendingDispatch(id string) policy.Decision {
 		Recovery:       []string{fmt.Sprintf("continue the current S7 preparation and dispatch ready assignment %s with its exact view/answer references; preserve waiting assignments", id), "after dispatch, let the next Stop check re-evaluate the remaining ReviewPlan work"},
 		Retry:          policy.RetryAfterRecoveryValidation,
 		MatchedRuleIDs: []string{RuleMainStopPendingDispatch},
+	}
+}
+
+func mainStopStaticWaveUnsettled(id string) policy.Decision {
+	return policy.Decision{
+		Decision:       "deny",
+		RuleID:         RuleMainStopStaticWaveUnsettled,
+		Reason:         fmt.Sprintf("Main cannot finish while ReviewPlan assignment %s is a behavior-wave Assignment that is not unlocked: the required static Claims are not all dispositioned yet", id),
+		Recovery:       []string{fmt.Sprintf("complete the static wave first: disposition every required static Claim of the current ReviewPlan, then dispatch behavior-wave assignment %s with its exact view/answer references; Main still holds an undispatched review responsibility", id), "after the static set settles, let the next Stop check re-evaluate the remaining ReviewPlan work"},
+		Retry:          policy.RetryAfterRecoveryValidation,
+		MatchedRuleIDs: []string{RuleMainStopStaticWaveUnsettled},
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/entroforge/go-system-builder/internal/assignmentrecord"
 	req039fixtures "github.com/entroforge/go-system-builder/tests/fixtures/req039"
 )
 
@@ -89,86 +90,54 @@ func assertSystemRuntimePairUnchanged(t *testing.T, pair map[string]*string) {
 	}
 }
 
-// TestHOOK_SubagentStart_DelegationPreflightViaHookCLI covers HOOK-SubagentStart
-// at L3: the Hook reminds the Main session about the registered assignment's
-// professional work and supplied source/answer paths.
+// Unknown role labels cannot claim a current assignment. The same public
+// Start points to the accurate original brief when it carries that reference.
 func TestHOOK_SubagentStart_DelegationPreflightViaHookCLI(t *testing.T) {
-	root := freshRoot(t)
-	state := systemPlanningState(t, root, "tasks", 7)
-	state["lifecycle"] = map[string]any{"state": "building", "phase": nil, "phase_revision": 0}
-	writeSystemState(t, root, state)
-	before := req039fixtures.ReadState(t, root)
-
-	code, stdout, stderr := runHook(t, root, "SubagentStart", `{
-		"session_id":"session-hook-subagent-start",
-		"hook_event_name":"SubagentStart",
-		"agent_id":"builder-start-1",
-		"tool_input":{"subagent_type":"backend-builder","team_name":"team-start"}
-	}`)
+	root, worker, record := systemNativeBuilder(t)
+	before := readSystemRuntimePair(t, root)
+	code, stdout, stderr := systemNativeEvent(t, root, worker, "SubagentStart", "Read unrelated sources only")
+	if code != 0 || strings.TrimSpace(stdout) != "" {
+		t.Fatalf("unrelated Start claimed work: %d %s %s", code, stdout, stderr)
+	}
+	assertSystemRuntimePairUnchanged(t, before)
+	brief, _, _ := assignmentrecord.NativePaths(record)
+	code, stdout, stderr = systemNativeEvent(t, root, worker, "SubagentStart", filepath.Join(root, brief))
 	if code != 0 {
-		t.Fatalf("SubagentStart Hook failed: code=%d stderr=%s stdout=%s", code, stderr, stdout)
+		t.Fatalf("associated Start: %d %s %s", code, stdout, stderr)
 	}
-	out := strings.ToLower(stdout)
-	for _, needle := range []string{"subagent", "preflight questions", "professional work and checks", "source and answer paths"} {
-		if !strings.Contains(out, needle) {
-			t.Fatalf("SubagentStart must surface current assignment guidance %q, got %s", needle, stdout)
-		}
+	assertSystemNativeStartBrief(t, root, stdout, record)
+	if strings.Contains(stdout, "QUALITY_GATE") || strings.Contains(stdout, "LOOP RECOVERY") {
+		t.Fatalf("Worker Start received Main navigation: %s", stdout)
 	}
-	assertRuntimeCursorUnchanged(t, "SubagentStart reminder", before, req039fixtures.ReadState(t, root))
+	assertSystemRuntimePairUnchanged(t, before)
 }
 
-// TestHOOK_TeammateIdle_HookCLIEmitsGuidance pins TeammateIdle Hook CLI entry
-// with the official Claude Code 2.1.218 payload shape (teammate_name/
-// team_name/transcript_path; no self-made agent_id or facts). This sparse
-// fixture has no registered Workgroup Assignment, so TeammateIdle must stay
-// advisory and return the current graph recovery packet without a denial.
+// Idle is the actual teammate's boundary, not a Main navigation event. A
+// sparse unrelated teammate stays silent; an accepted author is not asked to
+// repeat work while Main still owns integration.
 func TestHOOK_TeammateIdle_HookCLIEmitsGuidance(t *testing.T) {
-	root := freshRoot(t)
-	state := systemPlanningState(t, root, "tasks", 8)
-	state["lifecycle"] = map[string]any{"state": "building", "phase": nil, "phase_revision": 0}
-	if ms, ok := state["milestone"].(map[string]any); ok {
-		ms["stage"] = "S6"
-		ms["lifecycle_state"] = "building"
-		ms["lifecycle_phase"] = nil
-		ms["event"] = "PreCompact"
-		ms["objective"] = "stale objective before TeammateIdle"
-	}
-	state["entities"] = map[string]any{
-		"agents": []any{map[string]any{
-			"id": "builder-idle-1", "role": "builder", "state": "idle",
-			"task_ids": []any{"TASK-039-01"}, "team_id": "team-idle",
-		}},
-		"tasks": []any{map[string]any{"id": "TASK-039-01", "state": "in_progress"}},
-		"bugs":  []any{}, "teams": []any{},
-	}
-	writeSystemState(t, root, state)
-	before := req039fixtures.ReadState(t, root)
-
-	code, stdout, stderr := runHook(t, root, "TeammateIdle", `{
-		"session_id":"session-hook-teammate-idle",
-		"hook_event_name":"TeammateIdle",
-		"teammate_name":"builder-idle-1",
-		"team_name":"team-idle",
-		"transcript_path":"/tmp/claude/transcripts/builder-idle-1.jsonl"
-	}`)
-	if code != 0 {
-		t.Fatalf("unregistered TeammateIdle must remain advisory: code=%d stderr=%s stdout=%s", code, stderr, stdout)
-	}
-	for _, needle := range []string{"LOOP RECOVERY", "re-wake the same teammate", "current-round assignment report is missing"} {
-		if !strings.Contains(strings.ToLower(stdout), strings.ToLower(needle)) {
-			t.Fatalf("TeammateIdle must surface current advisory guidance %q, got %s", needle, stdout)
+	root, worker, record := systemNativeBuilder(t)
+	idle := func(owner, team string) (int, string, string) {
+		t.Helper()
+		raw, err := json.Marshal(map[string]any{"hook_event_name": "TeammateIdle", "session_id": "system-idle", "cwd": worker, "teammate_name": owner, "team_name": team, "transcript_path": "/not-read/idle.jsonl"})
+		if err != nil {
+			t.Fatal(err)
 		}
+		return runHook(t, root, "TeammateIdle", string(raw))
 	}
-	assertRuntimeCursorUnchanged(t, "TeammateIdle reminder", before, req039fixtures.ReadState(t, root))
-	after := req039fixtures.ReadState(t, root)
-	ms, _ := after["milestone"].(map[string]any)
-	raw, _ := json.Marshal(ms)
-	// Prefer durable refresh when fingerprint changes; accept guidance-only
-	// when milestoneMatches no-ops (still Hook CLI, not unit).
-	if event, _ := ms["event"].(string); event != "TeammateIdle" {
-		t.Logf("TeammateIdle Hook guidance ok but milestone.event=%q (refresh fingerprint no-op in minimal fixture)", event)
+	before := readSystemRuntimePair(t, root)
+	code, stdout, stderr := idle("unrelated-builder", "unrelated-team")
+	if code != 0 || strings.TrimSpace(stdout) != "" {
+		t.Fatalf("unrelated Idle claimed work: %d %s %s", code, stdout, stderr)
 	}
-	_ = raw
+	assertSystemRuntimePairUnchanged(t, before)
+	receiveSystemNativeBuilder(t, root, worker, record)
+	before = readSystemRuntimePair(t, root)
+	code, stdout, stderr = idle(record.OwnerAgentID, record.TeamID)
+	if code != 0 || strings.Contains(stdout+stderr, "LOOP RECOVERY") || strings.Contains(stdout+stderr, "report is missing") {
+		t.Fatalf("accepted author was sent Main work or asked to resubmit: %d %s %s", code, stdout, stderr)
+	}
+	assertSystemRuntimePairUnchanged(t, before)
 }
 
 // TestHOOK_TeammateIdle_IdleAfterCompletionViaHookCLI pins a fully registered
@@ -224,7 +193,6 @@ func TestHOOK_TeammateIdle_IdleAfterCompletionViaHookCLI(t *testing.T) {
 	if err := os.WriteFile(taskPath, taskBytes, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	state["entities"].(map[string]any)["tasks"].([]any)[0].(map[string]any)["sha256"] = req039fixtures.Sha256Hex(taskBytes)
 	writeSystemState(t, root, state)
 	wgDir := filepath.Join(root, ".claude", "workgroups", "REQ-039", "TASK-039-04")
 	if err := os.MkdirAll(wgDir, 0o755); err != nil {

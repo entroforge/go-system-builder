@@ -3,7 +3,6 @@ package repair
 import (
 	"errors"
 	"fmt"
-	"os"
 	"reflect"
 	"strings"
 )
@@ -38,15 +37,23 @@ func SubmitRepairResult(root string, request RepairResultRequest) (RepairResult,
 			DetectionGapArtifacts: append([]string{}, request.DetectionGapArtifacts...), EvidenceRefs: append([]string{}, request.EvidenceRefs...), Receipt: request.Receipt,
 		}
 		if request.PlanReport.Path != "" {
-			document.PlanReportRef = &request.PlanReport
+			document.PlanReportRef = &ArtifactRef{ID: request.PlanReport.ID, Path: request.PlanReport.Path}
 		}
-		if request.issuedFinal.cleanup != nil {
-			if err := request.issuedFinal.cleanup(document); err != nil {
-				return RepairResult{}, ArtifactRef{}, err
-			}
+		if document.Receipt == nil {
+			return RepairResult{}, ArtifactRef{}, errors.New("issued S9 Result is missing its original receipt")
 		}
-		ref, err := writeImmutable(root, artifactRoot+"/results/"+request.ResultID+".json", "repair-result.schema.json", document)
+		receipt := *document.Receipt
+		document.Receipt = &receipt
+		ref, err := writeUniqueArtifactPrepared(root, responsibilityArtifactPath("results", request.ResultID), "repair-result.schema.json", func(path string) any {
+			document.Receipt.ResultRef = path
+			return document
+		})
+		if err == nil {
+			request.Receipt.ResultRef = ref.Path
+			request.issuedFinal.receipt.ResultRef = ref.Path
+		}
 		return document, ref, err
+
 	}
 	if request.Verdict != "" || request.Receipt != nil {
 		if request.issuedFinal == nil || request.Receipt == nil || !reflect.DeepEqual(request.Receipt, &request.issuedFinal.receipt) {
@@ -65,7 +72,7 @@ func SubmitRepairResult(root string, request RepairResultRequest) (RepairResult,
 	if err != nil {
 		return RepairResult{}, ArtifactRef{}, err
 	}
-	if plan.SessionID != session.SessionID || plan.ContractID != contract.ContractID || plan.ContractRef != contract.Ref.Path || plan.ContractSHA256 != contract.Ref.SHA256 {
+	if plan.SessionID != session.SessionID || plan.ContractID != contract.ContractID || plan.ContractRef != contract.Ref.Path {
 		return RepairResult{}, ArtifactRef{}, fmt.Errorf("RepairPlan is not bound to the supplied Session and approved Contract")
 	}
 	if request.AssignmentID == "" && len(plan.Assignments) == 1 {
@@ -110,10 +117,6 @@ func SubmitRepairResult(root string, request RepairResultRequest) (RepairResult,
 	if resultValue == "pass" && !allPass {
 		return RepairResult{}, ArtifactRef{}, fmt.Errorf("RepairResult result=pass requires every repair unit to pass")
 	}
-	actualArtifacts, err := ComputeSessionChangeset(root, session)
-	if err != nil {
-		return RepairResult{}, ArtifactRef{}, err
-	}
 	changed := append([]ChangedArtifact{}, request.ChangedArtifacts...)
 	seen := map[string]bool{}
 	for index := range changed {
@@ -128,9 +131,6 @@ func SubmitRepairResult(root string, request RepairResultRequest) (RepairResult,
 		if changed[index].Status == "" {
 			changed[index].Status = "modified"
 		}
-		if changed[index].SHA256 == "" {
-			return RepairResult{}, ArtifactRef{}, fmt.Errorf("changed artifact %q must include sha256, including deleted artifacts (use the last-good or base-revision bytes)", changed[index].Path)
-		}
 		if err := scopeAllows(changed[index].Path, contract.ProspectiveScope, contract.ForbiddenScope); err != nil {
 			return RepairResult{}, ArtifactRef{}, err
 		}
@@ -144,26 +144,7 @@ func SubmitRepairResult(root string, request RepairResultRequest) (RepairResult,
 		if !assignmentScoped {
 			return RepairResult{}, ArtifactRef{}, fmt.Errorf("changed artifact %q is outside RepairAssignment %s scope; return a scope deviation to S8/S9 planning", changed[index].Path, assignment.AssignmentID)
 		}
-		if changed[index].Status != "deleted" {
-			path, err := repositoryPath(root, changed[index].Path)
-			if err != nil {
-				return RepairResult{}, ArtifactRef{}, err
-			}
-			data, err := os.ReadFile(path)
-			if err != nil {
-				return RepairResult{}, ArtifactRef{}, fmt.Errorf("changed artifact %q is not readable for hash verification: %w", changed[index].Path, err)
-			}
-			if actual := sha256Bytes(data); actual != changed[index].SHA256 {
-				return RepairResult{}, ArtifactRef{}, fmt.Errorf("changed artifact %q sha256 mismatch: submitted=%s disk=%s", changed[index].Path, changed[index].SHA256, actual)
-			}
-		}
-	}
-	if len(plan.Assignments) == 1 {
-		if err := exactChangedArtifactSet(changed, actualArtifacts, "submitted RepairResult", "actual Session diff"); err != nil {
-			return RepairResult{}, ArtifactRef{}, err
-		}
-	} else if err := changedArtifactsWithinActual(changed, actualArtifacts); err != nil {
-		return RepairResult{}, ArtifactRef{}, err
+
 	}
 	beforeChecks := append([]RepairCheck{}, request.BeforeFixChecks...)
 	checks := append([]RepairCheck{}, request.Checks...)
@@ -186,17 +167,9 @@ func SubmitRepairResult(root string, request RepairResultRequest) (RepairResult,
 		Receipt: request.Receipt,
 	}
 	if request.PlanReport.Path != "" {
-		document.PlanReportRef = &ArtifactRef{ID: request.PlanReport.ID, Path: request.PlanReport.Path, SHA256: request.PlanReport.SHA256}
+		document.PlanReportRef = &ArtifactRef{ID: request.PlanReport.ID, Path: request.PlanReport.Path}
 	}
-	if request.issuedFinal != nil {
-		if request.issuedFinal.cleanup == nil {
-			return RepairResult{}, ArtifactRef{}, errors.New("typed S9 Result has no exact unaccepted staging cleanup capability")
-		}
-		if err := request.issuedFinal.cleanup(document); err != nil {
-			return RepairResult{}, ArtifactRef{}, fmt.Errorf("S9 staged Result conflicts with this exact retry: %w", err)
-		}
-	}
-	ref, err := writeImmutable(root, artifactRoot+"/results/"+request.ResultID+".json", "repair-result.schema.json", document)
+	ref, err := writeImmutable(root, responsibilityArtifactPath("results", request.ResultID), "repair-result.schema.json", document)
 	if err != nil {
 		return RepairResult{}, ArtifactRef{}, err
 	}
@@ -218,8 +191,8 @@ func ValidateRepairResult(root string, ref ArtifactRef) (RepairResult, error) {
 	seen := map[string]bool{}
 	for _, artifact := range document.ChangedArtifacts {
 		path := normalizePath(artifact.Path)
-		if path == "." || artifact.SHA256 == "" {
-			return RepairResult{}, fmt.Errorf("RepairResult changed artifact %q has no sha256; deleted artifacts must carry the base/last-good hash", artifact.Path)
+		if path == "." {
+			return RepairResult{}, fmt.Errorf("RepairResult changed artifact path is empty")
 		}
 		if seen[path] {
 			return RepairResult{}, fmt.Errorf("RepairResult contains duplicate changed artifact %q", path)

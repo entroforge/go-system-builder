@@ -70,7 +70,7 @@ func TestS0S1_InitBindEntersPlanningDesign(t *testing.T) {
 		t.Fatalf("bound_req.id want REQ-039, got %q", id)
 	}
 
-	body := req039fixtures.PreToolUseBody("session-s0-s1", "Edit", map[string]any{
+	body := req039fixtures.MainPreToolUseBody(root, "session-s0-s1", "Edit", map[string]any{
 		"file_path": "docs/architecture/ARCHITECTURE-039-loop-control-plane.md",
 	})
 	code, hookOut, hookErr := runHook(t, root, "PreToolUse", body)

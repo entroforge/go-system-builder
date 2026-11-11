@@ -79,16 +79,19 @@ func TestAssignmentRecordProjectionAndThinPlanTemplate(t *testing.T) {
 	if !reflect.DeepEqual(projected.EffectiveWritePaths, record.EffectiveWritePaths) || !reflect.DeepEqual(projected.RequiredChecks, record.RequiredChecks) || !reflect.DeepEqual(projected.DependsOn, record.DependsOn) {
 		t.Fatalf("scope/check/dependency projection differs from Record: %+v", projected)
 	}
-	if projected.AssignmentRecord == nil || *projected.AssignmentRecord != record.Reference() || projected.AssignmentRecordSHA256 == "" {
-		t.Fatalf("Record reference/digest missing from context projection: %+v", projected)
+	if projected.AssignmentRecord == nil || *projected.AssignmentRecord != record.Reference() {
+		t.Fatalf("original Record reference missing from context projection: %+v", projected)
 	}
 
 	plan, questions := agentcontext.PlanTemplate(projected, record.RuntimeID, "2026-10-13T00:00:00Z", []string{"caller-must-not-prefill"})
 	if plan == nil {
 		t.Fatal("canonical Record projection did not produce the S6 PLAN template")
 	}
-	if plan["assignment_record_contract"] != assignmentrecord.AssignmentRecordContract || plan["assignment_record_sha256"] != projected.AssignmentRecordSHA256 || plan["assignment_revision"] != record.Revision {
-		t.Fatalf("PLAN did not bind the actual Record revision/digest: %#v", plan)
+	if plan["assignment_record_contract"] != assignmentrecord.AssignmentRecordContract || plan["assignment_revision"] != record.Revision || plan["assignment_id"] != record.AssignmentID || plan["agent_id"] != record.OwnerAgentID || plan["runtime_id"] != record.RuntimeID || plan["task_id"] != record.Task.ID || plan["team_id"] != record.TeamID {
+		t.Fatalf("PLAN did not retain the actual Record responsibility: %#v", plan)
+	}
+	if _, exists := plan["assignment_record_sha256"]; exists {
+		t.Fatalf("PLAN registered a Record digest: %#v", plan)
 	}
 	if plan["objective"] != nil || len(plan["planned_paths"].([]string)) != 0 || len(plan["assertion_checks"].([]any)) != 0 || plan["risks_blockers"] != nil {
 		t.Fatalf("professional PLAN answers were prefilled: %#v", plan)
@@ -110,7 +113,7 @@ func TestAssignmentRecordProjectionAndThinPlanTemplate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(encoded), `"assignment_record"`) || !strings.Contains(string(encoded), `"assignment_record_sha256"`) {
+	if !strings.Contains(string(encoded), `"assignment_record"`) || strings.Contains(string(encoded), `"assignment_record_sha256"`) {
 		t.Fatalf("Assignment JSON omits its canonical Record binding: %s", encoded)
 	}
 }
@@ -121,7 +124,10 @@ func TestPlanTemplateRejectsIncompleteOrMismatchedRecordBinding(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	projected.AssignmentRecordSHA256 = ""
+	if plan, _ := agentcontext.PlanTemplate(projected, record.RuntimeID, "2026-10-13T00:00:00Z", nil); plan == nil || plan["assignment_id"] != record.AssignmentID || plan["assignment_revision"] != record.Revision {
+		t.Fatal("missing historical digest prevented the actual Record PLAN")
+	}
+	projected.AssignmentRecord = nil
 	if plan, _ := agentcontext.PlanTemplate(projected, record.RuntimeID, "2026-10-13T00:00:00Z", nil); plan != nil {
 		t.Fatal("incomplete Record projection fell back to the legacy PLAN template")
 	}
@@ -150,8 +156,7 @@ func TestResultTemplateIsCanonicalBuilderOnlyAndLeavesProfessionalFieldsBlank(t 
 	if draft["schema_version"] != "1.0.0" || draft["message_type"] != "completion_report" ||
 		draft["runtime_id"] != record.RuntimeID || draft["baseline_generation"] != record.BaselineGeneration ||
 		draft["assignment_id"] != record.AssignmentID || draft["assignment_revision"] != record.Revision ||
-		draft["assignment_record_contract"] != assignmentrecord.AssignmentRecordContract ||
-		draft["assignment_record_sha256"] != projected.AssignmentRecordSHA256 || draft["agent_id"] != record.OwnerAgentID ||
+		draft["assignment_record_contract"] != assignmentrecord.AssignmentRecordContract || draft["agent_id"] != record.OwnerAgentID ||
 		draft["agent_definition_ref"] != record.AgentDefinition.Ref || draft["task_id"] != record.Task.ID || draft["team_id"] != record.TeamID ||
 		draft["bug_id"] != nil || draft["occurred_at"] != occurredAt {
 		t.Fatalf("Result machine binding differs from canonical Record: %#v", draft)
@@ -179,6 +184,11 @@ func TestResultTemplateIsCanonicalBuilderOnlyAndLeavesProfessionalFieldsBlank(t 
 	}
 	if !strings.Contains(questions["/assertion_evidence"], "original begin flow copies") {
 		t.Fatal("assertion/oracle rows are not described as supplied by the original PLAN flow")
+	}
+	for _, field := range []string{"/risks_blockers", "/scope_deviations"} {
+		if !strings.Contains(questions[field], "nonempty list alone does not determine completion") || strings.Contains(questions[field], "prevents completion") {
+			t.Errorf("question turns original professional notes into a completion gate: %s", questions[field])
+		}
 	}
 	for _, want := range []string{"go test ./internal/agentcontext", "state the reason or blocker", "Main's integration rerun is separate"} {
 		if !strings.Contains(questions["/summary"], want) {
@@ -419,9 +429,10 @@ func TestResultTemplateRejectsUnboundOrMismatchedRecordAndInvalidTime(t *testing
 		t.Fatal(err)
 	}
 	validAt := "2026-10-14T00:00:00Z"
-	projected.AssignmentRecordSHA256 = strings.Repeat("z", 64)
-	if draft, _ := agentcontext.ResultTemplate(projected, record.RuntimeID, validAt); draft != nil {
-		t.Fatal("malformed Record SHA received a Result draft")
+	if draft, _ := agentcontext.ResultTemplate(projected, record.RuntimeID, validAt); draft == nil || draft["assignment_id"] != record.AssignmentID || draft["agent_id"] != record.OwnerAgentID || draft["assignment_revision"] != record.Revision {
+		t.Fatal("historical Record SHA prevented the original responsibility's Result draft")
+	} else if _, exists := draft["assignment_record_sha256"]; exists {
+		t.Fatal("Result draft copied a historical Record digest")
 	}
 	projected, err = agentcontext.ApplyRecord(agentcontext.Assignment{}, record)
 	if err != nil {
@@ -450,14 +461,10 @@ func TestSharedReadingOrderUsesActualPathPrefixAndOmitsSkillDuplication(t *testi
 }
 
 func contextRecord() assignmentrecord.Record {
-	hashA := strings.Repeat("a", 64)
-	hashB := strings.Repeat("b", 64)
-	hashC := strings.Repeat("c", 64)
-	hashD := strings.Repeat("d", 64)
-	manifest := assignmentrecord.ContextSource{Kind: "manifest", Ref: "docs/workgroups/s6/manifest.json", ID: "team-manifest", Version: "v1.2.0", SHA256: hashA}
-	task := assignmentrecord.ContextSource{Kind: "task", Ref: "docs/dev/tasks/TASK-001.md", ID: "TASK-001", Version: "v1.0.0", SHA256: hashB}
-	role := assignmentrecord.ContextSource{Kind: "agent_definition", Ref: ".claude/agents/backend-builder.md", ID: "backend-builder", SHA256: hashC}
-	skill := assignmentrecord.ContextSource{Kind: "authorized_skill", Ref: ".claude/skills/backend-engineering/SKILL.md", ID: "backend-engineering", Version: "v1.0.0", SHA256: hashD}
+	manifest := assignmentrecord.ContextSource{Kind: "manifest", Ref: "docs/workgroups/s6/manifest.json", ID: "team-manifest", Version: "v1.2.0"}
+	task := assignmentrecord.ContextSource{Kind: "task", Ref: "docs/dev/tasks/TASK-001.md", ID: "TASK-001", Version: "v1.0.0"}
+	role := assignmentrecord.ContextSource{Kind: "agent_definition", Ref: ".claude/agents/backend-builder.md", ID: "backend-builder"}
+	skill := assignmentrecord.ContextSource{Kind: "authorized_skill", Ref: ".claude/skills/backend-engineering/SKILL.md", ID: "backend-engineering", Version: "v1.0.0"}
 	return assignmentrecord.Record{
 		SchemaVersion: assignmentrecord.AssignmentRecordSchema, Contract: assignmentrecord.AssignmentRecordContract,
 		RuntimeID: "loop-context-test", BaselineGeneration: 4, RegistrationRevision: 12,

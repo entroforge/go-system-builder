@@ -12,7 +12,7 @@ import (
 
 // Project the current original reception into TR-002's document facts. The
 // original save owns professional checks; this read does not replay them.
-func verifiedTaskPlanningPacketFacts(input Input) ([]documentFact, bool, error) {
+func verifiedTaskPlanningPacketFacts(input *Input) ([]documentFact, bool, error) {
 	state := input.Snapshot.State
 	if state == nil {
 		return nil, false, nil
@@ -61,7 +61,7 @@ func verifiedTaskPlanningPacketFacts(input Input) ([]documentFact, bool, error) 
 	if !safeTaskPlanningEvidencePath(path) {
 		return fail(fmt.Errorf("current S4 envelope path is unreadable: %s", path))
 	}
-	data, err := input.Files.ReadFile(path)
+	data, err := runtime.ReadTaskPlanningReport(input.Root, path)
 	if err != nil {
 		return fail(fmt.Errorf("read recorded S4 envelope %s: %w", path, err))
 	}
@@ -94,7 +94,7 @@ func verifiedTaskPlanningPacketFacts(input Input) ([]documentFact, bool, error) 
 		if _, err := input.Files.ReadFile(subject.Path); err != nil {
 			return fail(fmt.Errorf("read recorded S4 source %s: %w", subject.Path, err))
 		}
-		facts = append(facts, documentFact{ID: "task-planning-source:" + subject.Path, Kind: "source", Path: subject.Path, Version: subject.Version, SHA256: subject.SHA256, Status: "frozen", Generation: binding.Generation})
+		facts = append(facts, documentFact{ID: "task-planning-source:" + subject.Path, Kind: "source", Path: subject.Path, Version: subject.Version, Status: "frozen", Generation: binding.Generation})
 	}
 	for _, path := range append([]string{index}, envelope.Answer.TaskPaths...) {
 		subject, ok := subjects[path]
@@ -110,8 +110,9 @@ func verifiedTaskPlanningPacketFacts(input Input) ([]documentFact, bool, error) 
 			kind, status, prefix = "task_index", "complete", "task-planning-index:"
 		}
 		id := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
-		facts = append(facts, documentFact{ID: prefix + id, Kind: kind, Path: path, Version: subject.Version, SHA256: subject.SHA256, Status: status, Generation: binding.Generation})
+		facts = append(facts, documentFact{ID: prefix + id, Kind: kind, Path: path, Version: subject.Version, Status: status, Generation: binding.Generation})
 	}
+	input.taskPlanningEvidence = evidence
 	return facts, true, nil
 }
 

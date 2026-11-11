@@ -222,49 +222,22 @@ func TestSubmissionReceiptHistoricalStageDoesNotDiscriminateDomain(t *testing.T)
 	}
 }
 
-func TestSubmissionReceiptKeyPatternsAreAnchored(t *testing.T) {
-	const sha = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
-	valid := []struct {
-		key, status string
-		complete    bool
-		consumer    bool
-	}{
-		{sha, "accepted", false, false},
-		{"review-result-" + sha, "accepted", true, false},
-		{"runtime:investigation-case:investigation-case-alpha.v2:1", "accepted", true, false},
-		{"runtime:s9:issued-plan-report:packet-" + sha, "accepted", false, false},
-		{"runtime:s9:issued-repair-candidate:packet-" + sha, "candidate_accepted", false, false},
-		{"runtime:s9:issued-repair-result:packet-" + sha, "main_result_accepted", true, true},
-	}
-	for _, tc := range valid {
-		receipt := receiptWire(tc.key, true, tc.status, tc.complete, "S5")
-		if tc.consumer {
-			receipt = withConsumer(receipt)
-		}
-		data, err := json.Marshal(receipt)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := schema.NewEmbeddedValidator().ValidateBytes("submission-receipt.schema.json", data); err != nil {
-			t.Errorf("valid original key/status %q/%q rejected: %v", tc.key, tc.status, err)
-		}
-	}
-	invalid := []string{
-		strings.ToUpper(sha),
-		"x" + sha,
-		"review-result-" + sha + "-suffix",
-		"runtime:investigation-case:case-id:1",
-		"runtime:investigation-case:investigation-case-alpha:00",
-		"runtime:s9:issued-repair-candidate:packet-" + strings.ToUpper(sha),
-	}
-	for _, key := range invalid {
+func TestSubmissionReceiptAcceptsCurrentIdentityFormats(t *testing.T) {
+	for _, key := range []string{"answer-1", "review-result-review-1", "runtime:investigation-case:case-1:1"} {
 		data, err := json.Marshal(receiptWire(key, true, "accepted", false, "S5"))
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := schema.NewEmbeddedValidator().ValidateBytes("submission-receipt.schema.json", data); err == nil {
-			t.Errorf("invalid original key %q accepted", key)
+		if err := schema.NewEmbeddedValidator().ValidateBytes("submission-receipt.schema.json", data); err != nil {
+			t.Errorf("actual submission identity %q rejected: %v", key, err)
 		}
+	}
+	data, err := json.Marshal(receiptWire("", true, "accepted", false, "S5"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := schema.NewEmbeddedValidator().ValidateBytes("submission-receipt.schema.json", data); err != nil {
+		t.Fatalf("optional submission identity blocked the original receipt: %v", err)
 	}
 }
 

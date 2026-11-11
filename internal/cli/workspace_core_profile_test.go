@@ -11,7 +11,9 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/entroforge/go-system-builder/internal/agentcontext"
 	"github.com/entroforge/go-system-builder/internal/assignment"
 	"github.com/entroforge/go-system-builder/internal/assignmentrecord"
 	"github.com/entroforge/go-system-builder/internal/checkexec"
@@ -21,12 +23,16 @@ import (
 	"github.com/entroforge/go-system-builder/internal/integration"
 	"github.com/entroforge/go-system-builder/internal/qualitygate"
 	"github.com/entroforge/go-system-builder/internal/schema"
-	"github.com/entroforge/go-system-builder/internal/workpacket"
 	"github.com/entroforge/go-system-builder/internal/workspace"
 )
 
+// coreBuilderFixture builds the current canonical S6 Builder fixture: the
+// reviewed dispatch plan, the canonical Assignment Record and the canonical
+// professional drafts. The S6 reception board only projects the canonical
+// Assignment Record, so this fixture is the one that can show a reported
+// result on the pending board.
 func coreBuilderFixture(t *testing.T, configure ...func(string, map[string]any)) stageAnswerFixture {
-	return coreBuilderFixtureChecks(t, []string{"go test ./..."}, configure...)
+	return coreBuilderFixtureProfilesReadSources(t, []string{"go test ./..."}, nil, nil, nil, true, configure...)
 }
 
 func coreHookAdditionalContext(t *testing.T, raw string) string {
@@ -42,24 +48,124 @@ func coreHookAdditionalContext(t *testing.T, raw string) string {
 	return payload.HookSpecificOutput.AdditionalContext
 }
 
+// coreBuilderFixtureChecks builds the legacy dispatch-family Builder fixture.
+// Without a reviewed dispatch plan the legacy family keeps its own rules: one
+// reviewed TASK may carry more than one Builder work package, and the
+// Builder's professional drafts keep the legacy professional shape.
 func coreBuilderFixtureChecks(t *testing.T, checks []string, configure ...func(string, map[string]any)) stageAnswerFixture {
-	return coreBuilderFixtureProfiles(t, checks, nil, configure...)
+	return coreBuilderFixtureProfilesReadSources(t, checks, nil, nil, nil, false, configure...)
 }
 func coreBuilderFixtureProfiles(t *testing.T, checks []string, profiles []checkexec.Profile, configure ...func(string, map[string]any)) stageAnswerFixture {
-	return coreBuilderFixtureProfilesReadSources(t, checks, profiles, nil, nil, configure...)
+	return coreBuilderFixtureProfilesReadSources(t, checks, profiles, nil, nil, true, configure...)
 }
 func coreBuilderFixtureWithReadSources(t *testing.T, readPaths []string, sources map[string][]byte) stageAnswerFixture {
-	return coreBuilderFixtureProfilesReadSources(t, []string{"go test ./..."}, nil, readPaths, sources)
+	return coreBuilderFixtureProfilesReadSources(t, []string{"go test ./..."}, nil, readPaths, sources, true)
 }
-func coreBuilderFixtureProfilesReadSources(t *testing.T, checks []string, profiles []checkexec.Profile, readPaths []string, readSources map[string][]byte, configure ...func(string, map[string]any)) stageAnswerFixture {
+
+// canonicalCoreBuilderTASK gives this fixture the current canonical S6 TASK
+// identity. The S6 reception board only projects the canonical Assignment
+// Record, and canonical registration requires the TASK source to declare the
+// locked Version, to carry the runtime TASK id, and to own exactly one
+// reviewed dispatch-plan row. The shared fixture still delivers the TASK under
+// its legacy document name, so the fixture renames it, declares the canonical
+// source fields, and records the reviewed plan before the workgroup registers.
+func canonicalCoreBuilderTASK(t *testing.T) func(string, map[string]any) {
+	return func(root string, state map[string]any) {
+		t.Helper()
+		bound, _ := state["bound_req"].(map[string]any)
+		reqID, _ := bound["id"].(string)
+		documents, _ := state["documents"].([]any)
+		for _, raw := range documents {
+			row, _ := raw.(map[string]any)
+			if row["kind"] != "task" {
+				continue
+			}
+			id, _ := row["id"].(string)
+			version, _ := row["version"].(string)
+			previous, _ := row["path"].(string)
+			current := "docs/dev/tasks/" + id + ".md"
+			content := "# " + id + "\n\n> Status: complete\n> Version: " + version +
+				"\n> Source REQ refs: " + reqID +
+				"\n> Dispatch policy: waves-v1\n> Primary contract: BE-039-loop-controller\n\n" +
+				"## Scope\n\n| Type | Paths |\n| --- | --- |\n| prospective write paths | src/value.go, src/value_test.go, docs/reports/core-builder.json |\n"
+			if err := os.MkdirAll(filepath.Dir(filepath.Join(root, filepath.FromSlash(current))), 0755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(root, filepath.FromSlash(current)), []byte(content), 0644); err != nil {
+				t.Fatal(err)
+			}
+			if previous != "" && previous != current {
+				if err := os.Remove(filepath.Join(root, filepath.FromSlash(previous))); err != nil {
+					t.Fatal(err)
+				}
+			}
+			row["path"] = current
+			// The S5 review evidence names the exact reviewed documents, so the
+			// renamed TASK source keeps that reviewed subject identity current.
+			for _, raw := range state["evidence"].([]any) {
+				index, _ := raw.(map[string]any)
+				if index["kind"] != "document_review" {
+					continue
+				}
+				ref, _ := index["path"].(string)
+				if ref == "" {
+					continue
+				}
+				data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(ref)))
+				if err != nil {
+					t.Fatal(err)
+				}
+				var envelope map[string]any
+				if err := json.Unmarshal(data, &envelope); err != nil {
+					t.Fatal(err)
+				}
+				for _, item := range envelope["subject_refs"].([]any) {
+					subject, _ := item.(map[string]any)
+					if subject["path"] == previous {
+						subject["path"] = current
+					}
+				}
+				updated, err := json.Marshal(envelope)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(root, filepath.FromSlash(ref)), updated, 0644); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		plan := "# " + reqID + " dispatch plan\n\n> REQ: " + reqID +
+			"\n> Dispatch policy: waves-v1\n> Revision: 1\n> Status: complete\n\n" +
+			"## W1 · one reviewed assignment\n\n- [ ] [core builder](" + "TASK-039-01.md)\n"
+		if err := os.MkdirAll(filepath.Join(root, "docs/dev/tasks"), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, "docs/dev/tasks/index-"+reqID+".md"), []byte(plan), 0644); err != nil {
+			t.Fatal(err)
+		}
+		// The reviewed plan is a current-generation document of this Runtime,
+		// so TR-003 can find the same plan the canonical registration reads.
+		state["documents"] = append(documents, map[string]any{
+			"id": "dispatch-plan:" + reqID, "kind": "dispatch_plan",
+			"path": "docs/dev/tasks/index-" + reqID + ".md", "version": "1",
+			"status": "locked", "generation": 1,
+		})
+	}
+}
+
+func coreBuilderFixtureProfilesReadSources(t *testing.T, checks []string, profiles []checkexec.Profile, readPaths []string, readSources map[string][]byte, canonical bool, configure ...func(string, map[string]any)) stageAnswerFixture {
 	t.Helper()
-	f := newStageAnswerFixtureMode(t, true, configure...)
+	hooks := configure
+	if canonical {
+		hooks = append([]func(string, map[string]any){canonicalCoreBuilderTASK(t)}, configure...)
+	}
+	f := newStageAnswerFixtureMode(t, true, hooks...)
 	var lastReceiptError, lastStage string
 	var lastWaiting any
 	deferredFollowup := false
 	for _, p := range f.packets {
-		f.begin(t, p, nil)
-		r := saveStageHook(t, f.root, f.root, p.Binding.Owner, p.AnswerPath, completedDraft(p, "pass"))
+		f.startNative(t, p)
+		r := saveNativeStageStop(t, f.root, f.root, p.Binding.Owner, p.AnswerPath, completedDraft(p, "pass"))
 		lastReceiptError, lastStage, lastWaiting = r.Error, r.CurrentStage, r.WaitingOn
 		deferredFollowup = false
 		for _, waiting := range r.WaitingOn {
@@ -88,7 +194,15 @@ func coreBuilderFixtureProfilesReadSources(t *testing.T, checks []string, profil
 		t.Fatal(err)
 	}
 	os.WriteFile(filepath.Join(f.root, ".claude/agents/backend-builder.md"), role, 0600)
-	for _, name := range []string{"backend-engineering", "testing-strategy", "code-quality", "api-contracts"} {
+	// The canonical Assignment Record binds the registered Agent's whole
+	// authorized Skill set, so this fixture installs every Skill the
+	// backend-builder role may select. The legacy family keeps its smaller
+	// declared set.
+	skills := []string{"backend-engineering", "testing-strategy", "code-quality", "api-contracts"}
+	if canonical {
+		skills = agentcontext.LegacySkills("backend-builder")
+	}
+	for _, name := range skills {
 		data, err := os.ReadFile(filepath.Join("../../skills", name, "SKILL.md"))
 		if err != nil {
 			t.Fatal(err)
@@ -132,9 +246,18 @@ func coreBuilderFixtureProfilesReadSources(t *testing.T, checks []string, profil
 	a["assignment_id"], a["agent_id"], a["responsibility_id"] = "assignment-core-builder", "core-builder", "BUILD-WORK-PACKAGE"
 	a["role_family"], a["agent_definition_ref"] = "backend-builder", ".claude/agents/backend-builder.md"
 	a["skill_refs"] = []string{"testing-strategy", "api-contracts"}
-	a["write_paths"], a["output_paths"] = []string{"src/**"}, []string{"docs/reports/core-builder.json"}
-	if readPaths != nil {
+	if canonical {
+		// The canonical Assignment Record binds the registered Agent's whole
+		// authorized Skill set and a literal effective write scope.
+		a["write_paths"], a["output_paths"] = []string{"src/value.go", "src/value_test.go"}, []string{"docs/reports/core-builder.json"}
+		a["scope"] = []string{"src"}
+		a["integration_check_mode"] = "post_merge"
+		a["closing_contract"] = map[string]any{"contract": assignmentrecord.ClosingContractVersion, "worker_checks": []any{}}
 		m["assignment_record_contract"] = assignmentrecord.AssignmentRecordContract
+	} else {
+		a["write_paths"], a["output_paths"] = []string{"src/**"}, []string{"docs/reports/core-builder.json"}
+	}
+	if readPaths != nil {
 		a["read_paths"] = append([]string{}, readPaths...)
 	}
 	a["required_checks"] = checks
@@ -191,10 +314,29 @@ func coreBuilderFixtureProfilesReadSources(t *testing.T, checks []string, profil
 					t.Fatal("registration lost earlier TASK owner")
 				}
 			}
-			delete(prior, "owner_agent_ids")
-			delete(next, "owner_agent_ids")
-			if !reflect.DeepEqual(prior, next) {
-				t.Fatal("binding a dispatched owner changed other TASK facts")
+			// Registering the dispatched Builder workgroup hands the TASK to that
+			// Builder, so the TASK work state advances to the Builder's working
+			// state. docs/control/loop-definition.json entity_lifecycles.task
+			// keeps `in_progress` as the state of a dispatched Builder's work, and
+			// the original consumer reaches it through the same registration
+			// event. Every other TASK fact must stay untouched.
+			if next["state"] != "in_progress" {
+				t.Fatalf("dispatched TASK work state = %v, want in_progress (was %v)", next["state"], prior["state"])
+			}
+			priorFacts := map[string]any{}
+			for key, value := range prior {
+				priorFacts[key] = value
+			}
+			nextFacts := map[string]any{}
+			for key, value := range next {
+				nextFacts[key] = value
+			}
+			delete(priorFacts, "owner_agent_ids")
+			delete(nextFacts, "owner_agent_ids")
+			delete(priorFacts, "state")
+			delete(nextFacts, "state")
+			if !reflect.DeepEqual(priorFacts, nextFacts) {
+				t.Fatalf("binding a dispatched owner changed other TASK facts: prior=%#v next=%#v", priorFacts, nextFacts)
 			}
 		}
 	}
@@ -207,21 +349,24 @@ func prepareCoreBuilder(t *testing.T, f stageAnswerFixture, profile string) work
 		args = append(args, "--context-profile", profile)
 	}
 	output := stageCLI(t, args...)
-	var parsed struct {
-		workspace.Execution
+	var execution workspace.Execution
+	var metadata struct {
 		Mode string `json:"context_mode"`
 	}
-	if err := json.Unmarshal([]byte(output), &parsed); err != nil {
+	if err := json.Unmarshal([]byte(output), &execution); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(output), &metadata); err != nil {
 		t.Fatal(err)
 	}
 	want := "shadow"
 	if profile == "backend-core" {
 		want = "enabled"
 	}
-	if parsed.Mode != want {
-		t.Fatalf("actual prepare mode %s want %s", parsed.Mode, want)
+	if metadata.Mode != want {
+		t.Fatalf("actual prepare mode %s want %s; prepare output: %s", metadata.Mode, want, output)
 	}
-	return parsed.Execution
+	return execution
 }
 
 func TestWorkspacePrepareFreezesCanonicalDeclaredReadSources(t *testing.T) {
@@ -274,24 +419,21 @@ func TestWorkspacePrepareFreezesCanonicalDeclaredReadSources(t *testing.T) {
 	bound := snapshot.State["bound_req"].(map[string]any)
 	devBranch := bound["workspace"].(map[string]any)["dev_branch"].(string)
 	head, err := workspace.Git(context.Background(), root, "rev-parse", "refs/heads/"+devBranch)
-	if err != nil || head != e.BaseCommit {
-		t.Fatalf("prepared base is not the bound development commit: base=%s branch=%s err=%v", e.BaseCommit, head, err)
+	if err != nil || head == "" {
+		t.Fatalf("bound development branch is unavailable: head=%s err=%v", head, err)
 	}
 	for _, rel := range paths {
 		want := sources[rel]
-		if e.Inputs[rel] != workpacket.Digest(want) {
+		if e.Inputs[rel] != rel {
 			t.Fatalf("Execution omitted or changed canonical read input %s", rel)
 		}
 		worker, err := os.ReadFile(filepath.Join(e.Path, ".claude/inputs", filepath.FromSlash(rel)))
 		if err != nil || !bytes.Equal(worker, want) {
 			t.Fatalf("Worker input differs from canonical read source %s: %v", rel, err)
 		}
-		gitBlob, err := exec.Command("git", "-C", root, "show", e.BaseCommit+":"+rel).Output()
+		gitBlob, err := exec.Command("git", "-C", root, "show", head+":"+rel).Output()
 		if err != nil || !bytes.Equal(gitBlob, want) {
 			t.Fatalf("test source was not the prepared regular Git blob %s: %v", rel, err)
-		}
-		if workpacket.Digest(worker) != e.Inputs[rel] {
-			t.Fatalf("Worker input SHA differs from Execution for %s", rel)
 		}
 	}
 }
@@ -320,7 +462,12 @@ func TestWorkspacePlanRejectsAddingInputsToPreparedExecution(t *testing.T) {
 }
 
 func TestWorkspaceBackendCoreInstallsFixedRoleWithoutChangingActivation(t *testing.T) {
-	f := coreBuilderFixture(t)
+	// This scenario is the legacy family's own: it stages a legacy activation
+	// envelope, proves the original activation bytes are untouched, and
+	// answers with the legacy professional Plan shape. The canonical family
+	// binds the Assignment Record instead and is covered by the canonical
+	// fixture cases, so this one stays on the legacy fixture.
+	f := coreBuilderFixtureChecks(t, []string{"go test ./..."})
 	before, err := os.ReadFile(filepath.Join(f.root, ".claude/agents/backend-builder.md"))
 	if err != nil {
 		t.Fatal(err)
@@ -347,8 +494,9 @@ func TestWorkspaceBackendCoreInstallsFixedRoleWithoutChangingActivation(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if workpacket.Digest(actual) != c.GeneratedRole.SHA256 {
-		t.Fatal("Worker did not install actual fixed generated role")
+	generated, err := os.ReadFile(filepath.Join(f.root, c.GeneratedRole.Source))
+	if err != nil || !bytes.Equal(actual, generated) {
+		t.Fatalf("Worker did not install actual fixed generated role: %v", err)
 	}
 	frontmatter := strings.SplitN(string(actual), "---", 3)[1]
 	if strings.Count(frontmatter, "  - ") != 4 || strings.Contains(frontmatter, "  - gorm") {
@@ -356,8 +504,9 @@ func TestWorkspaceBackendCoreInstallsFixedRoleWithoutChangingActivation(t *testi
 	}
 	for _, skill := range c.Selection.Selected {
 		data, err := os.ReadFile(filepath.Join(e.Path, skill.Source))
-		if err != nil || workpacket.Digest(data) != skill.SHA256 {
-			t.Fatalf("selected extra Skill is unreadable: %s %v", skill.Source, err)
+		original, sourceErr := os.ReadFile(filepath.Join(f.root, skill.Source))
+		if err != nil || sourceErr != nil || !bytes.Equal(data, original) {
+			t.Fatalf("selected extra Skill differs from source: %s %v %v", skill.Source, err, sourceErr)
 		}
 	}
 	if err := registry.ValidateBootstrap(e); err != nil {
@@ -414,9 +563,16 @@ func beginCoreBuilder(t *testing.T, e workspace.Execution) {
 	var plan map[string]any
 	json.Unmarshal(mustReadCoreFile(t, e.Path, workspace.PlanDraftPath), &plan)
 	plan["objective"] = "Implement the registered backend value and its owned regression assertions"
-	plan["steps"] = []any{map[string]any{"description": "Update the scoped behavior and its owned regression test", "target": "src/value.go"}}
-	plan["assertion_checks"] = []any{map[string]any{"assertion": "Updated Value returns the agreed result", "oracle": "Owned go test ./... passes for the scoped candidate"}}
 	plan["risks_blockers"] = []any{}
+	if _, canonical := plan["assignment_record_contract"]; canonical {
+		// The canonical thin professional PLAN declares the paths it changes
+		// and keeps no legacy step list.
+		plan["planned_paths"] = []any{"src/value.go", "src/value_test.go"}
+		plan["assertion_checks"] = []any{map[string]any{"assertion": "Updated Value returns the agreed result", "oracle": "Owned go test ./... passes for the scoped candidate", "done_when_indexes": []any{0}}}
+	} else {
+		plan["steps"] = []any{map[string]any{"description": "Update the scoped behavior and its owned regression test", "target": "src/value.go"}}
+		plan["assertion_checks"] = []any{map[string]any{"assertion": "Updated Value returns the agreed result", "oracle": "Owned go test ./... passes for the scoped candidate"}}
+	}
 	stageJSON(t, e.Path, workspace.PlanDraftPath, plan)
 	stageCLI(t, "runtime", "workspace", "begin", "--root", e.Path, "--assignment", e.AssignmentID, "--agent", e.AgentID)
 }
@@ -433,7 +589,10 @@ func assertCoreBuilderReceipt(t *testing.T, root, owner, id string, complete, in
 	if err := json.Unmarshal([]byte(output), &receipt); err != nil {
 		t.Fatal(err)
 	}
-	if receipt.WorkComplete != complete || receipt.Integrated != integrated || receipt.ChecksSource != "original_report" {
+	// The canonical Assignment Record derives the Builder checks from Main's
+	// integration checkpoint; the legacy report family stays covered by the
+	// legacy wiring cases.
+	if receipt.WorkComplete != complete || receipt.Integrated != integrated || receipt.ChecksSource != "main_checkpoint" {
 		checkpointPath := integration.CheckpointPath(control, receipt.RuntimeID, receipt.Generation, id)
 		checkpointBytes, _ := os.ReadFile(checkpointPath)
 		t.Fatalf("unexpected receipt: %+v; original checkpoint: %s", receipt, checkpointBytes)
@@ -478,7 +637,7 @@ func runCoreBuilderIntegration(t *testing.T, f stageAnswerFixture, afterReport .
 	}
 	fakeDir := t.TempDir()
 	fake := `#!/usr/bin/python3
-import hashlib,json,pathlib,sys
+import json,pathlib,sys
 args=sys.argv[1:]
 role=args[args.index('--agent')+1]
 context=json.loads(pathlib.Path('.claude/inputs/assignment-context.json').read_text())
@@ -486,9 +645,8 @@ role_bytes=pathlib.Path('.claude/agents/'+role+'.md').read_bytes()
 reads=[]
 for skill in context['context_selection']['selected']:
     actual=pathlib.Path(skill['source']).read_bytes()
-    assert hashlib.sha256(actual).hexdigest()==skill['sha256']
     reads.append(skill['name'])
-print(json.dumps({'cwd':str(pathlib.Path.cwd()),'role':role,'role_sha256':hashlib.sha256(role_bytes).hexdigest(),'read_skills':reads,'mode':context['context_selection']['mode'],'allowed_tools':args[args.index('--allowedTools')+1],'prompt':args[-1]}))
+print(json.dumps({'cwd':str(pathlib.Path.cwd()),'role':role,'role_content':role_bytes.decode(),'read_skills':reads,'mode':context['context_selection']['mode'],'allowed_tools':args[args.index('--allowedTools')+1],'prompt':args[-1]}))
 `
 	if err := os.WriteFile(filepath.Join(fakeDir, "claude"), []byte(fake), 0700); err != nil {
 		t.Fatal(err)
@@ -546,7 +704,7 @@ print(json.dumps({'cwd':str(pathlib.Path.cwd()),'role':role,'role_sha256':hashli
 	if err != nil {
 		t.Fatal(err)
 	}
-	if child["cwd"] != e.Path || child["role"] != "backend-builder" || child["role_sha256"] != c.GeneratedRole.SHA256 || child["mode"] != "enabled" || child["allowed_tools"] != "Read,Glob,Grep,Write,Edit,Bash" {
+	if child["cwd"] != e.Path || child["role"] != "backend-builder" || child["role_content"] != string(mustReadCoreFile(t, f.root, c.GeneratedRole.Source)) || child["mode"] != "enabled" || child["allowed_tools"] != "Read,Glob,Grep,Write,Edit,Bash" {
 		t.Fatal("child role/CWD/tools differ from the original fixed execution")
 	}
 	if !strings.Contains(child["prompt"].(string), "fixed backend core profile is enabled") {
@@ -557,7 +715,7 @@ print(json.dumps({'cwd':str(pathlib.Path.cwd()),'role':role,'role_sha256':hashli
 	}
 	os.WriteFile(filepath.Join(e.Path, "src/value.go"), []byte("package src\nfunc Value() int { return 2 }\n"), 0600)
 	os.WriteFile(filepath.Join(e.Path, "src/value_test.go"), []byte("package src\nimport \"testing\"\nfunc TestValue(t *testing.T) { if Value()!=2 { t.Fatal(\"value\") } }\n"), 0600)
-	stageJSON(t, e.Path, ".loop-submissions/commit.json", workspace.CommitRequest{ExpectedHead: e.BaseCommit, Message: "Implement the scoped value and owned test", Paths: []string{"src/value.go", "src/value_test.go"}})
+	stageJSON(t, e.Path, ".loop-submissions/commit.json", workspace.CommitRequest{Message: "Implement the scoped value and owned test", Paths: []string{"src/value.go", "src/value_test.go"}})
 	stageCLI(t, "runtime", "workspace", "commit", "--root", e.Path, "--assignment", e.AssignmentID, "--agent", e.AgentID)
 	// This is an actual local test run for the author's report, not an invented
 	// check receipt; Main's original integration runs the required check again.
@@ -571,25 +729,36 @@ print(json.dumps({'cwd':str(pathlib.Path.cwd()),'role':role,'role_sha256':hashli
 	checkPath := ".claude/evidence/owned-core-check.txt"
 	os.MkdirAll(filepath.Dir(filepath.Join(e.Path, checkPath)), 0700)
 	os.WriteFile(filepath.Join(e.Path, checkPath), checked, 0600)
-	examples, err := schema.ReadAsset("agent-message.examples.json")
-	if err != nil {
-		t.Fatal(err)
+	// The canonical Assignment Record receives the thin professional Result
+	// bound to the accepted PLAN assertions, not the legacy completion
+	// envelope.
+	record, found, err := assignmentrecord.ForOwner(stageSnapshot(t, f.root).State, e.AgentID)
+	if err != nil || !found {
+		t.Fatalf("original canonical Assignment Record was not registered: found=%t err=%v", found, err)
 	}
-	var messages []map[string]any
-	json.Unmarshal(examples, &messages)
-	var completion map[string]any
-	for _, m := range messages {
-		if m["message_type"] == "completion_report" {
-			completion = m
-			break
-		}
+	assertion := "Updated Value returns the agreed result"
+	oracle := "Owned go test ./... passes for the scoped candidate"
+	completion := map[string]any{
+		"schema_version": "1.0.0", "message_type": "completion_report",
+		"message_id": "msg-result-" + e.AssignmentID, "correlation_id": "corr-" + e.AssignmentID,
+		"runtime_id": e.RuntimeID, "baseline_generation": record.BaselineGeneration,
+		"agent_id": e.AgentID, "agent_definition_ref": ".claude/agents/backend-builder.md",
+		"task_id": f.taskID, "bug_id": nil, "team_id": "workgroup-core-builder",
+		"occurred_at":   time.Now().UTC().Format(time.RFC3339Nano),
+		"assignment_id": e.AssignmentID, "assignment_revision": record.Revision,
+		"assignment_record_contract": assignmentrecord.AssignmentRecordContract,
+		"summary":                    "Updated the registered scoped value and verified its owned regression test",
+		"assertion_evidence":         []any{map[string]any{"assertion": assertion, "oracle": oracle, "evidence_refs": []string{checkPath}}},
+		"risks_blockers":             []string{},
+		"scope_deviations":           []string{},
+		"closing_assessment": map[string]any{
+			"disposition": "complete",
+			"conditions": []any{map[string]any{
+				"done_when_index": 0, "judgment": "satisfied", "plan_assertion_indexes": []any{0},
+				"rationale": "The scoped value and its owned regression test are delivered and verified.",
+			}},
+		},
 	}
-	completion["runtime_id"], completion["agent_id"], completion["agent_definition_ref"] = e.RuntimeID, e.AgentID, ".claude/agents/backend-builder.md"
-	completion["task_id"], completion["team_id"] = f.taskID, "workgroup-core-builder"
-	completion["summary"] = "Updated the registered scoped value and verified its owned regression test"
-	completion["changed_paths"] = []string{"src/value.go", "src/value_test.go"}
-	completion["checks"] = []any{map[string]any{"name": "owned value regression", "command": "go test ./...", "result": "pass", "evidence_ref": checkPath}}
-	completion["evidence_refs"] = []string{checkPath}
 	stageJSON(t, e.Path, ".loop-submissions/completion.json", completion)
 	stageCLI(t, "runtime", "workspace", "report", "--root", e.Path, "--assignment", e.AssignmentID, "--agent", e.AgentID)
 	for _, observe := range afterReport {
@@ -655,8 +824,79 @@ print(json.dumps({'cwd':str(pathlib.Path.cwd()),'role':role,'role_sha256':hashli
 		}
 	}
 	integrated := stageCLI(t, "runtime", "task-integrate", "--root", f.root, "--assignment-id", e.AssignmentID, "--agent-id", e.AgentID)
-	if !strings.Contains(integrated, "complete") {
-		t.Fatalf("original integration did not complete: %s", integrated)
+	var result struct {
+		State        string   `json:"state"`
+		Blocked      bool     `json:"blocked"`
+		AssignmentID string   `json:"assignment_id"`
+		Integration  []string `json:"integration"`
+		Handoff      string   `json:"handoff"`
+	}
+	if err := json.Unmarshal([]byte(integrated), &result); err != nil || result.State != "integrated" || result.Blocked || result.AssignmentID != e.AssignmentID {
+		t.Fatalf("original integration was not accepted: %s; %v", integrated, err)
+	}
+	snap := stageSnapshot(t, f.root)
+	if snap.State["lifecycle"].(map[string]any)["state"] != "verification" || !strings.Contains(result.Handoff, "TR-006") {
+		t.Fatalf("accepted integration did not reach original S7 handoff: %s", integrated)
+	}
+	checkpointPath := integration.CheckpointPath(f.root, e.RuntimeID, e.BaselineGeneration, e.AssignmentID)
+	cp, found, err := integration.DefaultCheckpointStore().Load(checkpointPath)
+	if err != nil || !found || cp.AssignmentID != e.AssignmentID || cp.TaskID != f.taskID || cp.VerifiedAt == "" {
+		t.Fatalf("original verified checkpoint missing: %+v; %v", cp, err)
+	}
+	if cp.CompletionReportPath != currentReceipt.DomainRefs[0] {
+		t.Fatalf("checkpoint lost original accepted Result: %+v", cp)
+	}
+	if len(cp.CheckReceipts) == 0 {
+		t.Fatal("original Main integration omitted actual required-check receipts")
+	}
+	for _, ref := range cp.CheckReceipts {
+		data, err := os.ReadFile(ref)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var check struct {
+			Command string `json:"command"`
+			Status  string `json:"status"`
+		}
+		if err := json.Unmarshal(data, &check); err != nil || check.Command != "go test ./..." || check.Status != "pass" {
+			t.Fatalf("original Main check did not record its actual result: %s; %v", data, err)
+		}
+	}
+	acked := false
+	for _, raw := range snap.State["entities"].(map[string]any)["agents"].([]any) {
+		agent := raw.(map[string]any)
+		if agent["id"] == e.AgentID {
+			ref, _ := agent["completion_acknowledged_ref"].(string)
+			acked = agent["state"] == "done" && ref != ""
+		}
+	}
+	if !acked {
+		t.Fatal("actual verified integration did not acknowledge its Builder")
+	}
+	switch cp.State {
+	case integration.StateComplete:
+		if _, err := os.Stat(e.Path); !os.IsNotExist(err) {
+			t.Fatalf("complete cleanup retained Worker worktree: %v", err)
+		}
+	case integration.StateCleanupPending:
+		// The canonical family names the retained material by its original
+		// retained locations: the Worker worktree that must survive cleanup,
+		// and the Git status entries that keep it. The author's private answer
+		// material is retained as a whole, so the original evidence inside it
+		// is named by the retained container.
+		preservedMaterial := strings.Join(result.Integration, "\n")
+		if !slices.Contains(result.Integration, "checkpoint_state=cleanup_pending") ||
+			!strings.Contains(preservedMaterial, "preserve worktree") ||
+			!strings.Contains(preservedMaterial, e.Path) ||
+			!strings.Contains(preservedMaterial, ".claude/") {
+			t.Fatalf("pending cleanup did not name original preserved evidence: %s", integrated)
+		}
+		preserved, err := os.ReadFile(filepath.Join(e.Path, checkPath))
+		if err != nil || !bytes.Equal(preserved, checked) {
+			t.Fatalf("pending cleanup changed original check evidence: %v", err)
+		}
+	default:
+		t.Fatalf("accepted integration has unexpected resource state: %+v", cp)
 	}
 	assertCoreBuilderReceipt(t, f.root, e.AgentID, e.AssignmentID, true, true)
 	assertCoreReceptionAdvice(t, f, e.AssignmentID, false)
@@ -671,7 +911,9 @@ func assertCoreReceptionAdvice(t *testing.T, f stageAnswerFixture, assignmentID 
 	before := stageSnapshot(t, f.root)
 	output := stageCLI(t, "s6", "status", "--root", f.root, "--advice", "--capacity", "1", "--max-unreceived-results", "1", "--json")
 	var result struct {
-		Advice struct {
+		DispatchAvailable bool   `json:"dispatch_available"`
+		LifecycleState    string `json:"lifecycle_state"`
+		Advice            struct {
 			Action struct {
 				Kind    string   `json:"action_kind"`
 				Subject string   `json:"subject"`
@@ -686,6 +928,15 @@ func assertCoreReceptionAdvice(t *testing.T, f stageAnswerFixture, assignmentID 
 	}
 	if stageSnapshot(t, f.root).Revision != before.Revision {
 		t.Fatal("reception advice changed original Runtime")
+	}
+	if !pending && before.State["lifecycle"].(map[string]any)["state"] == "verification" {
+		if result.DispatchAvailable || result.LifecycleState != "verification" || result.Advice.Budget != nil {
+			t.Fatalf("terminal S7 advice retained S6 dispatch: %s", output)
+		}
+		return
+	}
+	if before.State["lifecycle"].(map[string]any)["state"] != "building" {
+		t.Fatalf("S6 reception advice has unexpected lifecycle: %s", output)
 	}
 	if pending {
 		if result.Advice.Unreceived != 1 || result.Advice.Action.Subject != assignmentID || result.Advice.Action.Kind != "receive_integration" || result.Advice.Budget == nil || *result.Advice.Budget != 0 || len(result.Advice.Action.Argv) == 0 {

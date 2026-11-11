@@ -5,12 +5,9 @@
 // activation envelope file at .claude/evidence/<req>/<task>/activation-<agent>.json
 // so the Hook transport has a stable, schema-shaped source for allowed_tools /
 // allowed_write_paths / allowed_command_classes the moment plan_checkpoint
-// captures the PLAN_REPORT. The envelope's hash-chain fields are stamped at
-// activation time by the PostToolUse(SendMessage) auto-chain
-// (autoAdvanceToWorking) or the runtime agent-begin fallback verb — both
-// rewrite the same file with the actual plan_report bytes before submitting
-// activation_sent, preserving verifyActivationReadbackChain's fail-closed
-// semantics.
+// captures the PLAN_REPORT. The PostToolUse(SendMessage) auto-chain or the
+// runtime agent-begin fallback connects activation to the actual plan report
+// and its original Assignment responsibility.
 //
 // plan_approval_required and one_shot assignments are NOT pre-staged: the
 // activation envelope for those modes is produced manually at activation_sent
@@ -19,8 +16,7 @@
 package assignment
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -32,31 +28,30 @@ import (
 	"github.com/entroforge/go-system-builder/internal/identity"
 	"github.com/entroforge/go-system-builder/internal/pathscope"
 	"github.com/entroforge/go-system-builder/internal/schema"
+	"github.com/entroforge/go-system-builder/internal/workpacket"
 )
 
 // ActivationEnvelope is the on-disk representation read by
 // internal/hookctx/loadActivation. Field names mirror the activationFile struct
 // in hookctx/loader.go (must stay byte-compatible).
 type ActivationEnvelope struct {
-	AssignmentRecord       *assignmentrecord.RecordReference `json:"assignment_record,omitempty"`
-	AssignmentRecordSHA256 string                            `json:"assignment_record_sha256,omitempty"`
-	AgentID                string                            `json:"agent_id"`
-	AllowedTools           []string                          `json:"allowed_tools"`
-	AllowedWritePaths      []string                          `json:"allowed_write_paths"`
-	AllowedCommandClasses  []string                          `json:"allowed_command_classes"`
+	AssignmentRecord      *assignmentrecord.RecordReference `json:"assignment_record,omitempty"`
+	AgentID               string                            `json:"agent_id"`
+	AllowedTools          []string                          `json:"allowed_tools"`
+	AllowedWritePaths     []string                          `json:"allowed_write_paths"`
+	AllowedCommandClasses []string                          `json:"allowed_command_classes"`
 }
 
 // ActivationSourceEntry is the row of the workgroup manifest that drives an
 // activation envelope. Only the fields the envelope needs are listed — the
 // caller is responsible for sourcing the rest.
 type ActivationSourceEntry struct {
-	AssignmentRecord       *assignmentrecord.RecordReference
-	AssignmentRecordSHA256 string
-	AgentID                string
-	AgentDefinitionRef     string
-	SkillRefs              []string
-	WritePaths             []string
-	OutputPaths            []string
+	AssignmentRecord   *assignmentrecord.RecordReference
+	AgentID            string
+	AgentDefinitionRef string
+	SkillRefs          []string
+	WritePaths         []string
+	OutputPaths        []string
 }
 
 // PreStageActivationEnvelope writes a plan_checkpoint activation envelope
@@ -83,17 +78,15 @@ func PreStageActivationEnvelope(root, workgroupID, taskID, agentID, dispatchMode
 	}
 	envelope := buildActivationEnvelope(agentID, source)
 	rel := activationEnvelopePath(root, workgroupID, taskID, agentID)
-	if err := os.MkdirAll(filepath.Dir(rel), 0o755); err != nil {
-		return "", fmt.Errorf("activation envelope: mkdir: %w", err)
-	}
 	data, err := json.MarshalIndent(envelope, "", "  ")
 	if err != nil {
 		return "", fmt.Errorf("activation envelope: encode: %w", err)
 	}
-	if err := os.WriteFile(rel, append(data, '\n'), 0o644); err != nil {
-		return "", fmt.Errorf("activation envelope: write: %w", err)
+	actual, err := publishActivationArtifact(root, rel, append(data, '\n'))
+	if err != nil {
+		return "", fmt.Errorf("activation envelope: publish: %w", err)
 	}
-	return repositoryPath(root, rel), nil
+	return repositoryPath(root, actual), nil
 }
 
 // buildActivationEnvelope fills the four hookctx-loader fields deterministically.
@@ -102,12 +95,11 @@ func buildActivationEnvelope(agentID string, source ActivationSourceEntry) Activ
 	writePaths := effectiveActivationWritePaths(source.WritePaths, source.OutputPaths)
 	commandClasses := commandClassesForSkills(source.SkillRefs)
 	return ActivationEnvelope{
-		AssignmentRecord:       source.AssignmentRecord,
-		AssignmentRecordSHA256: source.AssignmentRecordSHA256,
-		AgentID:                agentID,
-		AllowedTools:           tools,
-		AllowedWritePaths:      writePaths,
-		AllowedCommandClasses:  commandClasses,
+		AssignmentRecord:      source.AssignmentRecord,
+		AgentID:               agentID,
+		AllowedTools:          tools,
+		AllowedWritePaths:     writePaths,
+		AllowedCommandClasses: commandClasses,
 	}
 }
 
@@ -195,14 +187,40 @@ func activationEnvelopePath(root, workgroupID, taskID, agentID string) string {
 	safeAgentID = strings.ReplaceAll(safeAgentID, "..", "_")
 	safeTaskID := strings.ReplaceAll(taskID, "/", "_")
 	safeWorkgroupID := strings.ReplaceAll(workgroupID, "/", "_")
+	if len(safeWorkgroupID) > 180 || len(safeTaskID) > 180 || len(safeAgentID) > 180 {
+		return longActivationArtifactPath(root, workgroupID, taskID, agentID, "activation")
+	}
 	return filepath.Join(root, ".claude", "evidence", safeWorkgroupID, safeTaskID, "activation-"+safeAgentID+".json")
 }
 
+// Long responsibility IDs remain exact and reversible without placing any
+// unbounded ID in a single filesystem component. Short historic paths above
+// are unchanged, so already issued activations continue to resolve.
+func longActivationArtifactPath(root, workgroupID, taskID, agentID, kind string) string {
+	parts := []string{root, ".claude", "evidence", "activation-responsibility"}
+	for i, value := range []string{workgroupID, taskID, agentID} {
+		parts = append(parts, []string{"workgroup", "task", "agent"}[i])
+		encoded := base64.RawURLEncoding.EncodeToString([]byte(value))
+		if encoded == "" {
+			parts = append(parts, "p-")
+		}
+		for len(encoded) > 0 {
+			n := 120
+			if len(encoded) < n {
+				n = len(encoded)
+			}
+			parts = append(parts, "p-"+encoded[:n])
+			encoded = encoded[n:]
+		}
+	}
+	return filepath.Join(append(parts, kind+".json")...)
+}
+
 // BuildPlanCheckpointActivationMessage synthesizes an activation message
-// bound to the plan_report file bytes. Used by the PostToolUse auto-chain and
+// linked to the original plan_report responsibility. Used by the PostToolUse auto-chain and
 // the runtime agent-begin fallback verb. It clones the bundled
 // agent-message.examples.json activation example and patches the agent_id /
-// task_id / runtime_id / hash chain fields so the
+// task_id / runtime_id / original message fields so the
 // auto-generated envelope stays schema-valid without re-deriving the
 // document / allowed_*_paths / checkpoints / stop_conditions payloads from
 // scratch. Documents array is patched to >=3 entries (schema minItems=3).
@@ -224,21 +242,20 @@ func BuildPlanCheckpointActivationMessage(
 	if err != nil {
 		return nil, fmt.Errorf("activation message: read plan: %w", err)
 	}
-	sum := sha256.Sum256(planBytes)
-	planSHA := hex.EncodeToString(sum[:])
 	var plan map[string]any
 	if err := json.Unmarshal(planBytes, &plan); err != nil {
 		return nil, fmt.Errorf("activation message: decode plan: %w", err)
 	}
 	messageID, _ := plan["message_id"].(string)
+	identity := base64.RawURLEncoding.EncodeToString([]byte(runtimeID + "\x00" + agentID + "\x00" + taskID + "\x00" + planPath))
 	if messageID == "" {
-		messageID = "msg-plan-" + planSHA[:12]
+		messageID = "msg-plan-" + identity
 	}
 	correlationID, _ := plan["correlation_id"].(string)
 	if correlationID == "" {
-		correlationID = "corr-auto-" + planSHA[:12]
+		correlationID = "corr-auto-" + identity
 	}
-	activationID := "act-auto-" + planSHA[:12]
+	activationID := "act-auto-" + base64.RawURLEncoding.EncodeToString([]byte(messageID))
 
 	// Clone the bundled activation example to keep schema validity (documents,
 	// allowed_read_paths, checkpoints, stop_conditions, expires_on) for free.
@@ -259,7 +276,13 @@ func BuildPlanCheckpointActivationMessage(
 	cloned["occurred_at"] = occurredAtRFC3339
 	cloned["activation_id"] = activationID
 	cloned["approved_readback_message_id"] = messageID
-	cloned["approved_readback_sha256"] = planSHA
+	if stops, ok := cloned["stop_conditions"].([]any); ok {
+		for i, stop := range stops {
+			if stop == "document fingerprint changes" {
+				stops[i] = "actual material changes require the responsible professional judgment"
+			}
+		}
+	}
 	cloned["message_id"] = "msg-" + activationID
 	cloned["correlation_id"] = correlationID
 	cloned["approval_evidence_id"] = "auto-chain:plan_checkpoint"
@@ -273,7 +296,6 @@ func BuildPlanCheckpointActivationMessage(
 	cloned["allowed_command_classes"] = envelope.AllowedCommandClasses
 	if envelope.AssignmentRecord != nil {
 		cloned["assignment_record"] = envelope.AssignmentRecord
-		cloned["assignment_record_sha256"] = envelope.AssignmentRecordSHA256
 	}
 	if len(envelope.AllowedWritePaths) > 0 {
 		cloned["output_paths"] = envelope.AllowedWritePaths
@@ -324,17 +346,15 @@ func ValidateActivationMessageBytes(root string, data []byte) error {
 // verb pass the returned path to AdvanceAgent as the activation_sent message.
 func WriteActivationMessageFile(root, workgroupID, taskID, agentID string, message map[string]any) (string, error) {
 	rel := activationMessagePath(root, workgroupID, taskID, agentID)
-	if err := os.MkdirAll(filepath.Dir(rel), 0o755); err != nil {
-		return "", fmt.Errorf("activation message: mkdir: %w", err)
-	}
 	data, err := json.MarshalIndent(message, "", "  ")
 	if err != nil {
 		return "", fmt.Errorf("activation message: encode: %w", err)
 	}
-	if err := os.WriteFile(rel, append(data, '\n'), 0o644); err != nil {
-		return "", fmt.Errorf("activation message: write: %w", err)
+	actual, err := publishActivationArtifact(root, rel, append(data, '\n'))
+	if err != nil {
+		return "", fmt.Errorf("activation message: publish: %w", err)
 	}
-	return rel, nil
+	return actual, nil
 }
 
 // activationMessagePath returns the absolute path for the synthesized
@@ -358,8 +378,8 @@ func WriteWorkStartMessageFile(
 	safeTaskID := strings.ReplaceAll(taskID, "/", "_")
 	safeWorkgroupID := strings.ReplaceAll(workgroupID, "/", "_")
 	rel := filepath.Join(root, ".claude", "evidence", safeWorkgroupID, safeTaskID, "work-start-"+safeAgentID+".json")
-	if err := os.MkdirAll(filepath.Dir(rel), 0o755); err != nil {
-		return "", fmt.Errorf("work_start message: mkdir: %w", err)
+	if len(safeWorkgroupID) > 180 || len(safeTaskID) > 180 || len(safeAgentID) > 180 {
+		rel = longActivationArtifactPath(root, workgroupID, taskID, agentID, "work-start")
 	}
 	message := map[string]any{
 		"schema_version":       "1.0.0",
@@ -383,10 +403,48 @@ func WriteWorkStartMessageFile(
 	if err != nil {
 		return "", fmt.Errorf("work_start message: encode: %w", err)
 	}
-	if err := os.WriteFile(rel, append(data, '\n'), 0o644); err != nil {
-		return "", fmt.Errorf("work_start message: write: %w", err)
+	actual, err := publishActivationArtifact(root, rel, append(data, '\n'))
+	if err != nil {
+		return "", fmt.Errorf("work_start message: publish: %w", err)
 	}
-	return rel, nil
+	return actual, nil
+}
+
+// publishActivationArtifact publishes only a fresh candidate. Existing objects,
+// including identical unregistered files, are never read or adopted. The caller
+// gives the actual path to the original registration or lifecycle Writer.
+func publishActivationArtifact(root, preferred string, data []byte) (string, error) {
+	relative, err := filepath.Rel(root, preferred)
+	if err != nil {
+		return "", err
+	}
+	relative = filepath.ToSlash(relative)
+	const prefix = ".claude/evidence/"
+	if !strings.HasPrefix(relative, prefix) {
+		return "", fmt.Errorf("activation artifact is outside its control directory")
+	}
+	// A blocked common control parent cannot be repaired by choosing another
+	// evidence root; report that real failure instead of retrying forever.
+	parent, _, err := workpacket.OpenParent(root, ".claude/activation-root-probe", true)
+	if err != nil {
+		return "", err
+	}
+	if err := parent.Close(); err != nil {
+		return "", err
+	}
+	for attempt := 0; ; attempt++ {
+		candidate := relative
+		if attempt > 0 {
+			candidate = filepath.ToSlash(filepath.Join(".claude", fmt.Sprintf("evidence-alt-%d", attempt), strings.TrimPrefix(relative, prefix)))
+		}
+		created, err := workpacket.PublishNewBounded(root, candidate, data, int64(len(data)))
+		if err != nil {
+			return "", err
+		}
+		if created {
+			return filepath.Join(root, filepath.FromSlash(candidate)), nil
+		}
+	}
 }
 
 // ResolveAgentActivationEnvelope reads the activation envelope that the

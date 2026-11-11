@@ -7,12 +7,10 @@ import (
 	"github.com/entroforge/go-system-builder/internal/workstate"
 	"io"
 	"path/filepath"
-	"reflect"
 	"time"
 
 	"github.com/entroforge/go-system-builder/internal/checkexec"
 	"github.com/entroforge/go-system-builder/internal/integration"
-	"github.com/entroforge/go-system-builder/internal/repair"
 	"github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/semantic"
 	"github.com/entroforge/go-system-builder/internal/workspace"
@@ -62,18 +60,12 @@ func runWorkspaceCheck(args []string, stdout, stderr io.Writer) int {
 		return fail(fmt.Errorf("bind Main and prepare the Worker first"))
 	}
 	e, ok := b.Execution(*id, workspace.RuntimeID(snapshot.State), workspace.Generation(snapshot.State))
-	if !ok || e.AgentID != *agent || e.Status != "ready" || e.BootstrapSHA256 == "" {
-		return fail(fmt.Errorf("check requires the current bootstrapped assignment and owner"))
+	if !ok || e.AgentID != *agent || e.Status != "ready" {
+		return fail(fmt.Errorf("check requires the current ready assignment and owner"))
 	}
 	lifecycle, _ := snapshot.State["lifecycle"].(map[string]any)
-	switch lifecycle["state"] {
-	case "building":
-	case "bug_resolution":
-		if _, err := repair.ResolveWorkspaceAuthority(*root, snapshot.State, e.AssignmentID, e.AgentID); err != nil {
-			return fail(err)
-		}
-	default:
-		return fail(fmt.Errorf("Worker check requires building or authorized S9 execution"))
+	if lifecycle["state"] != "building" {
+		return fail(fmt.Errorf("Worker check requires building"))
 	}
 	entities, _ := snapshot.State["entities"].(map[string]any)
 	agents, _ := entities["agents"].([]any)
@@ -94,9 +86,6 @@ func runWorkspaceCheck(args []string, stdout, stderr io.Writer) int {
 		return fail(err)
 	}
 	if err := b.ValidateInputs(e); err != nil {
-		return fail(err)
-	}
-	if err := b.ValidateBootstrap(e); err != nil {
 		return fail(err)
 	}
 	var attempt *checkexec.RunAttempt
@@ -134,24 +123,19 @@ func runWorkspaceCheck(args []string, stdout, stderr io.Writer) int {
 		return fail(finalErr)
 	}
 	currentExecution, ok := currentRegistry.Execution(e.AssignmentID, workspace.RuntimeID(current.State), workspace.Generation(current.State))
-	compare := currentExecution
-	compare.ToolCheckReceipts = e.ToolCheckReceipts
-	compare.OwnedCheckReceipts = e.OwnedCheckReceipts
-	if !ok || !reflect.DeepEqual(compare, e) {
+	if !ok || currentExecution.AgentID != e.AgentID || currentExecution.Generation != e.Generation || currentExecution.Path != e.Path || currentExecution.Status != "ready" {
 		finalErr = fmt.Errorf("check execution changed while waiting")
 		return fail(finalErr)
 	}
+	// Execute the current responsibility's declared check rather than compare
+	// historical execution projections (which can contain obsolete digests).
+	e = currentExecution
 	currentLife, _ := current.State["lifecycle"].(map[string]any)
 	if currentLife["state"] != lifecycle["state"] {
 		finalErr = fmt.Errorf("check responsibility changed while waiting")
 		return fail(finalErr)
 	}
-	if currentLife["state"] == "bug_resolution" {
-		if _, err := repair.ResolveWorkspaceAuthority(*root, current.State, e.AssignmentID, e.AgentID); err != nil {
-			finalErr = err
-			return fail(err)
-		}
-	}
+
 	currentEntities, _ := current.State["entities"].(map[string]any)
 	currentAgents, _ := currentEntities["agents"].([]any)
 	active := false
@@ -166,7 +150,6 @@ func runWorkspaceCheck(args []string, stdout, stderr io.Writer) int {
 		return fail(finalErr)
 	}
 	b, e = currentRegistry, currentExecution
-	ctx = checkexec.WithReuseGuard(ctx, checkexec.ReuseGuard{Fresh: currentLife["state"] == "bug_resolution"})
 	if attempt != nil {
 		if err := attempt.Start(); err != nil {
 			finalErr = err
@@ -238,14 +221,8 @@ func acceptWorkspaceCheckReceipt(root string, execution workspace.Execution, own
 			return fmt.Errorf("tool receipt requires original workspace")
 		}
 		e, ok := b.Execution(execution.AssignmentID, workspace.RuntimeID(state), workspace.Generation(state))
-		if !ok || e.AgentID != execution.AgentID || e.Generation != execution.Generation || e.Path != execution.Path || e.Status != "ready" || e.BootstrapSHA256 != execution.BootstrapSHA256 {
+		if !ok || e.AgentID != execution.AgentID || e.Generation != execution.Generation || e.Path != execution.Path || e.Status != "ready" {
 			return fmt.Errorf("tool receipt execution changed before reception")
-		}
-		compare := e
-		compare.ToolCheckReceipts = execution.ToolCheckReceipts
-		compare.OwnedCheckReceipts = execution.OwnedCheckReceipts
-		if !reflect.DeepEqual(compare, execution) {
-			return fmt.Errorf("tool receipt original execution/Record projection changed before reception")
 		}
 		if err := b.ValidateExecution(context.Background(), e, false); err != nil {
 			return err
@@ -253,15 +230,8 @@ func acceptWorkspaceCheckReceipt(root string, execution workspace.Execution, own
 		if err := b.ValidateInputs(e); err != nil {
 			return err
 		}
-		if err := b.ValidateBootstrap(e); err != nil {
-			return err
-		}
 		lifecycle, _ := state["lifecycle"].(map[string]any)
-		if lifecycle["state"] == "bug_resolution" {
-			if _, err := repair.ResolveWorkspaceAuthority(root, state, e.AssignmentID, e.AgentID); err != nil {
-				return err
-			}
-		} else if lifecycle["state"] != "building" {
+		if lifecycle["state"] != "building" {
 			return fmt.Errorf("tool receipt responsibility is no longer executing")
 		}
 		entities, _ := state["entities"].(map[string]any)
@@ -307,18 +277,18 @@ func acceptWorkspaceCheckReceipt(root string, execution workspace.Execution, own
 		currentExecution := original.Executions[execution.AssignmentID]
 		if ownedIndex >= 0 {
 			for _, previous := range currentExecution.OwnedCheckReceipts {
-				if previous.Receipt.SHA256 != ref.SHA256 {
+				if previous.Receipt.Path != ref.Path {
 					continue
 				}
-				if previous.WorkerCheckIndex != ownedIndex || previous.Receipt != ref {
+				if previous.WorkerCheckIndex != ownedIndex || previous.Receipt.Binding != ref.Binding || previous.Receipt.Checkout != ref.Checkout || previous.Receipt.Command != ref.Command {
 					return fmt.Errorf("owned receipt replay differs from original captured reference")
 				}
 				registered = true
 			}
 		} else {
 			for _, previous := range currentExecution.ToolCheckReceipts {
-				if previous.SHA256 == ref.SHA256 {
-					if previous != ref {
+				if previous.Path == ref.Path {
+					if previous.Binding != ref.Binding || previous.Checkout != ref.Checkout || previous.Command != ref.Command {
 						return fmt.Errorf("tool receipt replay differs from original captured reference")
 					}
 					registered = true
@@ -332,13 +302,20 @@ func acceptWorkspaceCheckReceipt(root string, execution workspace.Execution, own
 		if registered {
 			return nil
 		}
-		key, transition, event, message := "tool-check:"+ref.SHA256, "WORKSPACE-CHECK", "workspace_check_received", "record actual tool receipt; no professional acceptance or gate PASS"
+		transition, event, message := "WORKSPACE-CHECK", "workspace_check_received", "record actual tool receipt; no professional acceptance or gate PASS"
+		operation, intent := "tool-check", domainEventToken(ref.Path)
 		if ownedIndex >= 0 {
-			key = fmt.Sprintf("owned-check:%d:%s", ownedIndex, ref.SHA256)
+			operation, intent = "owned-check", fmt.Sprintf("check%d", ownedIndex)
 			transition, event = "WORKSPACE-OWNED-CHECK", "workspace_owned_check_received"
 			message = "record actual frozen WorkerCheck receipt; no professional acceptance or gate PASS"
 		}
-		_, err = writer.Update(snap.Revision, runtime.Mutation{EventID: key, TransitionID: transition, Event: event, Actor: execution.AgentID, RuntimeID: execution.RuntimeID, IdempotencyKey: key, RetainLastTransition: true, ProducerResponsibility: "owned_check", OccurredAt: time.Now().UTC(), Message: message, Apply: func(state map[string]any) error {
+		// The responsibility is the Worker slot that produced the receipt; the
+		// intent is the exact captured receipt, or the frozen owner-run check
+		// index it belongs to. The replay guard above already refuses a second
+		// registration of the same receipt, so this intent key is stable and
+		// carries no Runtime write count (G18 §1.3).
+		eventID, idempotencyKey := workspaceEventIdentity(execution.RuntimeID, operation, execution.AssignmentID, execution.AgentID, execution.Generation, intent, "")
+		_, err = writer.Update(snap.Revision, runtime.Mutation{EventID: eventID, TransitionID: transition, Event: event, Actor: execution.AgentID, RuntimeID: execution.RuntimeID, IdempotencyKey: idempotencyKey, RetainLastTransition: true, ProducerResponsibility: "owned_check", OccurredAt: time.Now().UTC(), Message: message, Apply: func(state map[string]any) error {
 			return receive(state)
 		}})
 		if err == runtime.ErrStaleRevision {

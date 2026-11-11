@@ -30,7 +30,6 @@ func TestS5MethodsComeFromManifestAndPreserveIssuedPackets(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(root, "manifest.json"), data, 0600); err != nil {
 				t.Fatal(err)
 			}
-			base.Binding.AssignmentSHA = workpacket.Digest(data)
 			base, err = workpacket.BuildS5(base.Binding, base.Inputs)
 			if err != nil {
 				t.Fatal(err)

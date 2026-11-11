@@ -37,12 +37,6 @@ func TestValidateCanonicalThinPlanBindsRecordAndFrozenSources(t *testing.T) {
 			},
 		},
 		{
-			name: "wrong digest",
-			change: func(_ *canonicalFixture, message map[string]any) {
-				message["assignment_record_sha256"] = hashBytes([]byte("another Record"))
-			},
-		},
-		{
 			name:  "wrong owner",
 			owner: "agent-s6-other",
 			change: func(_ *canonicalFixture, message map[string]any) {
@@ -68,6 +62,15 @@ func TestValidateCanonicalThinPlanBindsRecordAndFrozenSources(t *testing.T) {
 			},
 		},
 	}
+	withoutDigest := cloneMap(t, fixture.message)
+	delete(withoutDigest, "assignment_record_sha256")
+	if err := fixture.validate(t, withoutDigest); err != nil {
+		t.Fatalf("original plan without a digest was rejected: %v", err)
+	}
+	withoutDigest["assignment_record_sha256"] = hashBytes([]byte("old historical value"))
+	if err := fixture.validate(t, withoutDigest); err != nil {
+		t.Fatalf("historical digest unexpectedly became a plan qualification: %v", err)
+	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			fixture := newCanonicalFixture(t)
@@ -83,13 +86,13 @@ func TestValidateCanonicalThinPlanBindsRecordAndFrozenSources(t *testing.T) {
 		})
 	}
 
-	t.Run("frozen TASK source drift", func(t *testing.T) {
+	t.Run("changed TASK bytes do not create a digest admission gate", func(t *testing.T) {
 		fixture := newCanonicalFixture(t)
 		if err := os.WriteFile(filepath.Join(fixture.root, filepath.FromSlash(fixture.record.Task.Ref)), []byte("changed after registration"), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		if err := fixture.validate(t, fixture.message); err == nil {
-			t.Fatal("changed frozen TASK source unexpectedly passed canonical validation")
+		if err := fixture.validate(t, fixture.message); err != nil {
+			t.Fatalf("original PLAN was rejected by historical source digest: %v", err)
 		}
 	})
 
@@ -205,7 +208,7 @@ func newCanonicalFixtureConfigured(t *testing.T, withClosing bool) *canonicalFix
 	taskBytes := []byte("# TASK-042-01\n\n> Version: v1.0.0\n\nImplement the scoped change.\n")
 	roleBytes := []byte("backend-builder role source used by this test\n")
 	skillBytes := []byte("backend engineering skill source used by this test\n")
-	taskSHA, roleSHA, skillSHA := hashBytes(taskBytes), hashBytes(roleBytes), hashBytes(skillBytes)
+	taskSHA := hashBytes(taskBytes)
 	manifestAssignment := map[string]any{
 		"assignment_id": assignmentID, "responsibility_id": "BUILD-WORK-PACKAGE", "role_family": "backend-builder",
 		"agent_id": agentID, "agent_definition_ref": roleRef, "skill_refs": []string{"backend-engineering"},
@@ -265,8 +268,8 @@ func newCanonicalFixtureConfigured(t *testing.T, withClosing bool) *canonicalFix
 	record, err := assignmentrecord.BuildRecord(
 		manifestBytes, manifestRef, state, taskBytes, taskID, assignmentID, []string{"internal/"},
 		[]assignmentrecord.ContextSource{
-			{Kind: "agent_definition", Ref: roleRef, ID: "backend-builder", SHA256: roleSHA},
-			{Kind: "authorized_skill", Ref: skillRef, ID: "backend-engineering", Version: "1.0.0", SHA256: skillSHA},
+			{Kind: "agent_definition", Ref: roleRef, ID: "backend-builder"},
+			{Kind: "authorized_skill", Ref: skillRef, ID: "backend-engineering", Version: "1.0.0"},
 		},
 	)
 	if err != nil {
@@ -285,10 +288,6 @@ func newCanonicalFixtureConfigured(t *testing.T, withClosing bool) *canonicalFix
 	} {
 		writeRootFile(t, root, ref, data)
 	}
-	digest, err := record.Digest()
-	if err != nil {
-		t.Fatalf("Record digest: %v", err)
-	}
 	assertionCheck := map[string]any{"assertion": "the assigned behavior is implemented", "oracle": "the required check passes"}
 	if withClosing {
 		assertionCheck["done_when_indexes"] = []int{0}
@@ -298,11 +297,11 @@ func newCanonicalFixtureConfigured(t *testing.T, withClosing bool) *canonicalFix
 		"correlation_id": "corr-s6-plancheck-01", "runtime_id": runtimeID, "agent_id": agentID,
 		"agent_definition_ref": roleRef, "task_id": taskID, "bug_id": nil, "team_id": teamID,
 		"occurred_at": "2026-10-14T00:00:00Z", "assignment_id": assignmentID, "assignment_revision": record.Revision,
-		"assignment_record_contract": assignmentrecord.AssignmentRecordContract, "assignment_record_sha256": digest,
-		"objective":        "Implement the reviewed bounded builder responsibility.",
-		"planned_paths":    []string{"internal/pkg/handler.go"},
-		"assertion_checks": []any{assertionCheck},
-		"dependencies":     []string{}, "risks_blockers": []string{},
+		"assignment_record_contract": assignmentrecord.AssignmentRecordContract,
+		"objective":                  "Implement the reviewed bounded builder responsibility.",
+		"planned_paths":              []string{"internal/pkg/handler.go"},
+		"assertion_checks":           []any{assertionCheck},
+		"dependencies":               []string{}, "risks_blockers": []string{},
 	}
 	return &canonicalFixture{root: root, snapshot: runtimemeta.Snapshot{Revision: record.RegistrationRevision, State: state}, manifestBytes: manifestBytes, record: record, message: message}
 }

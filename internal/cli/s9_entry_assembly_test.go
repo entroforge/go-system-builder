@@ -13,7 +13,7 @@ import (
 // Promoted from the independent handoff review counterexample. Check the
 // assembled entry, since an isolated dispatch projection cannot expose this bug.
 func TestHandoffReviewMainProgressMustNotRepeatSamePreparation(t *testing.T) {
-	root, _, _, _, _ := s9HandoffMissingCandidate(t)
+	root, worker, plan, _, _ := s9HandoffMissingCandidate(t)
 	snap := repairDispatchSnapshot(t, root)
 	before := repairDispatchRuntimeBytes(t, root)
 	request := policy.Input{Event: "PreToolUse", AgentID: "Main", CWD: root, Context: context.Background()}
@@ -23,13 +23,16 @@ func TestHandoffReviewMainProgressMustNotRepeatSamePreparation(t *testing.T) {
 	} {
 		for _, want := range []string{
 			"S9 execution preparation uses the same Builder division answer:",
-			"S9 local evidence source gap",
+			// The original Result is still not submitted, so the original
+			// consumer reports that exact pending boundary (L3-S9 §6.2). The
+			// removed local-evidence source gap is not a reception condition.
+			"Result is not submitted or is unfinished",
 		} {
 			if count := strings.Count(got, want); count != 1 {
 				t.Errorf("Main entry must display original preparation/concrete failure once: %q count=%d; context=%s", want, count, got)
 			}
 		}
-		if !strings.Contains(got, "missing-handoff.txt") {
+		if !strings.Contains(got, filepath.Join(worker, nativeS9TestResultPath(t, root, plan))) {
 			t.Errorf("Main lost the exact failed source: %s", got)
 		}
 	}
@@ -75,7 +78,7 @@ func TestS9EntryAssemblyPreservesParallelResponsibilitiesAndWorker(t *testing.T)
 }
 
 func TestS9EntryAssemblyPreservesNewPlanFailureAndOriginalStopFailure(t *testing.T) {
-	root, _, _, _, _ := s9HandoffMissingCandidate(t)
+	root, worker, plan, _, _ := s9HandoffMissingCandidate(t)
 	snap := repairDispatchSnapshot(t, root)
 	path := resolveRootPath(root, stringValue(repairPointerCLI(snap.State)["plan_ref"]))
 	if err := os.WriteFile(path, []byte("x-new-plan-read-failure"), 0o600); err != nil {
@@ -84,16 +87,47 @@ func TestS9EntryAssemblyPreservesNewPlanFailureAndOriginalStopFailure(t *testing
 	before := repairDispatchRuntimeBytes(t, root)
 	got := currentQuestionnaireLifecycleContext(root, policy.Input{Event: "PreToolUse", AgentID: "Main", CWD: root})
 	for _, want := range []string{
+		// The S9 repairing phase owns the Builder division only. The
+		// independent verifier division is not current there
+		// (repairVerifierDispatchCurrent admits planning, reproducing and
+		// targeted_reverification), so the read failure Main must report is
+		// the execution preparation one. The verifier division's own "could
+		// not read the original Plan:" wording is structurally unreachable in
+		// this state and must not be asserted.
 		"cannot read the original Plan:",
 		"invalid character 'x' looking for beginning of value",
-		"S9 local evidence source gap",
+		"Result is not submitted or is unfinished",
 	} {
-		if count := strings.Count(got, want); count != 1 {
-			t.Errorf("new/current and original failures must each survive once: %q count=%d: %s", want, count, got)
+		// Every original division that read the same corrupted Plan carries
+		// the concrete read error, so each failure identity must survive at
+		// least once instead of exactly once.
+		if count := strings.Count(got, want); count < 1 {
+			t.Errorf("new/current and original failures must each survive: %q count=%d: %s", want, count, got)
 		}
 	}
-	if !strings.Contains(got, "missing-handoff.txt") {
+	if !strings.Contains(got, filepath.Join(worker, nativeS9TestResultPath(t, root, plan))) {
 		t.Errorf("new Plan read failure erased the exact original failed source: %s", got)
+	}
+	// The unreadable Plan must not be masked by the preparation success
+	// path: Main must not present the dispatch answer as prepared.
+	if strings.Contains(got, "S9 execution preparation uses the same Builder division answer:") {
+		t.Errorf("unreadable original Plan was masked by the preparation success path: %s", got)
+	}
+	// The independent verifier division is not current in the repairing
+	// phase, so Main must not present a division dispatch context it does
+	// not own. Both the prepared-division wording and the failed-division
+	// wording name that division, and neither may appear here.
+	if strings.Contains(got, "independent verifier division") {
+		t.Errorf("Main presented a division that is not current in the repairing phase: %s", got)
+	}
+	// The exact questionnaire Main is supposed to prepare stays named next
+	// to the read failure, so the reader knows which file is blocked.
+	if paths := repairDispatchPaths(root, snap.State); len(paths) == 1 && !strings.Contains(got, paths[0]) {
+		t.Errorf("read failure lost the exact dispatch answer path: %s", got)
+	}
+	// Nothing rewrote the unreadable Plan behind Main's back.
+	if data, err := os.ReadFile(path); err != nil || string(data) != "x-new-plan-read-failure" {
+		t.Errorf("the unreadable original Plan was rewritten: %v %q", err, string(data))
 	}
 	repairDispatchAssertUnchanged(t, root, before)
 }

@@ -1,9 +1,12 @@
 package review
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/entroforge/go-system-builder/internal/reviewmeta"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -11,7 +14,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/entroforge/go-system-builder/internal/metrics"
 	loopruntime "github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/schema"
 	"github.com/entroforge/go-system-builder/internal/semantic"
@@ -21,8 +23,8 @@ import (
 // supplement.go implements the FindingSupplement append path (L3-S7 §3.6,
 // L3-S8 §2.2). Findings are immutable: a supplement is a new first-class
 // artifact authored by the original finder that hangs under
-// supplements_finding_id with its own content hash. It never rewrites the
-// Finding, never touches the sealed ObservationBatch finding_ids exact set,
+// supplements_finding_id. It never rewrites the
+// Finding,
 // and never carries root cause / repair content.
 //
 // Storage: the supplement index rows live in the main runtime state at
@@ -31,60 +33,31 @@ import (
 // registers the supplement's evidence entry. The artifact bytes live under
 // .claude/evidence/<runtime>/g<gen>/ next to the findings they extend.
 //
-// Legacy migration: the first append after the schema opened migrates any
-// pre-existing rows from the retired control-plane document
-// .claude/review/finding-supplements.json into entities.finding_supplements
-// (idempotent by supplement_id) and deletes the legacy file, so the main
-// state becomes the single supplement authority.
-
-const supplementIndexRelativePath = ".claude/review/finding-supplements.json"
-
-// SupplementRequest drives `runtime finding-supplement`.
+// SupplementRequest describes an original finding observation.
 type SupplementRequest struct {
-	// ExpectedRevision is an optional explicit assertion for integrations or
-	// recovery tooling. Normal stage callers leave it negative and the Writer
-	// commits against the current locked Runtime snapshot.
 	ExpectedRevision int
 	FindingID        string
 	FilePath         string
-	// AuthorAgentID is supplied only by an existing, accurately bound caller.
-	// The explicit compatibility CLI retains its attribution declaration;
-	// selecting a Finding never proves who made a new observation.
-	AuthorAgentID string
-	// AuthorizedBy records the scheduler identity that appointed a replacement
-	// finder when Author != the Finding's original_finder (L3-S8 §2.2: the
-	// original Agent may be unreachable; S8 never treats that as losing the
-	// symptom). Empty means "must be the original finder".
-	AuthorizedBy string
-	// InRoundNote declares the S7 in-round exemption from the discriminator
-	// gate (L3-S7 §14.1): the original finder proactively adds an observation
-	// inside the open round rather than answering an S8 discriminator-bound
-	// follow-up request. Exempt supplements must not carry hypothesis_id.
-	InRoundNote bool
-	OccurredAt  time.Time
+	AuthorAgentID    string
+	AuthorizedBy     string
+	InRoundNote      bool
+	OccurredAt       time.Time
 }
 
-// SupplementReceipt summarizes one committed supplement append.
 type SupplementReceipt struct {
 	SupplementID string
 	FindingID    string
 	Path         string
-	SHA256       string
-	// Revision is the commit revision on first reception, or the current
-	// read-only snapshot containing the same original accepted supplement.
-	Revision int
+	Revision     int
 }
 
-// SupplementRow is one index row: the control-plane pointer to a persisted
-// supplement artifact. Rows are append-only and never mutated.
 type SupplementRow struct {
 	SupplementID         string `json:"supplement_id"`
 	SupplementsFindingID string `json:"supplements_finding_id"`
 	Author               string `json:"author"`
 	AuthorizedBy         string `json:"authorized_by,omitempty"`
 	Path                 string `json:"path"`
-	SHA256               string `json:"sha256"`
-	ReviewRound          int    `json:"review_round"`
+	ReviewPlanID         string `json:"review_plan_id,omitempty"`
 	BaselineGeneration   int    `json:"baseline_generation"`
 	HypothesisID         string `json:"hypothesis_id,omitempty"`
 	Discriminator        string `json:"discriminator,omitempty"`
@@ -92,18 +65,9 @@ type SupplementRow struct {
 	AppendedAt           string `json:"appended_at"`
 }
 
-// supplementIndex is the retired control-plane document shape, kept only to
-// read and migrate legacy .claude/review/finding-supplements.json files.
-type supplementIndex struct {
-	SchemaVersion string          `json:"schema_version"`
-	RuntimeID     string          `json:"runtime_id"`
-	Revision      int             `json:"revision"`
-	Supplements   []SupplementRow `json:"supplements"`
-}
-
 // SubmitSupplement validates and appends one FindingSupplement:
 //
-//  1. schema-validates the document and verifies its independent content hash;
+//  1. schema-validates the original professional document;
 //  2. enforces the discriminator gate (L3-S7 §14.1, L3-S8 §2.2): S8 follow-up
 //     observations carry hypothesis_id + discriminator + expected_outcomes,
 //     S7 in-round notes are declared via --in-round-note and carry none;
@@ -112,9 +76,31 @@ type supplementIndex struct {
 //     scheduler-authorized replacement (--authorized-by, L3-S8 §2.2);
 //  5. persists the artifact under the evidence tree and appends one immutable
 //     entities.finding_supplements row plus the finding_supplement evidence
-//     entry in one Writer transaction — the Finding and any sealed
-//     ObservationBatch are never modified.
+//     entry in one Writer transaction — the original Finding is never modified.
 func SubmitSupplement(root, statePath, journalPath string, request SupplementRequest) (SupplementReceipt, error) {
+	for {
+		receipt, err := submitSupplementOnce(root, statePath, journalPath, request)
+		if !errors.Is(err, loopruntime.ErrStaleRevision) {
+			return receipt, err
+		}
+		// The Runtime write count never qualifies this professional append
+		// (L4-revision-usage.md §4/§8, G18 §3.1). Another Writer committed
+		// after our observation; re-read its actual original responsibility and
+		// retry internally. The append's own protection is the three-piece
+		// proof: the received row (the appended supplement record), the
+		// journal-level dedup of evt-finding-supplement-<id>, and the
+		// object's own version (the Finding's review identity and baseline
+		// generation). The staged file is left untouched because ownership was
+		// not committed.
+		//
+		// The retry drops the caller's stale counter so it re-reads the actual
+		// original responsibility instead of repeating a binding that already
+		// moved (L4-revision-usage.md §4).
+		request.ExpectedRevision = -1
+	}
+}
+
+func submitSupplementOnce(root, statePath, journalPath string, request SupplementRequest) (SupplementReceipt, error) {
 	if strings.TrimSpace(request.FindingID) == "" || strings.TrimSpace(request.FilePath) == "" {
 		return SupplementReceipt{}, fmt.Errorf("--finding and --file are required")
 	}
@@ -122,9 +108,6 @@ func SubmitSupplement(root, statePath, journalPath string, request SupplementReq
 	if err != nil {
 		return SupplementReceipt{}, fmt.Errorf("read FindingSupplement: %w", err)
 	}
-	var originalInput map[string]json.RawMessage
-	_ = json.Unmarshal(data, &originalInput)
-	_, explicitArtifact := originalInput["hash"]
 	stateData, err := os.ReadFile(statePath)
 	if err != nil {
 		return SupplementReceipt{}, fmt.Errorf("read runtime: %w", err)
@@ -156,32 +139,22 @@ func SubmitSupplement(root, statePath, journalPath string, request SupplementReq
 	if supplement.SupplementsFindingID != request.FindingID {
 		return SupplementReceipt{}, fmt.Errorf("FindingSupplement supplements_finding_id %s does not match --finding %s", supplement.SupplementsFindingID, request.FindingID)
 	}
-	if err := verifySupplementHash(data, supplement.Hash); err != nil {
-		return SupplementReceipt{}, err
-	}
-
-	round := currentReviewRound(current)
-	if round < 1 {
-		return SupplementReceipt{}, fmt.Errorf("no active review round; supplements attach to current-round Findings")
-	}
 	findingRow := findFindingRow(current, request.FindingID)
 	if findingRow == nil {
 		return SupplementReceipt{}, fmt.Errorf("finding %s is not registered; supplements extend an existing immutable Finding, they never create one", request.FindingID)
 	}
-	if findingRound := intField(findingRow["review_round"]); findingRound != round {
-		return SupplementReceipt{}, fmt.Errorf("finding %s belongs to review round %d but the runtime is at round %d", request.FindingID, findingRound, round)
+	if reviewmeta.CompareIdentity(rowReviewIdentity(findingRow), activeReviewIdentity(current)) == reviewmeta.Different {
+		return SupplementReceipt{}, fmt.Errorf("finding %s belongs to a different review plan", request.FindingID)
 	}
 	originalFinder := stringField(findingRow["original_finder"])
 	if supplement.Author != originalFinder && strings.TrimSpace(request.AuthorizedBy) == "" {
 		return SupplementReceipt{}, fmt.Errorf("supplement author %s is not the original finder %s; a replacement finder requires --authorized-by <scheduler identity> (L3-S8 §2.2)", supplement.Author, originalFinder)
 	}
-	if !explicitArtifact {
-		for _, row := range supplementRowsFromState(current) {
-			if row.SupplementID == supplement.SupplementID {
-				// prepareSupplementInput has verified the original bytes,
-				// professional content and frozen evidence. No new event or time.
-				return SupplementReceipt{SupplementID: row.SupplementID, FindingID: row.SupplementsFindingID, Path: row.Path, SHA256: row.SHA256, Revision: intField(current["revision"])}, nil
-			}
+	for _, row := range supplementRowsFromState(current) {
+		if row.SupplementID == supplement.SupplementID {
+			// prepareSupplementInput identified the same accepted professional
+			// expression for this original responsibility; no new event is needed.
+			return SupplementReceipt{SupplementID: row.SupplementID, FindingID: row.SupplementsFindingID, Path: row.Path, Revision: intField(current["revision"])}, nil
 		}
 	}
 
@@ -191,8 +164,6 @@ func SubmitSupplement(root, statePath, journalPath string, request SupplementReq
 	}
 	runtimeID, _ := current["runtime_id"].(string)
 	generation := baselineGeneration(current)
-	revision := intField(current["revision"])
-
 	// Compute the immutable target before the CAS. Duplicate checks must happen
 	// before any filesystem mutation; otherwise a retry reports an artifact
 	// collision instead of the domain-level duplicate and can leave misleading
@@ -202,16 +173,6 @@ func SubmitSupplement(root, statePath, journalPath string, request SupplementReq
 		"finding-supplements", supplement.SupplementID+".json"))
 	supplementBytes := append(canonicalJSON(data), '\n')
 
-	// Legacy migration source: rows from the retired control-plane index are
-	// merged into entities.finding_supplements by the same transaction.
-	legacy, legacyExists, err := readSupplementIndex(root)
-	if err != nil {
-		return SupplementReceipt{}, err
-	}
-	if legacyExists && legacy.RuntimeID != "" && legacy.RuntimeID != runtimeID {
-		return SupplementReceipt{}, fmt.Errorf("legacy supplement index %s belongs to runtime %s; the active runtime is %s — archive or remove the stale index before appending supplements", supplementIndexRelativePath, legacy.RuntimeID, runtimeID)
-	}
-
 	// Fail fast on obvious duplicates; the CAS Apply re-checks against the
 	// authoritative candidate state.
 	for _, existing := range supplementRowsFromState(current) {
@@ -219,27 +180,19 @@ func SubmitSupplement(root, statePath, journalPath string, request SupplementReq
 			return SupplementReceipt{}, fmt.Errorf("supplement %s is already appended to finding %s; supplements are immutable — use a new supplement_id", supplement.SupplementID, existing.SupplementsFindingID)
 		}
 	}
-	if legacyExists {
-		for _, existing := range legacy.Supplements {
-			if existing.SupplementID == supplement.SupplementID {
-				return SupplementReceipt{}, fmt.Errorf("supplement %s is already appended to finding %s (legacy supplement index); supplements are immutable — use a new supplement_id", supplement.SupplementID, existing.SupplementsFindingID)
-			}
-		}
-	}
-	// Persist only after all deterministic duplicate and legacy checks pass;
+	// Persist only after the current responsibility duplicate checks pass;
 	// writeArtifact itself also refuses overwrite as the final race guard.
-	if err := writeArtifact(root, supplementRel, supplementBytes); err != nil {
+	supplementRel, err = publishSupplementArtifact(root, supplementRel, supplementBytes)
+	if err != nil {
 		return SupplementReceipt{}, err
 	}
-	supplementSHA := sha256Of(supplementBytes)
 	row := SupplementRow{
 		SupplementID:         supplement.SupplementID,
 		SupplementsFindingID: request.FindingID,
 		Author:               supplement.Author,
 		AuthorizedBy:         strings.TrimSpace(request.AuthorizedBy),
 		Path:                 supplementRel,
-		SHA256:               supplementSHA,
-		ReviewRound:          round,
+		ReviewPlanID:         activeReviewIdentity(current).PlanID,
 		BaselineGeneration:   generation,
 		HypothesisID:         supplement.HypothesisID,
 		Discriminator:        supplement.Discriminator,
@@ -253,67 +206,41 @@ func SubmitSupplement(root, statePath, journalPath string, request SupplementReq
 
 	store := loopruntime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{})
 	expectedRevision := request.ExpectedRevision
-	// Zero was the implicit value before SupplementRequest exposed the
-	// optional assertion. Active review rounds are already beyond bootstrap,
-	// so retain source compatibility for callers that omit the field.
-	if expectedRevision <= 0 {
-		expectedRevision = -1
+	// A negative expected revision is the omission marker: the caller did not
+	// assert a Runtime revision. A non-negative value is a concrete binding
+	// and keeps the store's own CAS semantics (L4-revision-usage.md §4, §10.2),
+	// so Go's zero value means "the Runtime is at revision 0" rather than "no
+	// assertion". Callers that mean "omitted" pass a negative value.
+	if expectedRevision < 0 {
+		// The internal CAS ties the generated identity and staged path to the
+		// state used to prepare them; it is not an author-supplied condition.
+		expectedRevision = intField(current["revision"])
 	}
-	commitRevision := currentCommitRevision(expectedRevision, current)
 	snapshot, err := updateRuntime(store, expectedRevision, loopruntime.Mutation{
-		EventID:        fmt.Sprintf("evt-finding-supplement-%s-r%d", supplement.SupplementID, commitRevision+1),
+		EventID:        findingSupplementEventID(supplement.SupplementID),
 		TransitionID:   "FINDING-SUPPLEMENT",
 		Event:          "finding_supplement_appended",
 		Actor:          "orchestrator",
-		IdempotencyKey: fmt.Sprintf("runtime:finding-supplement:%s:%d", supplement.SupplementID, commitRevision),
+		IdempotencyKey: findingSupplementIdempotencyKey(supplement.SupplementID),
 		RuntimeID:      runtimeID,
 		From:           cursor,
 		To:             cursor,
 		EvidenceIDs:    []string{supplement.SupplementID},
-		Message: fmt.Sprintf("Appended FindingSupplement %s to immutable Finding %s (round %d)",
-			supplement.SupplementID, request.FindingID, round),
-		OccurredAt: occurredAt,
+		Message:        fmt.Sprintf("Appended FindingSupplement %s to immutable Finding %s", supplement.SupplementID, request.FindingID),
+		OccurredAt:     occurredAt,
 		Apply: func(state map[string]any) error {
-			legacyRows := []SupplementRow(nil)
-			if legacyExists {
-				legacyRows = legacy.Supplements
-			}
-			return applySupplement(state, legacyRows, row, lens, occurredAt)
+			return applySupplement(state, row, lens, occurredAt)
 		},
 	})
 	if err != nil {
-		// The artifact is staged before the Writer commit. Remove it only when
-		// the failed operation left no pending marker, the Runtime is still the
-		// pre-commit revision, and no state path points at it.
-		cleanupStore := loopruntime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{})
-		if _, cleanupErr := cleanupStore.RemoveUnreferencedArtifact(loopruntime.ArtifactCleanupRequest{
-			ExpectedRevision: revision,
-			ArtifactPath:     supplementRel,
-			ArtifactSHA256:   supplementSHA,
-			ReferencedPaths:  supplementStateArtifactPaths(current),
-		}); cleanupErr != nil {
-			return SupplementReceipt{}, fmt.Errorf("finding supplement append failed and staged artifact cleanup was inconclusive: %w (original: %v)", cleanupErr, err)
-		}
+		// A staged file without a committed reference has unknown ownership;
+		// leave it intact rather than granting deletion using a digest.
 		return SupplementReceipt{}, err
-	}
-	// The main state now carries the rows; retire the legacy control-plane
-	// document so it cannot diverge. A missing file is fine (concurrent
-	// submits migrate the same content idempotently).
-	if legacyExists {
-		if err := os.Remove(supplementIndexPath(root)); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return SupplementReceipt{}, fmt.Errorf("retire legacy supplement index: %w", err)
-		}
-	}
-	// Round shape gauges (L3-S7 §14.2) are idempotent; the finding's existence
-	// implies a registered plan, but stay defensive.
-	if plan, ptr, planErr := LoadPlan(root, current); planErr == nil {
-		_ = metrics.RecordS7RoundShape(root, round, len(plan.Assignments), len(plan.Claims), ptr.Revision)
 	}
 	return SupplementReceipt{
 		SupplementID: supplement.SupplementID,
 		FindingID:    request.FindingID,
 		Path:         supplementRel,
-		SHA256:       supplementSHA,
 		Revision:     snapshot.Revision,
 	}, nil
 }
@@ -321,7 +248,8 @@ func SubmitSupplement(root, statePath, journalPath string, request SupplementReq
 // prepareSupplementInput adapts professional observations into the original
 // persisted artifact. It neither issues another questionnaire nor attributes
 // a new observation to the old finder without a real caller/declaration.
-// Explicit legacy artifacts retain their original hash validation unchanged.
+// Historical machine metadata is ignored in memory; the author's file is
+// never rewritten.
 func prepareSupplementInput(root string, state map[string]any, request SupplementRequest, data []byte) ([]byte, error) {
 	if err := workpacket.ValidateUniqueJSON(data); err != nil {
 		return nil, fmt.Errorf("FindingSupplement JSON: %w", err)
@@ -335,12 +263,6 @@ func prepareSupplementInput(root string, state map[string]any, request Supplemen
 			return nil, fmt.Errorf("FindingSupplement author differs from the original bound caller")
 		}
 	}
-	// A complete historical artifact is already fixed. Do not rewrite its
-	// timestamps, hash or evidence to the current filesystem.
-	_, hasHash := input["hash"]
-	if hasHash {
-		return data, nil
-	}
 	if _, ok := input["schema_version"]; !ok {
 		input["schema_version"] = "1.0.0"
 	}
@@ -353,75 +275,49 @@ func prepareSupplementInput(root string, state map[string]any, request Supplemen
 	if strings.TrimSpace(stringField(input["author"])) == "" {
 		return nil, fmt.Errorf("FindingSupplement has no actual author attribution: restore the original caller context; the explicit compatibility entry requires who made this new observation, not SHA, timestamps or a canonical envelope")
 	}
-	// Identify the professional observation before reading mutable evidence.
-	// A retry must resolve the original object, not sign today's bytes into a
-	// different identity or manufacture another observation after source drift.
-	if _, ok := input["supplement_id"]; !ok {
-		identity, err := json.Marshal(map[string]any{"runtime_id": state["runtime_id"], "generation": baselineGeneration(state), "round": currentReviewRound(state), "finding_id": request.FindingID, "observation": input})
-		if err != nil {
-			return nil, err
-		}
-		input["supplement_id"] = "supplement-" + sha256Of(identity)[:32]
-	}
-	for _, row := range supplementRowsFromState(state) {
-		if row.SupplementID != input["supplement_id"] {
+	// Compare only this author's most recent accepted observation for the same
+	// Finding, unless the author explicitly names an existing supplement. The
+	// saved expression is used to recognize a replay, not to authenticate it.
+	explicitID, _ := input["supplement_id"].(string)
+	rows := supplementRowsFromState(state)
+	for i := len(rows) - 1; i >= 0; i-- {
+		row := rows[i]
+		if explicitID != "" && row.SupplementID != explicitID {
 			continue
 		}
-		if row.SupplementsFindingID != request.FindingID || row.Author != input["author"] || row.ReviewRound != currentReviewRound(state) || row.BaselineGeneration != baselineGeneration(state) {
-			return nil, fmt.Errorf("FindingSupplement original responsibility differs from current professional input")
+		if explicitID == "" && (row.SupplementsFindingID != request.FindingID || row.Author != input["author"]) {
+			continue
+		}
+		if row.SupplementsFindingID != request.FindingID || row.Author != input["author"] || reviewmeta.CompareIdentity(reviewmeta.ArtifactIdentity(row.ReviewPlanID), activeReviewIdentity(state)) == reviewmeta.Different || row.BaselineGeneration != baselineGeneration(state) {
+			if explicitID != "" {
+				return nil, fmt.Errorf("FindingSupplement original responsibility differs from current professional input")
+			}
+			continue
 		}
 		saved, err := workpacket.ReadFile(root, row.Path, resultReceiptReadLimit)
-		if err != nil || sha256Of(saved) != row.SHA256 {
-			return nil, fmt.Errorf("FindingSupplement original immutable artifact %s is missing or changed: %v", row.Path, err)
-		}
-		if err := schema.NewValidator(root).ValidateBytes("finding-supplement.schema.json", saved); err != nil {
-			return nil, err
+		if err != nil {
+			if explicitID != "" {
+				return nil, fmt.Errorf("FindingSupplement original expression %s is unavailable: %w", row.Path, err)
+			}
+			break
 		}
 		var accepted map[string]any
 		if err := json.Unmarshal(saved, &accepted); err != nil {
-			return nil, err
-		}
-		if err := verifySupplementHash(saved, stringField(accepted["hash"])); err != nil {
-			return nil, err
+			if explicitID != "" {
+				return nil, fmt.Errorf("decode original FindingSupplement: %w", err)
+			}
+			break
 		}
 		if !sameSupplementProfessionalInput(input, accepted) {
-			return nil, fmt.Errorf("FindingSupplement original professional input differs; an accepted supplement is immutable")
-		}
-		var refs []string
-		if value, ok := accepted["evidence_refs"]; ok {
-			data, _ := json.Marshal(value)
-			if err := json.Unmarshal(data, &refs); err != nil {
-				return nil, err
+			if explicitID != "" {
+				return nil, fmt.Errorf("FindingSupplement ID belongs to a different original expression")
 			}
+			break
 		}
-		if err := validateEvidenceRefs(root, state, refs, "original FindingSupplement"); err != nil {
-			return nil, err
-		}
-		return saved, nil
+		return json.Marshal(accepted)
 	}
-	// Freeze local observations in the original reception, without changing
-	// the authoring file or refreshing an existing complete artifact.
-	if raw, ok := input["evidence_refs"]; ok {
-		refs, err := json.Marshal(raw)
-		if err != nil {
-			return nil, err
-		}
-		var values []string
-		if err := json.Unmarshal(refs, &values); err != nil {
-			return nil, fmt.Errorf("FindingSupplement evidence_refs: %w", err)
-		}
-		result := Result{Findings: []Finding{{EvidenceRefs: values}}}
-		capturePath := ""
-		if finding := findFindingRow(state, request.FindingID); stringField(finding["assignment_id"]) != "" {
-			capturePath = CaptureFile(root, stringField(state["runtime_id"]), baselineGeneration(state), stringField(finding["assignment_id"]))
-		}
-		if err := bindIssuedPathEvidence(root, root, nil, &result, false, capturePath); err != nil {
-			return nil, err
-		}
-		if err := validateEvidenceRefs(root, state, result.Findings[0].EvidenceRefs, "FindingSupplement"); err != nil {
-			return nil, err
-		}
-		input["evidence_refs"] = result.Findings[0].EvidenceRefs
+	if explicitID == "" {
+		input["supplement_id"] = generatedSupplementID(state, request.FindingID, input)
 	}
 	if _, ok := input["created_at"]; !ok {
 		now := request.OccurredAt
@@ -430,20 +326,101 @@ func prepareSupplementInput(root string, state map[string]any, request Supplemen
 		}
 		input["created_at"] = now.UTC().Format(time.RFC3339Nano)
 	}
-	canonical, err := json.Marshal(input)
-	if err != nil {
-		return nil, err
-	}
-	hash, err := supplementContentHash(canonical)
-	if err != nil {
-		return nil, err
-	}
-	input["hash"] = hash
 	return json.Marshal(input)
+}
+
+// findingSupplementEventID names the append of one FindingSupplement by the
+// supplement identity itself. A supplement is immutable and appended once, so
+// its identity is the event identity; the Runtime write count is never part of
+// it (G18 §1.1).
+func findingSupplementEventID(supplementID string) string {
+	if strings.TrimSpace(supplementID) == "" {
+		return ""
+	}
+	return "evt-finding-supplement-" + supplementID
+}
+
+// findingSupplementIdempotencyKey names the append intent: the supplement
+// identity is the responsibility coordinate and the intent key of this
+// observation (G18 §1.3).
+func findingSupplementIdempotencyKey(supplementID string) string {
+	if strings.TrimSpace(supplementID) == "" {
+		return ""
+	}
+	return "runtime:finding-supplement:" + supplementID
+}
+
+// generatedSupplementID names a supplement the author did not name. The
+// baseline generation, the Finding it extends and the accepted observation are
+// domain facts; the Runtime write count is not part of the identity
+// (G18 §1.1, §1.2). The same observation therefore keeps one identity, and
+// two different observations of the same Finding never collide.
+func generatedSupplementID(state map[string]any, findingID string, input map[string]any) string {
+	identity := map[string]any{"finding_id": findingID}
+	for key, value := range input {
+		switch key {
+		case "supplement_id", "schema_version", "created_at":
+			continue
+		}
+		identity[key] = value
+	}
+	encoded, err := json.Marshal(identity)
+	if err != nil {
+		encoded = []byte(findingID)
+	}
+	digest := sha256.Sum256(encoded)
+	return fmt.Sprintf("supplement-g%d-%s", baselineGeneration(state), hex.EncodeToString(digest[:8]))
+}
+
+// publishSupplementArtifact only claims an empty path. Unknown existing files
+// are neither read nor overwritten; the Writer records the chosen actual path.
+func publishSupplementArtifact(root, relative string, data []byte) (string, error) {
+	ext := filepath.Ext(relative)
+	base := strings.TrimSuffix(relative, ext)
+	for suffix := 0; ; suffix++ {
+		candidate := relative
+		if suffix > 0 {
+			candidate = fmt.Sprintf("%s-%d%s", base, suffix, ext)
+		}
+		abs, err := repositoryContainedPath(root, candidate)
+		if err != nil {
+			return "", err
+		}
+		if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+			return "", err
+		}
+		file, err := os.OpenFile(abs, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+		if errors.Is(err, os.ErrExist) {
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+		if _, err = file.Write(data); err != nil {
+			_ = file.Close()
+			_ = os.Remove(abs)
+			return "", err
+		}
+		if err = file.Sync(); err != nil {
+			_ = file.Close()
+			return "", err
+		}
+		if err = file.Close(); err != nil {
+			return "", err
+		}
+		if err = loopruntime.SyncDirectory(filepath.Dir(abs)); err != nil {
+			return "", err
+		}
+		return candidate, nil
+	}
 }
 
 func sameSupplementProfessionalInput(input, accepted map[string]any) bool {
 	for key, want := range input {
+		switch key {
+		case "schema_version", "supplement_id", "supplements_finding_id", "author", "created_at":
+			continue
+		}
 		if key == "evidence_refs" {
 			wantRefs, wantOK := want.([]any)
 			gotRefs, gotOK := accepted[key].([]any)
@@ -455,9 +432,6 @@ func sameSupplementProfessionalInput(input, accepted map[string]any) bool {
 				got, gotOK := gotRefs[i].(string)
 				if !ok || !gotOK {
 					return false
-				}
-				if (strings.HasPrefix(ref, "path:") || strings.HasPrefix(ref, "command_output:")) && !strings.Contains(ref, "#sha256=") {
-					got = strings.SplitN(got, "#sha256=", 2)[0]
 				}
 				if ref != got {
 					return false
@@ -473,7 +447,7 @@ func sameSupplementProfessionalInput(input, accepted map[string]any) bool {
 	// only the original machine fields may have been generated at reception.
 	for key := range accepted {
 		switch key {
-		case "schema_version", "supplement_id", "supplements_finding_id", "author", "created_at", "hash":
+		case "schema_version", "supplement_id", "supplements_finding_id", "author", "created_at":
 			continue
 		}
 		if _, ok := input[key]; !ok {
@@ -532,28 +506,19 @@ func enforceSupplementGate(supplement Supplement, expectedOutcomes []string, inR
 	return nil
 }
 
-// applySupplement merges legacy migration rows and appends the new index row
-// plus its evidence entry inside the runtime CAS transaction. Migration is
-// idempotent: a legacy row whose supplement_id is already present is skipped.
-func applySupplement(state map[string]any, legacyRows []SupplementRow, row SupplementRow, lens string, occurredAt time.Time) error {
+// applySupplement appends the current row and evidence in the Runtime transaction.
+func applySupplement(state map[string]any, row SupplementRow, lens string, occurredAt time.Time) error {
 	entities, ok := state["entities"].(map[string]any)
 	if !ok {
 		return fmt.Errorf("runtime entities must be an object")
 	}
 	rows, _ := entities["finding_supplements"].([]any)
-	seen := make(map[string]string, len(rows)+len(legacyRows)+1)
+	seen := make(map[string]string, len(rows)+1)
 	for _, raw := range rows {
 		entity, _ := raw.(map[string]any)
 		if entity != nil {
 			seen[stringField(entity["supplement_id"])] = stringField(entity["supplements_finding_id"])
 		}
-	}
-	for _, legacyRow := range legacyRows {
-		if _, migrated := seen[legacyRow.SupplementID]; migrated {
-			continue
-		}
-		rows = append(rows, supplementRowEntity(legacyRow))
-		seen[legacyRow.SupplementID] = legacyRow.SupplementsFindingID
 	}
 	if existingFinding, dup := seen[row.SupplementID]; dup {
 		return fmt.Errorf("supplement %s is already appended to finding %s; supplements are immutable — use a new supplement_id", row.SupplementID, existingFinding)
@@ -564,10 +529,8 @@ func applySupplement(state map[string]any, legacyRows []SupplementRow, row Suppl
 		"id":                  row.SupplementID,
 		"kind":                "finding_supplement",
 		"path":                row.Path,
-		"sha256":              row.SHA256,
 		"status":              "valid",
 		"baseline_generation": row.BaselineGeneration,
-		"review_round":        row.ReviewRound,
 		"produced_by":         []any{row.Author},
 		"invalidated_by":      nil,
 		"invalidation_rule":   nil,
@@ -581,32 +544,20 @@ func applySupplement(state map[string]any, legacyRows []SupplementRow, row Suppl
 	return nil
 }
 
-// SupplementsForFinding lists the index rows hanging under one finding, in
-// append order. The main runtime state (entities.finding_supplements) is the
-// authority; runtimes that predate the merge fall back to the legacy
-// control-plane document. A missing index yields no rows.
-func SupplementsForFinding(root, statePath, findingID string) ([]SupplementRow, error) {
-	stateData, err := os.ReadFile(statePath)
-	switch {
-	case err == nil:
-		var state map[string]any
-		if err := json.Unmarshal(stateData, &state); err != nil {
-			return nil, fmt.Errorf("decode runtime: %w", err)
-		}
-		entities, _ := state["entities"].(map[string]any)
-		if _, present := entities["finding_supplements"]; present {
-			return filterSupplementRows(supplementRowsFromState(state), findingID), nil
-		}
-	case errors.Is(err, os.ErrNotExist):
-		// No runtime state: the legacy index is the only possible source.
-	default:
+// SupplementsForFinding returns the current Runtime's rows for the Finding.
+func SupplementsForFinding(_ string, statePath, findingID string) ([]SupplementRow, error) {
+	data, err := os.ReadFile(statePath)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
 		return nil, fmt.Errorf("read runtime: %w", err)
 	}
-	legacy, _, err := readSupplementIndex(root)
-	if err != nil {
-		return nil, err
+	var state map[string]any
+	if err := json.Unmarshal(data, &state); err != nil {
+		return nil, fmt.Errorf("decode runtime: %w", err)
 	}
-	return filterSupplementRows(legacy.Supplements, findingID), nil
+	return filterSupplementRows(supplementRowsFromState(state), findingID), nil
 }
 
 func filterSupplementRows(rows []SupplementRow, findingID string) []SupplementRow {
@@ -635,8 +586,7 @@ func supplementRowsFromState(state map[string]any) []SupplementRow {
 			Author:               stringField(entity["author"]),
 			AuthorizedBy:         stringField(entity["authorized_by"]),
 			Path:                 stringField(entity["path"]),
-			SHA256:               stringField(entity["sha256"]),
-			ReviewRound:          intField(entity["review_round"]),
+			ReviewPlanID:         stringField(entity["review_plan_id"]),
 			BaselineGeneration:   intField(entity["baseline_generation"]),
 			HypothesisID:         stringField(entity["hypothesis_id"]),
 			Discriminator:        stringField(entity["discriminator"]),
@@ -655,11 +605,12 @@ func supplementRowEntity(row SupplementRow) map[string]any {
 		"supplements_finding_id": row.SupplementsFindingID,
 		"author":                 row.Author,
 		"path":                   row.Path,
-		"sha256":                 row.SHA256,
-		"review_round":           row.ReviewRound,
 		"baseline_generation":    row.BaselineGeneration,
 		"created_at":             row.CreatedAt,
 		"appended_at":            row.AppendedAt,
+	}
+	if row.ReviewPlanID != "" {
+		entity["review_plan_id"] = row.ReviewPlanID
 	}
 	if row.AuthorizedBy != "" {
 		entity["authorized_by"] = row.AuthorizedBy
@@ -684,34 +635,6 @@ func findFindingRow(state map[string]any, findingID string) map[string]any {
 		}
 	}
 	return nil
-}
-
-// verifySupplementHash checks the supplement's independent content hash:
-// sha256 of the canonical JSON (compact, sorted keys) with the hash field
-// omitted. The original input adapter computes it; consumers independently
-// verify the immutable artifact (L3-S7 §3.6).
-func verifySupplementHash(data []byte, declared string) error {
-	computed, err := supplementContentHash(data)
-	if err != nil {
-		return err
-	}
-	if computed != declared {
-		return fmt.Errorf("FindingSupplement hash mismatch: declared %s but the content hashes to %s (sha256 of the compact sorted-keys JSON without the hash field)", declared, computed)
-	}
-	return nil
-}
-
-func supplementContentHash(data []byte) (string, error) {
-	var body map[string]any
-	if err := json.Unmarshal(data, &body); err != nil {
-		return "", fmt.Errorf("decode FindingSupplement: %w", err)
-	}
-	delete(body, "hash")
-	canonical, err := json.Marshal(body)
-	if err != nil {
-		return "", fmt.Errorf("encode FindingSupplement content: %w", err)
-	}
-	return sha256Of(canonical), nil
 }
 
 // supplementStateArtifactPaths returns the repository-relative artifact paths
@@ -744,33 +667,4 @@ func supplementStateArtifactPaths(state map[string]any) []string {
 	}
 	sort.Strings(paths)
 	return paths
-}
-
-// ---------------------------------------------------------------------------
-// legacy supplement index: read-only access to the retired control-plane
-// document for migration and pre-merge fallback reads.
-// ---------------------------------------------------------------------------
-
-func supplementIndexPath(root string) string {
-	return filepath.Join(root, filepath.FromSlash(supplementIndexRelativePath))
-}
-
-// readSupplementIndex reads the retired control-plane document. The second
-// return value reports whether the file exists.
-func readSupplementIndex(root string) (supplementIndex, bool, error) {
-	data, err := os.ReadFile(supplementIndexPath(root))
-	if errors.Is(err, os.ErrNotExist) {
-		return supplementIndex{Supplements: []SupplementRow{}}, false, nil
-	}
-	if err != nil {
-		return supplementIndex{}, false, fmt.Errorf("read legacy supplement index: %w", err)
-	}
-	var index supplementIndex
-	if err := json.Unmarshal(data, &index); err != nil {
-		return supplementIndex{}, false, fmt.Errorf("decode legacy supplement index: %w", err)
-	}
-	if index.Supplements == nil {
-		index.Supplements = []SupplementRow{}
-	}
-	return index, true, nil
 }

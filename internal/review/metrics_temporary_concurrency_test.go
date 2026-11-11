@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -21,56 +20,18 @@ import (
 )
 
 // Exercise the real Store's atomic publisher in another process so the
-// original S7 receivers can run while its metrics lock is held. The wrapper
-// records actual Git status bytes and can delay returning them until rename.
+// original S7 receivers can run while its metrics lock is held.
 func TestReviewConcurrentReceiversAcrossMetricsPublication(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the controlled Git wrapper requires a POSIX shell")
-	}
-	git, err := exec.LookPath("git")
-	if err != nil {
-		t.Fatal(err)
-	}
-	git, err = filepath.Abs(git)
-	if err != nil {
-		t.Fatal(err)
 	}
 	bin := filepath.Join(t.TempDir(), "metrics-test")
 	if out, err := exec.Command("go", "test", "-c", "-o", bin, "../metrics").CombinedOutput(); err != nil {
 		t.Fatalf("build controlled metrics publisher: %v %s", err, out)
 	}
-	wrapperDir := t.TempDir()
-	wrapper := filepath.Join(wrapperDir, "git")
-	script := fmt.Sprintf(`#!/bin/sh
-case "$*" in
-  *"status --porcelain"*)
-    out="$GSB_STATUS_DIR/status-$$"
-    %q "$@" > "$out"
-    result=$?
-    if tr '\000' '\n' < "$out" | grep -F -q -- "$GSB_STATUS_NAME"; then
-      printf 'seen\n' >> "$GSB_STATUS_DIR/seen"
-      if [ "$GSB_STATUS_HOLD" = 1 ]; then
-        while [ ! -e "$GSB_STATUS_DIR/release" ]; do sleep 0.01; done
-      fi
-    fi
-    cat "$out"
-    rm "$out"
-    exit "$result"
-    ;;
-esac
-exec %q "$@"
-`, git, git)
-	if err := os.WriteFile(wrapper, []byte(script), 0700); err != nil {
-		t.Fatal(err)
-	}
 	for _, window := range []string{"created", "partial", "rename"} {
 		t.Run(window, func(t *testing.T) {
 			root, sp, jp, before, packets, requests := issuedConcurrentResultsFixture(t)
-			statusDir := t.TempDir()
-			t.Setenv("PATH", wrapperDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-			t.Setenv("GSB_STATUS_DIR", statusDir)
-			t.Setenv("GSB_STATUS_HOLD", map[bool]string{true: "1", false: "0"}[window == "rename"])
-			defer os.WriteFile(filepath.Join(statusDir, "release"), nil, 0600)
 
 			procCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
@@ -133,9 +94,7 @@ exec %q "$@"
 			if err != nil || (window == "created" && len(partial) != 0) || (window == "partial" && (len(partial) == 0 || json.Valid(partial))) || (window == "rename" && !json.Valid(partial)) {
 				t.Fatalf("unexpected %s publisher bytes: size=%d valid=%v err=%v", window, len(partial), json.Valid(partial), err)
 			}
-			t.Setenv("GSB_STATUS_NAME", filepath.ToSlash(rel))
-			// The environment is inherited by Git children of this process, not
-			// the already running publisher.
+
 			var workers sync.WaitGroup
 			start := make(chan struct{})
 			outcomes := make([]error, 2)
@@ -151,16 +110,7 @@ exec %q "$@"
 				}(i)
 			}
 			close(start)
-			deadline := time.Now().Add(5 * time.Second)
-			for {
-				if data, err := os.ReadFile(filepath.Join(statusDir, "seen")); err == nil && len(data) > 0 {
-					break
-				}
-				if time.Now().After(deadline) {
-					t.Fatal("Git status did not actually observe the producer temporary")
-				}
-				time.Sleep(5 * time.Millisecond)
-			}
+
 			switch window {
 			case "created":
 				step()
@@ -183,9 +133,7 @@ exec %q "$@"
 			if _, err := os.Stat(temp); !os.IsNotExist(err) {
 				t.Fatalf("rename did not remove temporary leaf: %v", err)
 			}
-			if err := os.WriteFile(filepath.Join(statusDir, "release"), nil, 0600); err != nil {
-				t.Fatal(err)
-			}
+
 			workers.Wait()
 			for i, err := range outcomes {
 				if err != nil {

@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -30,13 +29,13 @@ func TestTargetedScopeMetadataDoesNotReplaceActualPassObservations(t *testing.T)
 			t.Fatal(err)
 		}
 	}
-	// A PASS label cannot hide a real unfinished assertion, even if the legacy
-	// scope flag says pass. The professional error is rejected before writing.
+	// Reception preserves the author's overall conclusion and observations;
+	// Main and the verifier resolve the professional discrepancy.
 	incomplete := base
 	incomplete.ReverificationID, incomplete.ScopeCompliance = "reverify-incomplete", "pass"
-	incomplete.AssertionResults = []AssertionResult{{AssertionID: "root-1", Result: "blocked", EvidenceRefs: []string{"test://unavailable"}}}
-	if _, _, err := CreateTargetedReverification(root, incomplete); err == nil || !strings.Contains(err.Error(), "unfinished assertion") {
-		t.Fatalf("scope label hid actual unfinished work: %v", err)
+	incomplete.AssertionResults = []AssertionResult{{AssertionID: "root-1", Result: "blocked", EvidenceRefs: []string{}}}
+	if value, _, err := CreateTargetedReverification(root, incomplete); err != nil || value.Result != "pass" || value.AssertionResults[0].Result != "blocked" {
+		t.Fatalf("receiver recomputed professional conclusion: %+v %v", value, err)
 	}
 	for i, result := range []string{"blocked", "fail"} {
 		request := incomplete

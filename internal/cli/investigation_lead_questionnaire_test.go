@@ -41,7 +41,7 @@ func TestS8InvestigationLeadPreparationReadOnlyAndDraftPreserved(t *testing.T) {
 	if len(paths) != 1 || !strings.HasSuffix(paths[0], "intake.json") {
 		t.Fatalf("intake path unavailable: %#v", paths)
 	}
-	for _, event := range []string{"Stop", "Idle", "PreCompact"} {
+	for _, event := range []string{"Stop"} {
 		context := stageInvestigationLeadQuestionnaireContext(root, policy.Input{Event: event}, current)
 		if !strings.Contains(context, paths[0]) || !strings.Contains(context, "Not prepared yet") || !strings.Contains(context, "read-only") {
 			t.Fatalf("%s did not disclose normal preparation and exact path: %s", event, context)
@@ -49,6 +49,18 @@ func TestS8InvestigationLeadPreparationReadOnlyAndDraftPreserved(t *testing.T) {
 		if _, err := os.Stat(paths[0]); !os.IsNotExist(err) {
 			t.Fatalf("%s prepared a questionnaire: %v", event, err)
 		}
+	}
+	for _, event := range []string{"Idle"} {
+		if got := stageInvestigationLeadQuestionnaireContext(root, policy.Input{Event: event}, current); got != "" {
+			t.Fatalf("%s emitted an unsupported questionnaire reminder: %s", event, got)
+		}
+		if _, err := os.Stat(paths[0]); !os.IsNotExist(err) {
+			t.Fatalf("%s prepared a questionnaire: %v", event, err)
+		}
+	}
+	stageInvestigationLeadQuestionnaireContext(root, policy.Input{Event: "PreCompact"}, current)
+	if _, err := os.Stat(paths[0]); !os.IsNotExist(err) {
+		t.Fatalf("read-only PreCompact projection prepared a questionnaire: %v", err)
 	}
 	context := stageInvestigationLeadQuestionnaireContext(root, policy.Input{Event: "PreToolUse"}, current)
 	if !strings.Contains(context, paths[0]) || !strings.Contains(context, ".claude/evidence/findings/finding-1.json") || !strings.Contains(context, "grouping_rationale") {
@@ -63,6 +75,10 @@ func TestS8InvestigationLeadPreparationReadOnlyAndDraftPreserved(t *testing.T) {
 	}
 }
 
+// An Investigator's `new_hypotheses` entry is only a suggestion (L3-S8:162,
+// :269, :479): Main decides whether to adopt it. The Main questionnaire keeps
+// the author's own rows, and only a row Main saves in its own array becomes a
+// registered, dispatched responsibility.
 func TestS8InvestigationLeadWorkerQuestionsMergeWithoutReplacingAuthorRows(t *testing.T) {
 	root := investigationLeadTestRoot(t)
 	_, path := investigationLeadTestIngest(t, root)
@@ -77,19 +93,82 @@ func TestS8InvestigationLeadWorkerQuestionsMergeWithoutReplacingAuthorRows(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
+	current = investigationLeadTestSnapshot(t, root)
+	_, document, _, err := investigationLeadSource(root, current.State)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The Worker's suggestion is preserved as a suggestion: it does not become
+	// a registered responsibility of the Case.
+	if len(objectSliceAny(document["hypotheses"])) != 1 {
+		t.Fatalf("worker suggestion became a registered responsibility: %#v", document["hypotheses"])
+	}
+	for _, row := range objectSliceAny(document["hypotheses"]) {
+		if stringValue(row["hypothesis_id"]) == "hypothesis-worker-question" {
+			t.Fatalf("worker suggestion was registered as a Hypothesis: %#v", row)
+		}
+	}
+	if rows := objectSliceAny(document["hypothesis_results"]); len(rows) != 1 || stringValue(rows[0]["hypothesis_id"]) != authored[0].HypothesisID {
+		t.Fatalf("worker result was not attached to the original question: %#v", rows)
+	}
+	// The author's edited original row survives preparation, and the suggestion
+	// is not merged into Main's array.
 	authored[0].Statement = "an author edit that preparation must preserve"
 	writeRepairLeadJSON(t, path, authored)
 	current = investigationLeadTestSnapshot(t, root)
 	stageInvestigationLeadQuestionnaireContext(root, policy.Input{Event: "PreToolUse"}, current)
 	readRepairLeadJSON(t, path, &authored)
-	if len(authored) != 2 || authored[0].Statement != "an author edit that preparation must preserve" || authored[1].HypothesisID != "hypothesis-worker-question" {
-		t.Fatalf("worker question was not merged while preserving the author row: %#v", authored)
+	if len(authored) != 1 || authored[0].Statement != "an author edit that preparation must preserve" {
+		t.Fatalf("author row was replaced or the worker suggestion was merged into the author array: %#v", authored)
 	}
+	for _, row := range authored {
+		if row.HypothesisID == "hypothesis-worker-question" || row.Statement == "an independent alias may cause the symptom" {
+			t.Fatalf("worker suggestion entered the author array: %#v", row)
+		}
+	}
+	// Main's own array without the suggestion registers and dispatches nothing
+	// new; the author's own question keeps its original dispatch.
 	authored[0].Statement = q.Statement
 	writeRepairLeadJSON(t, path, authored)
 	feedback := investigationLeadTestSave(t, root, path)
-	if investigationLeadTestSnapshot(t, root).Revision != current.Revision+1 || !strings.Contains(feedback, "owner=investigator-worker-question") {
-		t.Fatalf("original worker question was re-registered or left undispatched: %s", feedback)
+	if got := investigationLeadTestSnapshot(t, root).Revision; got != current.Revision {
+		t.Fatalf("worker suggestion was registered or dispatched without Main's own row: revision %d -> %d, feedback=%s", current.Revision, got, feedback)
+	}
+	if strings.Contains(feedback, "owner=investigator-worker-question") {
+		t.Fatalf("worker suggestion was dispatched without Main's own row: %s", feedback)
+	}
+	if owner := "owner=investigator-" + strings.TrimPrefix(authored[0].HypothesisID, "hypothesis-"); !strings.Contains(feedback, owner) {
+		t.Fatalf("the author's own question lost its original dispatch: %s", feedback)
+	}
+	_, document, _, _ = investigationLeadSource(root, investigationLeadTestSnapshot(t, root).State)
+	if len(objectSliceAny(document["hypotheses"])) != 1 {
+		t.Fatalf("worker suggestion became a registered responsibility: %#v", document["hypotheses"])
+	}
+	// Main adopts the suggestion as its own row: only then is it registered and
+	// dispatched to its own Investigator.
+	authored = append(authored, investigationLeadQuestion{HypothesisID: "hypothesis-worker-question", Statement: "an independent alias may cause the symptom", Invariant: "one authority", Discriminator: "inspect the alias boundary", ExpectedOutcomes: map[string]string{"support": "alias changes interpretation", "refute": "alias preserves interpretation"}, SourceFindingIDs: []string{"finding-1"}, EvidenceRefs: []string{"evidence://worker-question"}})
+	writeRepairLeadJSON(t, path, authored)
+	feedback = investigationLeadTestSave(t, root, path)
+	if !strings.Contains(feedback, "owner=investigator-worker-question") || !strings.Contains(feedback, "TASK=") {
+		t.Fatalf("Main's own adopted row was not registered and dispatched: %s", feedback)
+	}
+	adopted := investigationLeadTestSnapshot(t, root)
+	_, document, _, _ = investigationLeadSource(root, adopted.State)
+	registered := objectSliceAny(document["hypotheses"])
+	if len(registered) != 2 {
+		t.Fatalf("Main's own adopted row was not registered: %#v", registered)
+	}
+	adoptedRow := false
+	for _, row := range registered {
+		if stringValue(row["hypothesis_id"]) == "hypothesis-worker-question" {
+			adoptedRow = true
+		}
+	}
+	if !adoptedRow {
+		t.Fatalf("Main's own adopted row was not registered: %#v", registered)
+	}
+	if adopted.Revision != current.Revision+2 {
+		t.Fatalf("the adopted row did not produce one registration and one dispatch revision: %d -> %d, feedback=%s", current.Revision, adopted.Revision, feedback)
 	}
 }
 
@@ -231,12 +310,8 @@ func investigationLeadTestRoot(t *testing.T) string {
 	findingData, _ := json.MarshalIndent(finding, "", "  ")
 	findingPath := ".claude/evidence/findings/finding-1.json"
 	writeRepairLeadFile(t, root, findingPath, string(findingData))
-	mapFieldCLI(state, "entities")["findings"] = []any{map[string]any{"finding_id": "finding-1", "path": findingPath, "sha256": repairLeadDigest(findingData), "claim_id": "claim-intake-1", "assignment_id": "assignment-intake", "lens": "qa", "severity": "P1", "observation_mode": "code_inspection", "original_finder": "agent-intake", "review_round": 1, "created_at": "2026-10-01T00:00:00Z"}}
-	batch := map[string]any{"schema_version": "1.0.0", "observation_batch_id": "observation-batch-c1", "conclusion": "sealed", "evidence_id": "observation-batch-c1", "kind": "observation_batch", "runtime_id": state["runtime_id"], "producer_agent_id": "round-consumer", "producer_responsibility": "Orchestrator", "review_plan_id": "review-plan-r1", "review_round": 1, "baseline_generation": 1, "subject_digest": strings.Repeat("a", 64), "finding_ids": []string{"finding-1"}, "drain_policy": "complete_required_claims", "claim_coverage_summary": map[string]any{"total_required": 1, "pass": 0, "finding": 1, "not_applicable": 0, "blocked": 0, "blocked_claims": []any{}, "plan_revision": 1}, "unobserved_claim_ids": []any{}, "original_finder_routes": []any{}, "investigation_readiness": []any{map[string]any{"finding_id": "finding-1", "status": "ready"}}, "sealed_at": "2026-10-01T00:00:00Z", "sealed_by": "round-consumer", "revision": 1}
-	batchData, _ := json.MarshalIndent(batch, "", "  ")
-	batchPath := ".claude/evidence/observation-batch-c1.json"
-	writeRepairLeadFile(t, root, batchPath, string(batchData))
-	mapFieldCLI(state, "review")["observation_batch"] = map[string]any{"batch_id": "observation-batch-c1", "path": batchPath, "sha256": repairLeadDigest(batchData), "finding_ids": []any{"finding-1"}, "drain_policy": "complete_required_claims", "sealed_at": "2026-10-01T00:00:00Z"}
+	mapFieldCLI(state, "entities")["findings"] = []any{map[string]any{"finding_id": "finding-1", "path": findingPath, "claim_id": "claim-intake-1", "assignment_id": "assignment-intake", "lens": "qa", "severity": "P1", "observation_mode": "code_inspection", "original_finder": "agent-intake", "review_plan_id": "review-plan-r1", "created_at": "2026-10-01T00:00:00Z"}}
+	mapFieldCLI(state, "review")["round_entry"] = map[string]any{"transition_id": "TR-006", "baseline_generation": 1, "change_impact_ref": nil, "plan_id": "review-plan-r1"}
 	writeRepairLeadFile(t, root, ".claude/agents/investigator.md", "# Investigator\n")
 	writeRepairLeadFile(t, root, "docs/control/agent-protocol.md", "# Original Agent protocol\n")
 	repairLeadWriteState(t, root, state)
@@ -259,12 +334,12 @@ func TestS8InvestigationLeadEvidenceReferencesExposeOriginalIDsAndPaths(t *testi
 	before, _ := os.ReadFile(filepath.Join(root, ".claude/loop-state.json"))
 	answerBefore, _ := os.ReadFile(questionsPath)
 	context := stageInvestigationLeadQuestionnaireContext(root, policy.Input{Event: "Stop"}, current)
-	for _, expected := range []string{questionsPath, "EVID-S8-CURRENT -> " + filepath.Join(root, ".claude/evidence/findings/finding-1.json"), `evidence_refs=["EVID-S8-CURRENT"]`, "a bare path is not a registered or captured Hypothesis evidence reference", "test://<actual-run-or-check>", "Both reference fields are string arrays"} {
+	for _, expected := range []string{questionsPath, "EVID-S8-CURRENT -> " + filepath.Join(root, ".claude/evidence/findings/finding-1.json"), `evidence_refs=["EVID-S8-CURRENT"]`, "Both reference fields are string arrays"} {
 		if !strings.Contains(context, expected) {
 			t.Fatalf("Main authoring context omitted %q: %s", expected, context)
 		}
 	}
-	for _, excluded := range []string{"EVID-S8-OLD-GENERATION", "EVID-S8-OLD-ROUND", "EVID-S8-INVALID", "EVID-S8-INVALIDATED"} {
+	for _, excluded := range []string{"EVID-S8-OLD-GENERATION", "EVID-S8-INVALID", "EVID-S8-INVALIDATED"} {
 		if strings.Contains(context, excluded) {
 			t.Fatalf("inapplicable original evidence advertised as a usable reference: %s", excluded)
 		}
@@ -276,7 +351,7 @@ func TestS8InvestigationLeadEvidenceReferencesExposeOriginalIDsAndPaths(t *testi
 	}
 	current.State["evidence"] = []any{}
 	context = investigationLeadEvidenceReferenceContext(root, current.State)
-	if !strings.Contains(context, "No valid current-generation/current-round evidence IDs") || !strings.Contains(context, "does not invalidate the supplied frozen sources") {
+	if !strings.Contains(context, "No valid current-generation evidence IDs") || !strings.Contains(context, "does not invalidate the supplied frozen sources") {
 		t.Fatalf("absence of an index entry incorrectly invalidated supplied original evidence: %s", context)
 	}
 }

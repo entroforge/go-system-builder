@@ -30,8 +30,8 @@ func runWorkspaceLifecycle(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	e, ok := b.Execution(*id, workspace.RuntimeID(state), workspace.Generation(state))
-	if !ok || e.AgentID != *agent || e.Status != "ready" || e.BootstrapSHA256 == "" {
-		fmt.Fprintln(stderr, "lifecycle submission requires current bootstrapped owner")
+	if !ok || e.AgentID != *agent || e.Status != "ready" {
+		fmt.Fprintln(stderr, "lifecycle submission requires current ready owner")
 		return 1
 	}
 	paths, err := b.WorkerSubmissionPaths(e)

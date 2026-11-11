@@ -45,8 +45,8 @@ func TestDiscoverE2EInventoryOffersCandidatesWithoutAssetDeclarations(t *testing
 		t.Fatalf("candidates=%d, want one script hint: %+v", len(inventory.Candidates), inventory.Candidates)
 	}
 	for _, asset := range inventory.Candidates {
-		if asset.Path != specRel || len(asset.SHA256) != 64 || len(asset.PossibleCases) != 2 || !strings.Contains(asset.PossibleCases[0], "/settings/cases.json#CASE-") {
-			t.Fatalf("invalid asset fingerprint: %+v", asset)
+		if asset.Path != specRel || len(asset.PossibleCases) != 2 || !strings.Contains(asset.PossibleCases[0], "/settings/cases.json#CASE-") {
+			t.Fatalf("invalid asset candidate: %+v", asset)
 		}
 	}
 }
@@ -74,7 +74,7 @@ func TestDraftPlanKeepsAssetReuseUndecidedUntilMainChooses(t *testing.T) {
 	state := baseDraftState(t)
 	state["bound_req"] = map[string]any{"path": "docs/requirements/REQ-TEST.md", "metadata": map[string]any{"ui_impact": "changed"}}
 
-	plan, _ := DraftPlanForRoot(root, state, 3)
+	plan, _ := DraftPlanForRoot(root, state)
 	if plan.E2ECoverageState != "" {
 		t.Fatalf("without a professional choice E2E must remain undecided, got %q", plan.E2ECoverageState)
 	}
@@ -97,7 +97,7 @@ func TestDraftPlanKeepsAssetReuseUndecidedUntilMainChooses(t *testing.T) {
 	if err := os.WriteFile(specPath, []byte("CASE-001 PATH-001\nCASE-002 PATH-002\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	plan, _ = DraftPlanForRoot(root, state, 3)
+	plan, _ = DraftPlanForRoot(root, state)
 	if plan.E2ECoverageState != "" || len(plan.E2EAssets) != 0 || plan.VerificationArtifactWorkspace != nil {
 		t.Fatalf("CASE text matches must not decide regression availability: state=%q assets=%d workspace=%v", plan.E2ECoverageState, len(plan.E2EAssets), plan.VerificationArtifactWorkspace)
 	}

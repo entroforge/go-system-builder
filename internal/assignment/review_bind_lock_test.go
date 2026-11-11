@@ -310,9 +310,8 @@ func buildBindReviewState(t *testing.T, fixtures []planAssignmentFixture) (map[s
 				"e2e_coverage_state": "not_applicable",
 				"submitted_at":       "2026-08-23T00:00:00Z",
 			},
-			"claims":            map[string]any{},
-			"assignments":       map[string]any{},
-			"observation_batch": nil,
+			"claims":      map[string]any{},
+			"assignments": map[string]any{},
 		},
 	}
 	projection := state["review"].(map[string]any)["assignments"].(map[string]any)

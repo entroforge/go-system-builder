@@ -66,8 +66,9 @@ func TestWorkerFrozenContextQuestionnaireUsesActualDispatchAndOriginalConsumer(t
 	}
 	for _, skill := range c.Selection.Selected {
 		actual, err := os.ReadFile(filepath.Join(e.Path, skill.Source))
-		if err != nil || workpacket.Digest(actual) != skill.SHA256 {
-			t.Fatalf("installed Read source unavailable: %s %v", skill.Source, err)
+		original, sourceErr := os.ReadFile(filepath.Join(f.root, skill.Source))
+		if err != nil || sourceErr != nil || !bytes.Equal(actual, original) {
+			t.Fatalf("installed Read source differs from actual source: %s %v %v", skill.Source, err, sourceErr)
 		}
 	}
 	if len(c.ReadingOrder()) < 3 || !strings.Contains(c.ReadingOrder()[0], "docs/dev/tasks/") {
@@ -157,7 +158,7 @@ func TestWorkerLifecycleWireHasOneUTF8BudgetAndLocalFullEntrances(t *testing.T) 
 }
 
 func TestWorkerReplacementRebindsFrozenContextAndPreservesOldAssets(t *testing.T) {
-	f := newStageAnswerFixture(t)
+	f := newHistoricalStageAnswerFixture(t)
 	p := f.packets[0]
 	old := f.prepare(t, p)
 	data, err := os.ReadFile(filepath.Join(old.Path, workspace.DispatchContextPath))
@@ -194,7 +195,7 @@ func TestWorkerReplacementRebindsFrozenContextAndPreservesOldAssets(t *testing.T
 	if !bytes.Equal(oldData, data) {
 		t.Fatal("replacement overwrote old context")
 	}
-	f.begin(t, p, &next)
+	f.startFrozenReviewWorker(t, next)
 	if !saveStageHook(t, f.root, next.Path, p.Binding.Owner, workpacket.WorkerAnswerPath, completedDraft(p, "pass")).WorkComplete {
 		t.Fatal("replacement did not retain original answer admission")
 	}

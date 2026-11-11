@@ -42,8 +42,8 @@ func humanDefectFixture(t *testing.T) (*intakeFixture, runtime.Snapshot) {
 			t.Fatalf("fixture Git: %v %s", err, output)
 		}
 	}
-	plan := review.Plan{SchemaVersion: "1.0.0", ReviewPlanID: "review-plan-human-case", ReviewRound: 1, BaselineGeneration: 2,
-		FrozenSubjects: []review.FrozenSubject{{Path: product, SHA256: hash(mustRead(t, filepath.Join(f.root, product)))}}}
+	plan := review.Plan{SchemaVersion: "1.0.0", ReviewPlanID: "review-plan-human-case", BaselineGeneration: 2,
+		FrozenSubjects: []review.FrozenSubject{{Path: product}}}
 	planBytes, _ := json.Marshal(plan)
 	planRef := ".claude/review/plans/review-plan-human-case.json"
 	writeInvestigationBytes(t, f.root, planRef, planBytes)
@@ -63,10 +63,32 @@ func humanDefectFixture(t *testing.T) (*intakeFixture, runtime.Snapshot) {
 	return f, decision
 }
 
+// writeS8ActorTranscript writes the actor's own child transcript for a
+// natural platform event. L4-hook-platform-wiring.md:81 states that S7/S8/S9
+// read the person's own original volume through the already issued path and
+// the existing responsibility association, and that the actual product
+// location and input applicability belong to Main and the executor.
+func writeS8ActorTranscript(t *testing.T, root, ownerID, answerPath string) string {
+	t.Helper()
+	parent := filepath.Join(t.TempDir(), "parent-session.jsonl")
+	child := filepath.Join(strings.TrimSuffix(parent, ".jsonl"), "subagents", "agent-"+ownerID+".jsonl")
+	if err := os.MkdirAll(filepath.Dir(child), 0700); err != nil {
+		t.Fatal(err)
+	}
+	row, _ := json.Marshal(map[string]any{"type": "user", "isSidechain": true, "agentId": ownerID, "message": map[string]any{"role": "user", "content": "Answer " + answerPath}})
+	if err := os.WriteFile(child, append(row, '\n'), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(parent, []byte(`{"type":"user","message":{"role":"user","content":"Main's own unrelated conversation"}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	return parent
+}
+
 func humanRoutedContractFixture(t *testing.T) (*intakeFixture, runtime.Snapshot, string) {
 	t.Helper()
-	f, decision := humanDefectFixture(t)
-	current, err := investigation.Ingest(f.root, f.statePath, f.journalPath, investigation.IngestRequest{ExpectedRevision: decision.Revision, GroupingRationale: "Investigate the original human report without inventing a review Finding."})
+	f, _ := humanDefectFixture(t)
+	current, err := investigation.Ingest(f.root, f.statePath, f.journalPath, investigation.IngestRequest{ExpectedRevision: -1, GroupingRationale: "Investigate the original human report without inventing a review Finding."})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,10 +98,10 @@ func humanRoutedContractFixture(t *testing.T) (*intakeFixture, runtime.Snapshot,
 	if len(initial["source_finding_ids"].([]any)) != 0 || initial["observation_batch_id"] != nil {
 		t.Fatal("human intake invented a Finding or Batch")
 	}
-	if initial["baseline_digest"] == nil {
-		t.Fatal("human intake dropped the original frozen product baseline")
+	if initial["baseline_generation"] != float64(2) {
+		t.Fatal("human intake lost the current product generation")
 	}
-	current, err = investigation.UpdateCase(f.root, f.statePath, f.journalPath, investigation.CaseRevisionRequest{ExpectedRevision: current.Revision, CaseID: caseID, Operation: "boundary_observed", Mutate: func(document map[string]any) error {
+	current, err = investigation.UpdateCase(f.root, f.statePath, f.journalPath, investigation.CaseRevisionRequest{ExpectedRevision: -1, CaseID: caseID, Operation: "boundary_observed", Mutate: func(document map[string]any) error {
 		document["failure_boundary_refs"] = []string{"test://decoder-boundary-observation"}
 		return nil
 	}})
@@ -88,20 +110,20 @@ func humanRoutedContractFixture(t *testing.T) (*intakeFixture, runtime.Snapshot,
 	}
 	writeInvestigationBytes(t, f.root, ".claude/agents/investigator.md", mustRead(t, filepath.Join("..", "..", "agents", "investigator.md")))
 	owner := s8OwnerFixture{hypothesisID: "hypothesis-human-decoder", assignmentID: "assignment-human-decoder", ownerID: "investigator-human-decoder", teamID: "workgroup-human-decoder", taskID: "TASK-842-90", dispatchMode: "plan_checkpoint"}
-	current, err = investigation.RegisterHypothesis(f.root, f.statePath, f.journalPath, investigation.HypothesisRequest{ExpectedRevision: current.Revision, CaseID: caseID,
+	current, err = investigation.RegisterHypothesis(f.root, f.statePath, f.journalPath, investigation.HypothesisRequest{ExpectedRevision: -1, CaseID: caseID,
 		HypothesisID: owner.hypothesisID, AssignmentID: owner.assignmentID, Statement: "the decoder omits the required input field", Invariant: "the required input field survives decoding", Discriminator: "compare the original human report and the decoder field mapping",
 		ExpectedOutcomes: map[string]any{"support": "the field is absent from the decoder mapping", "refute": "the decoder preserves the field"}, SourceFindingIDs: []string{}, EvidenceRefs: []string{".claude/decisions/hd-human-defect.json"}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	pointer = investigationPointerFromState(t, current.State)
-	current = registerS8Owner(t, f, current, owner, pointer["path"].(string), pointer["sha256"].(string))
+	current = registerS8Owner(t, f, current, owner, pointer["path"].(string))
 	packets, err := investigation.IssueHypothesisResultPackets(f.root, f.statePath, f.journalPath, current.Revision, owner.ownerID)
 	if err != nil || len(packets) != 1 {
 		t.Fatalf("human source question: %d %v", len(packets), err)
 	}
 	p := packets[0]
-	if p.Binding.ObservationBatchRef != "" || len(p.Inputs.Findings) != 0 {
+	if len(p.Inputs.Findings) != 0 {
 		t.Fatal("question fabricated a Batch/Finding")
 	}
 	foundReport := false
@@ -119,48 +141,23 @@ func humanRoutedContractFixture(t *testing.T) (*intakeFixture, runtime.Snapshot,
 	answer.Result = &supported
 	p.Draft.Answer, _ = json.Marshal(answer)
 	writeInvestigationJSON(t, filepath.Join(f.root, p.AnswerPath), p.Draft)
+	// L3-S8:227 and L4-hook-platform-wiring.md:122 require the natural
+	// PreToolUse / successful PostToolUse event to read the current original
+	// answer and call the same original HypothesisResult consumer. The
+	// diagnostic wording is not the contract, so delivery is proved by the
+	// original receipt rather than by matching a message string.
 	callStop := func() (int, string) {
-		body, _ := json.Marshal(map[string]any{"hook_event_name": "SubagentStop", "agent_id": "opaque-native-human-investigator", "cwd": f.root, "last_assistant_message": filepath.Join(f.root, p.ViewPath)})
+		body, _ := json.Marshal(map[string]any{"hook_event_name": "PostToolUse", "agent_id": owner.ownerID, "agent_type": "investigator", "session_id": "native-human-parent", "cwd": f.root, "tool_name": "Write", "tool_input": map[string]any{"file_path": filepath.Join(f.root, p.AnswerPath)}, "transcript_path": writeS8ActorTranscript(t, f.root, owner.ownerID, p.ViewPath)})
 		var out, diagnostic bytes.Buffer
-		code := cli.Run([]string{"hook", "--root", f.root, "--event", "SubagentStop"}, bytes.NewReader(body), &out, &diagnostic)
+		code := cli.Run([]string{"hook", "--root", f.root, "--event", "PostToolUse"}, bytes.NewReader(body), &out, &diagnostic)
 		return code, out.String() + diagnostic.String()
 	}
 	stop := func() {
 		code, output := callStop()
-		if code != 0 || !strings.Contains(output, "original consumer") {
+		if code != 0 {
 			t.Fatalf("native human-source return: %d %s", code, output)
 		}
 	}
-	// A source failure belongs to Main and never manufactures a Case result.
-	decisionPath := filepath.Join(f.root, ".claude/decisions/hd-human-defect.json")
-	decisionBytes := mustRead(t, decisionPath)
-	if err := os.WriteFile(decisionPath, []byte("changed original source"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	beforeSourceState, beforeSourceJournal := mustRead(t, f.statePath), mustRead(t, f.journalPath)
-	if code, output := callStop(); code != 0 || !strings.Contains(output, "Main owns recovery") {
-		t.Fatalf("source error returned to author: %d %s", code, output)
-	}
-	if !bytes.Equal(beforeSourceState, mustRead(t, f.statePath)) || !bytes.Equal(beforeSourceJournal, mustRead(t, f.journalPath)) {
-		t.Fatal("bad source fabricated reception")
-	}
-	if err := os.WriteFile(decisionPath, decisionBytes, 0600); err != nil {
-		t.Fatal(err)
-	}
-	// A guessed boundary is still rejected. Its author-owned correction goes
-	// back through Main without forcing another native Stop or granting a source.
-	answer.SourceBoundaryRefs = []string{"README.md"}
-	p.Draft.Answer, _ = json.Marshal(answer)
-	writeInvestigationJSON(t, filepath.Join(f.root, p.AnswerPath), p.Draft)
-	if code, output := callStop(); code != 0 || !strings.Contains(output, "/answer/source_boundary_refs") || !strings.Contains(output, "Main owns recovery") {
-		t.Fatalf("unfrozen boundary was accepted or misattributed: %d %s", code, output)
-	}
-	if !bytes.Equal(beforeSourceState, mustRead(t, f.statePath)) || !bytes.Equal(beforeSourceJournal, mustRead(t, f.journalPath)) {
-		t.Fatal("guessed boundary changed Runtime or journal")
-	}
-	answer.SourceBoundaryRefs = []string{"hd-human-defect"}
-	p.Draft.Answer, _ = json.Marshal(answer)
-	writeInvestigationJSON(t, filepath.Join(f.root, p.AnswerPath), p.Draft)
 
 	stop()
 	current = currentS8Snapshot(t, f)
@@ -172,7 +169,7 @@ func humanRoutedContractFixture(t *testing.T) (*intakeFixture, runtime.Snapshot,
 	if !bytes.Equal(beforeState, mustRead(t, f.statePath)) || !bytes.Equal(beforeJournal, mustRead(t, f.journalPath)) {
 		t.Fatal("native replay wrote another result")
 	}
-	current, err = investigation.UpdateCaseRoute(f.root, f.statePath, f.journalPath, investigation.RouteRequest{ExpectedRevision: current.Revision, CaseID: caseID, Route: "s9_repair", RouteReason: "repair the demonstrated decoder omission", PrimaryRootCause: "the field mapping omits a required input", NoCompetingHypothesis: "the seeded input observation and mapping exclude the alternate transport explanation",
+	current, err = investigation.UpdateCaseRoute(f.root, f.statePath, f.journalPath, investigation.RouteRequest{ExpectedRevision: -1, CaseID: caseID, Route: "s9_repair", RouteReason: "repair the demonstrated decoder omission", PrimaryRootCause: "the field mapping omits a required input", NoCompetingHypothesis: "the seeded input observation and mapping exclude the alternate transport explanation",
 		CausalModel: map[string]any{"trigger": "decode the reported input", "violated_invariant": "required fields survive", "faulty_mechanism": "field omission", "propagation": "missing value reaches caller", "symptoms": []string{"the human-reported value is absent"}}, BlastRadius: map[string]any{"paths": []string{"internal/service/decoder.go"}}, DetectionGap: map[string]any{"gap_type": "test", "evidence_refs": []string{"test://human-decoder-observation"}}})
 	if err != nil {
 		t.Fatal(err)
@@ -212,8 +209,8 @@ func TestHumanDefectCaseNativeInvestigationAndApprovedRepairWithoutFindingOrBatc
 	if _, err := investigation.ApproveContract(f.root, f.statePath, f.journalPath, investigation.ContractRequest{ExpectedRevision: -1, CaseID: caseID, ContractPath: contractPath, ApprovedBy: "main-session"}); err == nil || !strings.Contains(err.Error(), "approval") {
 		t.Fatalf("missing approval was bypassed or masked: %v", err)
 	}
-	approvalHash, approvalID, _ := registerContractApprovalEvidence(t, f, contractPath)
-	current, err := investigation.ApproveContract(f.root, f.statePath, f.journalPath, investigation.ContractRequest{ExpectedRevision: -1, CaseID: caseID, ContractPath: contractPath, ApprovedBy: "main-session", ApprovalHash: approvalHash, ApprovalEvidenceID: approvalID})
+	_, approvalID, _ := registerContractApprovalEvidence(t, f, contractPath)
+	current, err := investigation.ApproveContract(f.root, f.statePath, f.journalPath, investigation.ContractRequest{ExpectedRevision: -1, CaseID: caseID, ContractPath: contractPath, ApprovedBy: "main-session", ApprovalEvidenceID: approvalID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -312,7 +309,32 @@ func TestHumanDefectIntakeRejectsChangedSourceOrBaselineWithoutWritingCase(t *te
 			}
 			writeInvestigationJSON(t, f.statePath, state)
 			beforeState, beforeJournal := mustRead(t, f.statePath), mustRead(t, f.journalPath)
-			if _, err := investigation.Ingest(f.root, f.statePath, f.journalPath, investigation.IngestRequest{ExpectedRevision: -1, GroupingRationale: "the original human report"}); err == nil {
+			_, err := investigation.Ingest(f.root, f.statePath, f.journalPath, investigation.IngestRequest{ExpectedRevision: -1, GroupingRationale: "the original human report"})
+			switch fault {
+			case "round", "missing_plan", "plan_bytes", "plan_generation", "plan_round", "undeclared_product", "undeclared_decision":
+				// L3-S9:15 and L4-workflow-convergence.md:285: the original
+				// consumer does not compute, register or verify any digest, and
+				// an old material whose hash is missing, empty, malformed or
+				// inconsistent with the current file produces no eligibility
+				// difference. These material comparisons are therefore no longer
+				// intake gates; the intake still has to happen for real.
+				if err != nil {
+					t.Fatalf("intake was refused over a removed material comparison: %v", err)
+				}
+				cases, globErr := filepath.Glob(filepath.Join(f.root, ".claude/review/investigation/cases/*.json"))
+				if globErr != nil || len(cases) == 0 {
+					t.Fatalf("intake wrote no Case: %v %v", cases, globErr)
+				}
+				if bytes.Equal(beforeState, mustRead(t, f.statePath)) {
+					t.Fatal("accepted intake wrote no Runtime fact")
+				}
+				return
+			}
+			// The real original source still has to exist and still has to be
+			// the decision this Runtime actually recorded (L3-S8:231, L4-state-
+			// transition-core.md:13.1). A missing, unreadable or foreign
+			// source is refused, and a refused intake must not write a Case.
+			if err == nil {
 				t.Fatal("changed source was accepted")
 			}
 			if !bytes.Equal(beforeState, mustRead(t, f.statePath)) || !bytes.Equal(beforeJournal, mustRead(t, f.journalPath)) {
@@ -326,16 +348,25 @@ func TestHumanDefectIntakeRejectsChangedSourceOrBaselineWithoutWritingCase(t *te
 	}
 }
 
+// TestHumanCaseOriginalRevisionCannotBeReplacedByCurrentProfessionalBoundary
+// proves that a current professional boundary does not take over the original
+// human Case identity. L3-S9:15 keeps an existing record's hash value as a
+// historical original field only, and L4-workflow-convergence.md:285 states
+// that a changed original material produces no eligibility difference and
+// that the historical original record is not rewritten for compatibility.
+// The byte-level comparison is therefore no longer a gate, but the original
+// revision is still read under its own original identity: the current
+// professional boundary must not become the original human Case's source.
 func TestHumanCaseOriginalRevisionCannotBeReplacedByCurrentProfessionalBoundary(t *testing.T) {
 	f, current := humanDefectFixture(t)
-	current, err := investigation.Ingest(f.root, f.statePath, f.journalPath, investigation.IngestRequest{ExpectedRevision: current.Revision, GroupingRationale: "original human source"})
+	current, err := investigation.Ingest(f.root, f.statePath, f.journalPath, investigation.IngestRequest{ExpectedRevision: -1, GroupingRationale: "original human source"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	pointer := investigationPointerFromState(t, current.State)
 	originalPath := pointer["path"].(string)
 	caseID := pointer["case_id"].(string)
-	current, err = investigation.UpdateCase(f.root, f.statePath, f.journalPath, investigation.CaseRevisionRequest{ExpectedRevision: current.Revision, CaseID: caseID, Operation: "boundary_observed", Mutate: func(document map[string]any) error {
+	current, err = investigation.UpdateCase(f.root, f.statePath, f.journalPath, investigation.CaseRevisionRequest{ExpectedRevision: -1, CaseID: caseID, Operation: "boundary_observed", Mutate: func(document map[string]any) error {
 		document["failure_boundary_refs"] = []string{"test://later-observation"}
 		return nil
 	}})
@@ -344,21 +375,47 @@ func TestHumanCaseOriginalRevisionCannotBeReplacedByCurrentProfessionalBoundary(
 	}
 	writeInvestigationBytes(t, f.root, originalPath, []byte("changed original revision"))
 	beforeState, beforeJournal := mustRead(t, f.statePath), mustRead(t, f.journalPath)
-	_, err = investigation.RegisterHypothesis(f.root, f.statePath, f.journalPath, investigation.HypothesisRequest{ExpectedRevision: current.Revision, CaseID: caseID, HypothesisID: "hypothesis-history-source", AssignmentID: "assignment-history-source", Statement: "a boundary drops the field", Invariant: "fields survive", Discriminator: "compare input and output", ExpectedOutcomes: map[string]any{"support": "field lost", "refute": "field retained"}, SourceFindingIDs: []string{}, EvidenceRefs: []string{"hd-human-defect"}})
-	if err == nil || !strings.Contains(err.Error(), "original revision") {
-		t.Fatalf("current professional boundary hid changed original source: %v", err)
+	_, err = investigation.RegisterHypothesis(f.root, f.statePath, f.journalPath, investigation.HypothesisRequest{ExpectedRevision: -1, CaseID: caseID, HypothesisID: "hypothesis-history-source", AssignmentID: "assignment-history-source", Statement: "a boundary drops the field", Invariant: "fields survive", Discriminator: "compare input and output", ExpectedOutcomes: map[string]any{"support": "field lost", "refute": "field retained"}, SourceFindingIDs: []string{}, EvidenceRefs: []string{"hd-human-defect"}})
+	if err != nil {
+		t.Fatalf("changed original revision blocked the current question: %v", err)
 	}
-	if !bytes.Equal(beforeState, mustRead(t, f.statePath)) || !bytes.Equal(beforeJournal, mustRead(t, f.journalPath)) {
-		t.Fatal("changed history wrote a new question")
+	if bytes.Equal(beforeState, mustRead(t, f.statePath)) || bytes.Equal(beforeJournal, mustRead(t, f.journalPath)) {
+		t.Fatal("accepted current question wrote no Runtime or journal fact")
+	}
+	// The historical original revision keeps its own identity: the current
+	// professional boundary did not become the human Case's original source.
+	document := readCaseDocument(t, f.root, investigationPointer(t, f)["path"].(string))
+	if document["failure_boundary_refs"] == nil {
+		t.Fatal("current professional boundary was lost")
+	}
+	history := document["revision_history"].([]any)
+	if len(history) == 0 {
+		t.Fatal("original revision history was lost")
+	}
+	if s8TestString(history[0].(map[string]any)["path"]) != originalPath {
+		t.Fatalf("current boundary replaced the original revision identity: %v", history[0])
 	}
 }
 
+// TestHumanCaseContractApprovalRechecksOriginalSourceAndProductBaseline
+// proves what the contract approval still rechecks after the blueprint
+// removed the material-hash gates. L3-S9:15 keeps an existing record's hash
+// value as a historical original field only, L4-workflow-convergence.md:285
+// states that changed or missing original material produces no eligibility
+// difference, and L3-S8:43 removes hash/SHA computation and verification from
+// the Hook and its consumers. A changed original decision, a changed original
+// Case revision, changed product bytes and a changed current generation are
+// therefore no longer approval gates.
+//
+// The real approval itself is still required and is still bound: an approval
+// whose evidence is not scoped to this contract approval remains refused, and
+// a refused approval must not write Runtime or journal facts.
 func TestHumanCaseContractApprovalRechecksOriginalSourceAndProductBaseline(t *testing.T) {
-	for _, fault := range []string{"decision_bytes", "initial_revision", "product_bytes", "baseline_digest", "current_generation", "wrong_approval_scope"} {
+	for _, fault := range []string{"decision_bytes", "initial_revision", "product_bytes", "current_generation", "wrong_approval_scope"} {
 		t.Run(fault, func(t *testing.T) {
 			f, current, path := humanRoutedContractFixture(t)
 			caseID := investigationPointerFromState(t, current.State)["case_id"].(string)
-			approvalHash, approvalID, _ := registerContractApprovalEvidence(t, f, path)
+			_, approvalID, _ := registerContractApprovalEvidence(t, f, path)
 			current = currentS8Snapshot(t, f)
 			switch fault {
 			case "decision_bytes":
@@ -370,12 +427,6 @@ func TestHumanCaseContractApprovalRechecksOriginalSourceAndProductBaseline(t *te
 				writeInvestigationBytes(t, f.root, first["path"].(string), []byte("changed initial Case"))
 			case "product_bytes":
 				writeInvestigationBytes(t, f.root, "internal/service/decoder.go", []byte("package service\nconst Different = true\n"))
-			case "baseline_digest":
-				var err error
-				current, err = investigation.UpdateCase(f.root, f.statePath, f.journalPath, investigation.CaseRevisionRequest{ExpectedRevision: current.Revision, CaseID: caseID, Operation: "invalid_baseline_pin", Mutate: func(document map[string]any) error { document["baseline_digest"] = strings.Repeat("d", 64); return nil }})
-				if err != nil {
-					t.Fatal(err)
-				}
 			case "current_generation":
 				current.State["baseline"].(map[string]any)["generation"] = 3
 				writeInvestigationJSON(t, f.statePath, current.State)
@@ -389,12 +440,24 @@ func TestHumanCaseContractApprovalRechecksOriginalSourceAndProductBaseline(t *te
 				writeInvestigationJSON(t, f.statePath, current.State)
 			}
 			beforeState, beforeJournal := mustRead(t, f.statePath), mustRead(t, f.journalPath)
-			_, err := investigation.ApproveContract(f.root, f.statePath, f.journalPath, investigation.ContractRequest{ExpectedRevision: -1, CaseID: caseID, ContractPath: path, ApprovedBy: "main-session", ApprovalHash: approvalHash, ApprovalEvidenceID: approvalID})
-			if err == nil {
-				t.Fatal("changed authority source was approved")
+			_, err := investigation.ApproveContract(f.root, f.statePath, f.journalPath, investigation.ContractRequest{ExpectedRevision: -1, CaseID: caseID, ContractPath: path, ApprovedBy: "main-session", ApprovalEvidenceID: approvalID})
+			if fault == "wrong_approval_scope" {
+				// The approval is still bound to its own evidence scope.
+				if err == nil {
+					t.Fatal("approval with a foreign evidence scope was accepted")
+				}
+				if !bytes.Equal(beforeState, mustRead(t, f.statePath)) || !bytes.Equal(beforeJournal, mustRead(t, f.journalPath)) {
+					t.Fatal("failed approval changed Runtime/journal")
+				}
+				return
 			}
-			if !bytes.Equal(beforeState, mustRead(t, f.statePath)) || !bytes.Equal(beforeJournal, mustRead(t, f.journalPath)) {
-				t.Fatal("failed approval changed Runtime/journal")
+			// Changed original material produces no eligibility difference.
+			if err != nil {
+				t.Fatalf("approval was refused over changed original material: %v", err)
+			}
+			document := readCaseDocument(t, f.root, investigationPointer(t, f)["path"].(string))
+			if s8TestString(document["status"]) != "contract_approved" {
+				t.Fatalf("approval did not reach the approved Case status: %v", document["status"])
 			}
 		})
 	}

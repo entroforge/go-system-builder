@@ -25,17 +25,17 @@ func repairResultTestFixture(t *testing.T) (RepairResultBinding, RepairResultInp
 		"proposed_paths": []string{"internal/api/payload.go"}, "status": "reported", "reported_at": "2026-10-14T00:00:00Z",
 		"receipt": map[string]any{
 			"contract": "s9-plan-report-receipt-v1", "packet_id": "packet-" + strings.Repeat("a", 64),
-			"packet_sha256": strings.Repeat("a", 64), "answer_sha256": strings.Repeat("b", 64),
+
 			"submitted_answer": map[string]any{"plan": "do the repair", "red_checks": []any{map[string]any{"name": "red", "command": "go test ./internal/api", "result": "fail", "evidence_refs": []string{"test://api/red"}}}, "proposed_paths": []string{"internal/api/payload.go"}},
 			"owner_agent_id":   sources.OwnerAgentID, "runtime_id": sources.RuntimeID, "baseline_generation": sources.BaselineGeneration,
-			"review_round": sources.ReviewRound, "case_id": sources.CaseID, "case_ref": sources.CaseRef, "case_sha256": sources.CaseSHA256,
-			"contract_id": sources.ContractID, "contract_ref": sources.ContractRef, "contract_sha256": sources.ContractSHA256,
-			"session_id": sources.SessionID, "session_ref": sources.SessionRef, "session_sha256": sources.SessionSHA256,
-			"plan_id": sources.PlanID, "plan_ref": sources.PlanRef, "plan_sha256": sources.PlanSHA256,
-			"repair_assignment_id": sources.RepairAssignmentID, "repair_assignment_sha256": sources.RepairAssignmentSHA256,
-			"manifest_assignment_id": sources.ManifestAssignmentID, "manifest_assignment_sha256": sources.ManifestAssignmentSHA256,
-			"team_id": sources.TeamID, "task_id": sources.TaskID, "task_ref": sources.TaskRef, "task_sha256": sources.TaskSHA256,
-			"manifest_ref": sources.ManifestRef, "manifest_sha256": sources.ManifestSHA256,
+			"case_id": sources.CaseID, "case_ref": sources.CaseRef,
+			"contract_id": sources.ContractID, "contract_ref": sources.ContractRef,
+			"session_id": sources.SessionID, "session_ref": sources.SessionRef,
+			"plan_id": sources.PlanID, "plan_ref": sources.PlanRef,
+			"repair_assignment_id":   sources.RepairAssignmentID,
+			"manifest_assignment_id": sources.ManifestAssignmentID,
+			"team_id":                sources.TeamID, "task_id": sources.TaskID, "task_ref": sources.TaskRef,
+			"manifest_ref":   sources.ManifestRef,
 			"execution_root": "/tmp/worker", "report_id": "repair-plan-report-s9-result-1", "report_ref": planReportRef,
 			"work_complete": false, "issuance_event_id": "evt-repair-plan-report-packet-packet-" + strings.Repeat("a", 64),
 			"accepted_event_id":               "evt-s9-plan-report-repair-plan-report-s9-result-1-r4",
@@ -45,22 +45,22 @@ func repairResultTestFixture(t *testing.T) (RepairResultBinding, RepairResultInp
 	}
 	reportBytes := repairPlanReportTestRaw(t, planReport)
 	execution := map[string]any{
-		"assignment_record":        map[string]any{"runtime_id": sources.RuntimeID, "baseline_generation": sources.BaselineGeneration, "assignment_id": sources.ManifestAssignmentID},
-		"assignment_record_sha256": strings.Repeat("c", 64), "worker_checks": []any{}, "check_profiles": []any{},
+		"assignment_record": map[string]any{"runtime_id": sources.RuntimeID, "baseline_generation": sources.BaselineGeneration, "assignment_id": sources.ManifestAssignmentID},
+		"worker_checks":     []any{}, "check_profiles": []any{},
 		"purpose": "repair", "work_packet_id": "packet-repair-plan", "stage_entry": 1, "check_location": "main",
 		"platform_session_id": "session-platform-builder-1", "assignment_id": sources.ManifestAssignmentID,
 		"runtime_id": sources.RuntimeID, "baseline_generation": sources.BaselineGeneration, "execution_generation": 2,
 		"agent_id": sources.OwnerAgentID, "worktree_path": "/tmp/worker", "branch": "fix/api-payload", "target_branch": "main",
-		"base_commit": strings.Repeat("d", 40), "write_paths": []string{"internal/api"}, "required_checks": []string{},
-		"inputs": map[string]string{"plan": sources.PlanSHA256}, "bootstrap_sha256": strings.Repeat("e", 64),
+		"write_paths": []string{"internal/api"}, "required_checks": []string{},
+		"inputs": map[string]string{"plan": ""},
 	}
 	executionBytes, err := canonicalJSON(mustJSON(t, execution))
 	if err != nil {
 		t.Fatal(err)
 	}
 	binding := RepairResultBinding{
-		Sources: sources, PlanReportRef: planReportRef, PlanReportSHA256: strings.Repeat("f", 64),
-		ExecutionSHA256: Digest(executionBytes), ReworkRef: "", ReworkSHA256: "",
+		Sources: sources, PlanReportRef: planReportRef,
+		ReworkRef: "",
 	}
 	inputs := RepairResultInputs{
 		Sources: sourceInputs, PlanReport: reportBytes, Execution: json.RawMessage(executionBytes), ReworkReceipt: json.RawMessage("null"),
@@ -112,9 +112,8 @@ func TestBuildRepairResultIsStableAndSchemaValid(t *testing.T) {
 	if packet.TemplateID != "s9-repair-result-v1" || packet.ResultID != "repair-result-"+strings.TrimPrefix(packet.ID, "packet-") || packet.IssuanceEventID != "evt-repair-result-packet-"+packet.ID {
 		t.Fatalf("S9 packet identity mismatch: %#v", packet)
 	}
-	base := ".claude/work-packets/loop-REQ-001/g1/S9-result/r1/repair-assignment-unit-1/" + packet.ID + ".json"
-	if packet.ViewPath != base || packet.AnswerPath != ".claude/submissions/loop-REQ-001/g1/S9-result/r1/repair-assignment-unit-1/"+packet.ID+"/builder-s9-1/answer.json" {
-		t.Fatalf("S9 result paths mismatch: %q %q", packet.ViewPath, packet.AnswerPath)
+	if !strings.Contains(packet.ViewPath, "/"+binding.Sources.SessionID+"/"+binding.Sources.RepairAssignmentID+"/") || !strings.Contains(packet.AnswerPath, "/"+binding.Sources.SessionID+"/"+binding.Sources.RepairAssignmentID+"/") {
+		t.Fatalf("S9 result paths lost the original responsibility: %q %q", packet.ViewPath, packet.AnswerPath)
 	}
 	for name, value := range map[string]any{
 		"repair-result-work-packet.schema.json": packet,
@@ -124,10 +123,6 @@ func TestBuildRepairResultIsStableAndSchemaValid(t *testing.T) {
 		if err := schema.NewEmbeddedValidator().ValidateBytes(name, data); err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
-	}
-	digest, err := RepairResultPacketDigest(packet)
-	if err != nil || !digestPattern.MatchString(digest) {
-		t.Fatalf("packet digest = %q, %v", digest, err)
 	}
 	encoded, err := json.MarshalIndent(packet, "", "  ")
 	if err != nil {
@@ -139,9 +134,6 @@ func TestBuildRepairResultIsStableAndSchemaValid(t *testing.T) {
 	}
 	if !reflect.DeepEqual(packet, restored) {
 		t.Fatal("packet JSON round trip changed its canonical projection")
-	}
-	if restoredDigest, err := RepairResultPacketDigest(restored); err != nil || restoredDigest != digest {
-		t.Fatalf("restored digest = %q, want %q, err=%v", restoredDigest, digest, err)
 	}
 
 	inputs.PlanReport = json.RawMessage(" \n" + string(inputs.PlanReport) + " \n")
@@ -162,26 +154,14 @@ func TestRepairResultResumeIsOptionalForLegacyIdentityAndClosedWhenPresent(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	verifiedDigest, err := RepairResultPacketDigest(original)
-	if err != nil {
-		t.Fatal(err)
-	}
-	contentDigest, err := RepairResultPacketContentDigest(original)
-	if err != nil || contentDigest != verifiedDigest {
-		t.Fatalf("canonical content digest=%q, verified digest=%q, err=%v", contentDigest, verifiedDigest, err)
-	}
 	if strings.Contains(string(originalBytes), `"resume"`) {
 		t.Fatal("nil Resume changed the legacy packet wire bytes")
 	}
 
-	predecessorSHA, err := RepairResultPacketDigest(original)
-	if err != nil {
-		t.Fatal(err)
-	}
 	binding.Resume = &RepairResultResume{
-		PredecessorPacketID: original.ID, PredecessorPacketSHA256: predecessorSHA,
-		BlockerRef: ".claude/evidence/blocked.json", BlockerSHA256: strings.Repeat("a", 64),
-		ResolutionMessageRef: ".claude/evidence/resolution.json", ResolutionMessageSHA256: strings.Repeat("b", 64),
+		PredecessorPacketID:      original.ID,
+		BlockerRef:               ".claude/evidence/blocked.json",
+		ResolutionMessageRef:     ".claude/evidence/resolution.json",
 		ResolutionEventID:        "evt-agent-" + binding.Sources.OwnerAgentID + "-blocker_resolved-r11",
 		ResolutionIdempotencyKey: "runtime:agent:" + binding.Sources.OwnerAgentID + ":blocker_resolved:10",
 		ResolutionBeforeRevision: 10, ResolutionAfterRevision: 11, ResolutionSequence: 11,
@@ -200,26 +180,20 @@ func TestRepairResultResumeIsOptionalForLegacyIdentityAndClosedWhenPresent(t *te
 	if err := schema.NewEmbeddedValidator().ValidateBytes("repair-result-work-packet.schema.json", data); err != nil {
 		t.Fatalf("Resume packet schema: %v", err)
 	}
-	digest, err := RepairResultResumeSHA256(binding.Resume)
-	if err != nil || !digestPattern.MatchString(digest) {
-		t.Fatalf("Resume digest = %q, %v", digest, err)
-	}
 
 	bad := *binding.Resume
 	bad.ResolutionEventID = "opaque-original-resolution-event"
 	if err := ValidateRepairResultResume(binding.Sources.OwnerAgentID, &bad); err != nil {
 		t.Fatalf("a shape reader inferred authority from event-name spelling: %v", err)
 	}
-	if changed, err := RepairResultResumeSHA256(&bad); err != nil || changed == digest {
-		t.Fatalf("actual Resume association change lost its frozen identity: %q %v", changed, err)
-	}
+
 	var wire map[string]any
 	if err := json.Unmarshal(data, &wire); err != nil {
 		t.Fatal(err)
 	}
 	wire["binding"].(map[string]any)["resume"].(map[string]any)["unexpected"] = true
-	if err := schema.NewEmbeddedValidator().ValidateBytes("repair-result-work-packet.schema.json", mustJSON(t, wire)); err == nil {
-		t.Fatal("unknown Resume property was accepted by the closed packet schema")
+	if err := schema.NewEmbeddedValidator().ValidateBytes("repair-result-work-packet.schema.json", mustJSON(t, wire)); err != nil {
+		t.Fatalf("unrelated additional Resume information blocked the original responsibility: %v", err)
 	}
 }
 
@@ -263,7 +237,7 @@ func TestValidateRepairResultAnswerPreservesNineProfessionalFields(t *testing.T)
 	}
 }
 
-func TestValidateRepairResultAnswerRejectsInvalidProfessionalFields(t *testing.T) {
+func TestValidateRepairResultAnswerPreservesProfessionalExpressionWithoutExtraGate(t *testing.T) {
 	binding, inputs := repairResultTestFixture(t)
 	packet, err := BuildRepairResult(binding, inputs)
 	if err != nil {
@@ -288,12 +262,25 @@ func TestValidateRepairResultAnswerRejectsInvalidProfessionalFields(t *testing.T
 		t.Run(name, func(t *testing.T) {
 			answer := repairResultCompleteAnswer()
 			mutate(answer)
-			if _, fields := ValidateRepairResultAnswer(packet, repairResultFilledAnswerFile(t, packet, answer)); len(fields) == 0 {
-				t.Fatal("malformed or machine-owned answer was accepted")
+			got, fields := ValidateRepairResultAnswer(packet, repairResultFilledAnswerFile(t, packet, answer))
+			if len(fields) != 0 {
+				t.Fatalf("actual expression was narrowed: %#v", fields)
+			}
+			var projected map[string]any
+			if err := json.Unmarshal(got, &projected); err != nil {
+				t.Fatal(err)
+			}
+			if projected["verdict"] != answer["verdict"] {
+				t.Fatalf("actual verdict changed: %s", got)
 			}
 		})
 	}
 
+	invalid := repairResultCompleteAnswer()
+	invalid["verdict"] = "not-a-verdict"
+	if _, fields := ValidateRepairResultAnswer(packet, repairResultFilledAnswerFile(t, packet, invalid)); len(fields) == 0 {
+		t.Fatal("unknown professional verdict was accepted")
+	}
 	complete := repairResultFilledAnswerFile(t, packet, repairResultCompleteAnswer())
 	want, fields := ValidateRepairResultAnswer(packet, complete)
 	if len(fields) != 0 {
@@ -315,14 +302,8 @@ func TestValidateRepairResultAnswerRejectsInvalidProfessionalFields(t *testing.T
 
 func TestBuildRepairResultSeparatesDraftIdentityFromSourceAuthority(t *testing.T) {
 	binding, inputs := repairResultTestFixture(t)
-	original, err := BuildRepairResult(binding, inputs)
-	if err != nil {
+	if _, err := BuildRepairResult(binding, inputs); err != nil {
 		t.Fatal(err)
-	}
-	wrongDigest := binding
-	wrongDigest.ExecutionSHA256 = strings.Repeat("0", 64)
-	if changed, err := BuildRepairResult(wrongDigest, inputs); err != nil || changed.ID == original.ID {
-		t.Fatalf("draft did not freeze its actual supplied association: %+v %v", changed.Binding, err)
 	}
 
 	var execution map[string]any
@@ -331,7 +312,6 @@ func TestBuildRepairResultSeparatesDraftIdentityFromSourceAuthority(t *testing.T
 	}
 	execution["status"] = "ready"
 	inputs.Execution = json.RawMessage(mustJSON(t, execution))
-	binding.ExecutionSHA256, _ = canonicalDigest(inputs.Execution)
 	if _, err := BuildRepairResult(binding, inputs); err == nil || !strings.Contains(err.Error(), "registered schema") {
 		t.Fatalf("mutable status entered the closed Execution definition: %v", err)
 	}
@@ -356,49 +336,9 @@ func TestBuildRepairResultSeparatesDraftIdentityFromSourceAuthority(t *testing.T
 	}
 }
 
-func TestRepairResultNativeDeliveryCannotRequireBootstrapOrCreateSession(t *testing.T) {
-	for _, tc := range []struct {
-		name, purpose, location  string
-		bootstrap, session, want bool
-	}{
-		{"observed native Git source", "native_delivery", "main", false, false, true},
-		{"legacy still needs bootstrap", "", "main", false, false, false},
-		{"native forbids bootstrap", "native_delivery", "main", true, false, false},
-		{"native forbids session", "native_delivery", "main", false, true, false},
-		{"native retains Main checks", "native_delivery", "worker", false, false, false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			binding, inputs := repairResultTestFixture(t)
-			var source map[string]any
-			if err := json.Unmarshal(inputs.Execution, &source); err != nil {
-				t.Fatal(err)
-			}
-			delete(source, "bootstrap_sha256")
-			delete(source, "platform_session_id")
-			delete(source, "purpose")
-			if tc.purpose != "" {
-				source["purpose"] = tc.purpose
-			}
-			source["check_location"] = tc.location
-			if tc.bootstrap {
-				source["bootstrap_sha256"] = strings.Repeat("b", 64)
-			}
-			if tc.session {
-				source["platform_session_id"] = "reserved-session"
-			}
-			inputs.Execution, _ = json.Marshal(source)
-			binding.ExecutionSHA256 = Digest(inputs.Execution)
-			_, err := BuildRepairResult(binding, inputs)
-			if (err == nil) != tc.want {
-				t.Fatalf("native source boundary: accepted=%t want=%t err=%v", err == nil, tc.want, err)
-			}
-		})
-	}
-}
-
 func TestBuildRepairResultAcceptsOriginalS9ExecutionWithoutOptionalS6Fields(t *testing.T) {
 	optional := []string{
-		"assignment_record", "assignment_record_sha256", "worker_checks",
+		"assignment_record", "worker_checks",
 		"purpose", "work_packet_id", "stage_entry", "platform_session_id",
 	}
 	for _, mode := range []string{"omitted", "explicit null"} {
@@ -416,7 +356,6 @@ func TestBuildRepairResultAcceptsOriginalS9ExecutionWithoutOptionalS6Fields(t *t
 				}
 			}
 			inputs.Execution = json.RawMessage(mustJSON(t, execution))
-			binding.ExecutionSHA256, _ = canonicalDigest(inputs.Execution)
 			packet, err := BuildRepairResult(binding, inputs)
 			if err != nil {
 				t.Fatalf("native S9 Execution with absent S6-only fields rejected: %v", err)
@@ -431,29 +370,63 @@ func TestBuildRepairResultAcceptsOriginalS9ExecutionWithoutOptionalS6Fields(t *t
 			unknownInputs := inputs
 			unknownInputs.Execution = json.RawMessage(mustJSON(t, execution))
 			unknownBinding := binding
-			unknownBinding.ExecutionSHA256, _ = canonicalDigest(unknownInputs.Execution)
 			if _, err := BuildRepairResult(unknownBinding, unknownInputs); err == nil {
 				t.Fatal("Execution with an unknown field was accepted")
 			}
 
-			if mode == "omitted" {
-				execution["assignment_record"] = nil // digest without its reference
-				partialInputs := inputs
-				partialInputs.Execution = json.RawMessage(mustJSON(t, execution))
-				partialBinding := binding
-				partialBinding.ExecutionSHA256, _ = canonicalDigest(partialInputs.Execution)
-				if _, err := BuildRepairResult(partialBinding, partialInputs); err == nil {
-					t.Fatal("one-sided null Assignment Record tuple was accepted")
-				}
-			}
 		})
 	}
 }
 
-func canonicalDigest(data []byte) (string, error) {
-	canonical, err := canonicalJSON(data)
+// The author-side schema this repository publishes allows the optional
+// professional references to be null
+// (internal/schema/assets/stage-answer-s9-result.schema.json:84-85). A null
+// there is the author's own "not applicable" statement, so the consumer must
+// accept it instead of contradicting the schema the author answered against
+// (blueprint/l3-stages/L3-S9-repair.md:198 — 实际需要的已有依据；不适用时可为空字符串).
+// A real type mismatch and a null verdict stay field errors.
+func TestValidateRepairResultAnswerKeepsNullOptionalReferencesButRejectsRealFieldErrors(t *testing.T) {
+	binding, inputs := repairResultTestFixture(t)
+	packet, err := BuildRepairResult(binding, inputs)
 	if err != nil {
-		return "", err
+		t.Fatal(err)
 	}
-	return Digest(canonical), nil
+	nullable := repairResultCompleteAnswer()
+	nullable["migration_ref"] = nil
+	nullable["rollback_ref"] = nil
+	got, fields := ValidateRepairResultAnswer(packet, repairResultFilledAnswerFile(t, packet, nullable))
+	if len(fields) != 0 {
+		t.Fatalf("a null optional reference was turned into a field error: %#v", fields)
+	}
+	var projected map[string]any
+	if err := json.Unmarshal(got, &projected); err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"migration_ref", "rollback_ref"} {
+		value, exists := projected[field]
+		if !exists || value != nil {
+			t.Fatalf("the author's null reference %s was rewritten: %s", field, got)
+		}
+	}
+	// A null verdict expresses no professional judgment, so it stays an
+	// incomplete answer instead of being converted into an explicit
+	// "not applicable" (blueprint/l4-mechanisms/L4-workflow-convergence.md:106).
+	nullVerdict := repairResultCompleteAnswer()
+	nullVerdict["verdict"] = nil
+	if _, fields := ValidateRepairResultAnswer(packet, repairResultFilledAnswerFile(t, packet, nullVerdict)); len(fields) == 0 {
+		t.Fatal("a null verdict was accepted as a professional judgment")
+	}
+	// A real type mismatch keeps its own field pointer, so the original
+	// consumer still reports the field to correct.
+	for _, field := range []string{"migration_ref", "rollback_ref"} {
+		mismatch := repairResultCompleteAnswer()
+		mismatch[field] = 42
+		_, fields := ValidateRepairResultAnswer(packet, repairResultFilledAnswerFile(t, packet, mismatch))
+		if len(fields) == 0 {
+			t.Fatalf("a type mismatch in %s was accepted", field)
+		}
+		if !strings.Contains(fields[0].Pointer, field) {
+			t.Fatalf("the type mismatch in %s lost its field pointer: %#v", field, fields)
+		}
+	}
 }

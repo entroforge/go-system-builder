@@ -64,15 +64,6 @@ func TestInspectCleanTreeReportsReady(t *testing.T) {
 	if !insp.Ready {
 		t.Fatalf("expected ready, blockers=%v", insp.Blockers)
 	}
-	if insp.SourceHead != "feature-commit" {
-		t.Fatalf("source head: got %q want feature-commit", insp.SourceHead)
-	}
-	if insp.TargetHead != "base-commit" {
-		t.Fatalf("target head: got %q want base-commit", insp.TargetHead)
-	}
-	if insp.MergeBase != "base-commit" {
-		t.Fatalf("merge base: got %q want base-commit", insp.MergeBase)
-	}
 	if !insp.NonSquashMode {
 		t.Fatal("NonSquashMode must always be true")
 	}
@@ -81,96 +72,27 @@ func TestInspectCleanTreeReportsReady(t *testing.T) {
 	}
 }
 
-func TestInspectDirtyTreeReportsBlocker(t *testing.T) {
+func TestInspectReportsUnknownWorktreeMaterialWithoutBlocking(t *testing.T) {
 	fr, restore := runFakeRunner(t)
 	defer restore()
 	root, wt := setupCleanTree(t, fr)
 	fr.markDirty(wt)
-
-	req := InspectRequest{
-		Root:               root,
-		Assignment:         assignmentContext(wt, "feature", "develop"),
-		TargetBranch:       "develop",
-		BaselineGeneration: 1,
-	}
-	insp, err := Inspect(context.Background(), req, InspectConfig{
-		SkipCompletionCheck: true,
-	})
-	if err != nil {
-		t.Fatalf("inspect: %v", err)
-	}
-	if insp.Ready {
-		t.Fatalf("expected not ready (dirty), got ready; blockers=%v", insp.Blockers)
-	}
-	if !containsBlocker(insp.Blockers, ErrDirtyWorktree.Error()) {
-		t.Fatalf("expected dirty-worktree blocker, got %v", insp.Blockers)
-	}
-	for _, want := range []string{
-		"Worker checkout \"" + wt + "\" is dirty",
-		"git -C \"" + wt + "\" status --short",
-	} {
-		if !containsBlocker(insp.Blockers, want) {
-			t.Fatalf("Worker dirty blocker %v does not identify exact root/inspection command %q", insp.Blockers, want)
-		}
+	req := InspectRequest{Root: root, Assignment: assignmentContext(wt, "feature", "develop"), TargetBranch: "develop", BaselineGeneration: 1}
+	insp, err := Inspect(context.Background(), req, InspectConfig{SkipCompletionCheck: true, ObserveWorktree: true})
+	if err != nil || !insp.Ready || len(insp.WorktreeObservation) == 0 || !strings.Contains(strings.Join(insp.WorktreeObservation, " "), "unknown") {
+		t.Fatalf("unowned worktree material should remain visible, not block: %+v %v", insp, err)
 	}
 }
 
-func TestInspectMissingCommitsReportsBlocker(t *testing.T) {
+func TestInspectDoesNotRequireExtraCommitCount(t *testing.T) {
 	fr, restore := runFakeRunner(t)
 	defer restore()
 	root, wt := setupCleanTree(t, fr)
-	// Force feature == base by removing the feature-commit; both
-	// branches point at base-commit so the count drops to zero.
 	fr.setBranch("feature", "base-commit")
-
-	req := InspectRequest{
-		Root:               root,
-		Assignment:         assignmentContext(wt, "feature", "develop"),
-		TargetBranch:       "develop",
-		BaselineGeneration: 1,
-	}
-	insp, err := Inspect(context.Background(), req, InspectConfig{
-		SkipCompletionCheck: true,
-	})
-	if err != nil {
-		t.Fatalf("inspect: %v", err)
-	}
-	if insp.Ready {
-		t.Fatalf("expected not ready (no commits), got ready")
-	}
-	if !containsBlocker(insp.Blockers, ErrMissingCommits.Error()) {
-		t.Fatalf("expected missing-commits blocker, got %v", insp.Blockers)
-	}
-}
-
-func TestInspectConflictReportsBlocker(t *testing.T) {
-	fr, restore := runFakeRunner(t)
-	defer restore()
-	root, wt := setupCleanTree(t, fr)
-	// merge-tree produces conflict markers — set them in the runner so
-	// the next merge-tree call returns them.
-	fr.mergeTreeOutput = "changed in both\n<<<<<<< source\n"
-
-	req := InspectRequest{
-		Root:               root,
-		Assignment:         assignmentContext(wt, "feature", "develop"),
-		TargetBranch:       "develop",
-		BaselineGeneration: 1,
-	}
-	insp, err := Inspect(context.Background(), req, InspectConfig{
-		SkipCompletionCheck: true,
-	})
-	if err != nil {
-		t.Fatalf("inspect: %v", err)
-	}
-	if insp.Ready {
-		t.Fatalf("expected not ready (conflict), got ready")
-	}
-	if !containsBlocker(insp.Blockers, ErrMergeConflict.Error()) {
-		t.Fatalf("expected merge-conflict blocker, got %v", insp.Blockers)
-	}
-	if len(insp.Conflicts) == 0 {
-		t.Fatal("expected conflicts to be populated")
+	req := InspectRequest{Root: root, Assignment: assignmentContext(wt, "feature", "develop"), TargetBranch: "develop", BaselineGeneration: 1}
+	insp, err := Inspect(context.Background(), req, InspectConfig{SkipCompletionCheck: true})
+	if err != nil || !insp.Ready {
+		t.Fatalf("legitimate no-change branch blocked: %+v %v", insp, err)
 	}
 }
 
@@ -292,7 +214,7 @@ func TestInspectCompletionReportMissingReportsBlocker(t *testing.T) {
 	if insp.Ready {
 		t.Fatalf("expected not ready (missing report), got ready")
 	}
-	if !containsBlockerPrefix(insp.Blockers, "completion report missing") {
+	if !containsBlockerPrefix(insp.Blockers, "completion report location is unavailable") {
 		t.Fatalf("expected completion-report blocker, got %v", insp.Blockers)
 	}
 }

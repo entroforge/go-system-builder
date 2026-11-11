@@ -103,18 +103,52 @@ func TestNativeS6BriefMinimalBlockerWorksBeforeAndAfterPlan(t *testing.T) {
 			}
 		}
 	}
-	// A legitimate blocker never waives the original worktree source binding.
+	// A genuine minimal blocker is still handed back to Main when the
+	// author's worktree no longer carries the declared source history: the
+	// Hook does not qualify reception by any source commit, Git OID or
+	// per-file hash. L3-S6-build.md:320 — "Hook 不扫描 Git、登记或比对
+	// HEAD／base／commit OID、检查祖先关系或逐文件散列作为接收资格";
+	// L3-S6-build.md:346 — "Hook 不登记或比对 source commit、Git OID 或内容
+	// hash 来认证这些专业工作".
+	briefBefore, err := os.ReadFile(filepath.Join(root, brief))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resultBefore, err := os.ReadFile(resultPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	planBefore, err := os.ReadFile(filepath.Join(source, plan))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := workspace.Git(t.Context(), source, "checkout", "--orphan", "native/unrelated-source"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := workspace.Git(t.Context(), source, "commit", "--allow-empty", "-m", "unrelated source"); err != nil {
 		t.Fatal(err)
 	}
-	if code, output := nativeEvent(t, root, source, "SubagentStop", text, false); code != 0 || !strings.Contains(output, "does not contain the declared source commit") || strings.Contains(output, "blocker returned for Main") {
-		t.Fatalf("minimal blocker bypassed original source checking: %d %s", code, output)
+	code, output := nativeEvent(t, root, source, "SubagentStop", text, false)
+	if code != 0 || !strings.Contains(output, "no completion receipt") || !strings.Contains(output, "Required external fixture is unavailable") {
+		t.Fatalf("minimal blocker stopped reaching Main after the source history changed: %d %s", code, output)
+	}
+	if strings.Contains(output, "does not contain the declared source commit") {
+		t.Fatalf("retired source-commit qualification refused the blocker handoff: %s", output)
 	}
 	if stageSnapshot(t, root).Revision != before.Revision {
 		t.Fatal("wrong-source blocker changed Runtime")
+	}
+	if after, _ := os.ReadFile(filepath.Join(root, brief)); !bytes.Equal(after, briefBefore) {
+		t.Fatal("wrong-source blocker rewrote the brief")
+	}
+	if after, _ := os.ReadFile(coordinatePath); !bytes.Equal(after, coordinates) {
+		t.Fatal("wrong-source blocker changed assignment coordinates")
+	}
+	if after, _ := os.ReadFile(resultPath); !bytes.Equal(after, resultBefore) {
+		t.Fatal("wrong-source blocker rewrote the private Result")
+	}
+	if after, _ := os.ReadFile(filepath.Join(source, plan)); !bytes.Equal(after, planBefore) {
+		t.Fatal("wrong-source blocker rewrote the existing Plan")
 	}
 }
 

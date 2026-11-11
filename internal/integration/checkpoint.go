@@ -1,14 +1,11 @@
 package integration
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -100,19 +97,12 @@ func (s *CheckpointStore) PathForRecord(root string, ref assignmentrecord.Record
 	return assignmentrecord.IntegrationCheckpointPath(root, ref)
 }
 
-// IdempotencyKey builds the canonical idempotency key per BUG-039-05 §4.1:
-// assignment_id + source_head + target_branch + baseline_generation. The
-// key is hash-truncated to keep it small in journal records and is
-// deterministic for the same inputs.
-func IdempotencyKey(assignmentID, sourceHead, targetBranch string, baselineGeneration int) string {
-	raw := strings.Join([]string{
-		strings.TrimSpace(assignmentID),
-		strings.TrimSpace(sourceHead),
-		strings.TrimSpace(targetBranch),
-		strconv.Itoa(baselineGeneration),
-	}, "|")
-	sum := sha256.Sum256([]byte(raw))
-	return "ckpt:" + hex.EncodeToString(sum[:8])
+// IdempotencyKey uses the original assignment and target responsibility, not
+// Git object identity. Length prefixes distinguish embedded separators.
+func IdempotencyKey(assignmentID, targetBranch string, baselineGeneration int) string {
+	assignmentID = strings.TrimSpace(assignmentID)
+	targetBranch = strings.TrimSpace(targetBranch)
+	return fmt.Sprintf("ckpt:%d:%s:%d:%s:g%d", len(assignmentID), assignmentID, len(targetBranch), targetBranch, baselineGeneration)
 }
 
 // Load reads a checkpoint from disk. If no file exists yet the function
@@ -126,11 +116,20 @@ func (s *CheckpointStore) Load(path string) (Checkpoint, bool, error) {
 		}
 		return Checkpoint{}, false, fmt.Errorf("read checkpoint: %w", err)
 	}
-	var cp Checkpoint
-	if err := json.Unmarshal(data, &cp); err != nil {
+	cp, err := DecodeCheckpoint(data)
+	if err != nil {
 		return Checkpoint{}, false, fmt.Errorf("decode checkpoint: %w", err)
 	}
 	return cp, true, nil
+}
+
+// DecodeCheckpoint reads the current checkpoint format.
+func DecodeCheckpoint(data []byte) (Checkpoint, error) {
+	var value Checkpoint
+	if err := json.Unmarshal(data, &value); err != nil {
+		return Checkpoint{}, err
+	}
+	return value, nil
 }
 
 // CompareAndSwap writes `next` iff `next.Revision == current.Revision` (or
@@ -145,6 +144,7 @@ func (s *CheckpointStore) Load(path string) (Checkpoint, bool, error) {
 // pre-CAS revision. This is the same optimistic-lock pattern the runtime
 // store uses for the journal envelope (runtime.Snapshot/Update).
 func (s *CheckpointStore) CompareAndSwap(path string, current Checkpoint, next Checkpoint) (Checkpoint, error) {
+	next = cleanCheckpoint(next)
 	lockPath := path + ".lock"
 	release, err := acquireFileLock(lockPath)
 	if err != nil {
@@ -192,6 +192,7 @@ func (s *CheckpointStore) CompareAndSwap(path string, current Checkpoint, next C
 // durable. ForceWrite also takes the same file lock as CompareAndSwap so
 // concurrent CAS writers cannot interleave with a forced preserve write.
 func (s *CheckpointStore) ForceWrite(path string, next Checkpoint) (Checkpoint, error) {
+	next = cleanCheckpoint(next)
 	lockPath := path + ".lock"
 	release, err := acquireFileLock(lockPath)
 	if err != nil {

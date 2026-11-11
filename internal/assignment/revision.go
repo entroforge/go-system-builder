@@ -6,10 +6,12 @@ import (
 	loopruntime "github.com/entroforge/go-system-builder/internal/runtime"
 )
 
-// commitRevision is only used to make deterministic internal event IDs for
-// compatibility records. A negative request value means the caller chose the
-// normal single-writer path, so the current value is read from the runtime
-// snapshot rather than supplied by the Agent.
+// commitRevision resolves the Runtime revision a write path compares against.
+// It is an audit and compare-and-swap coordinate only: event ids and
+// idempotency keys are built from domain facts, never from this counter
+// (G18 §1). A negative request value means the caller chose the normal
+// single-writer path, so the current value is read from the runtime snapshot
+// rather than supplied by the Agent.
 func commitRevision(requested int, state map[string]any) (int, error) {
 	if requested >= 0 {
 		return requested, nil

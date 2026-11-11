@@ -140,6 +140,26 @@ func TestDispatchNoWaveBarrierAndCapacity(t *testing.T) {
 		}
 	}
 }
+
+func TestDispatchUnknownOwnerDoesNotConsumeUnrelatedCapacity(t *testing.T) {
+	plan := &DispatchPlan{Tasks: []DispatchTask{
+		{ID: "TASK-UNKNOWN", Writes: []string{"shared/"}},
+		{ID: "TASK-OVERLAP", Writes: []string{"shared/file"}},
+		{ID: "TASK-OTHER", Writes: []string{"independent/"}},
+	}}
+	rows, next := NextDispatch(plan, map[string]DispatchFact{"TASK-UNKNOWN": {Unknown: true, Reason: "owner unknown"}}, 1)
+	if len(next) != 1 || next[0] != "TASK-OTHER" {
+		t.Fatalf("unknown ownership consumed unrelated capacity: rows=%+v next=%v", rows, next)
+	}
+	for _, row := range rows {
+		switch row.Task.ID {
+		case "TASK-UNKNOWN", "TASK-OVERLAP":
+			if !row.Unknown || row.Dispatchable || row.Eligible || row.Reason == "" {
+				t.Fatalf("unknown ownership or possible overlap was hidden: %+v", row)
+			}
+		}
+	}
+}
 func TestNewPlanCannotBecomeLegacyByDeletingIndex(t *testing.T) {
 	root := dispatchFixture(t)
 	os.Remove(filepath.Join(root, "docs/dev/tasks/index-REQ-042.md"))

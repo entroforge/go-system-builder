@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"github.com/entroforge/go-system-builder/internal/reviewmeta"
 	"io"
 	"os"
 	"path/filepath"
@@ -199,7 +200,6 @@ func s10ManifestTemplate(manifestType string) map[string]any {
 		"manifest_type":       manifestType,
 		"runtime_id":          "<RUNTIME-ID>",
 		"baseline_generation": "<BASELINE-GENERATION-INT>",
-		"review_round":        "<REVIEW-ROUND-INT>",
 		"coverage_inventory": []any{
 			map[string]any{
 				"id":            "<INVENTORY-ID>",
@@ -253,13 +253,11 @@ func runS10ManifestScaffold(args []string, stdout, stderr io.Writer) int {
 		"kind":                    "release_audit",
 		"runtime_id":              "<RUNTIME-ID>",
 		"baseline_generation":     "<BASELINE-GENERATION-INT>",
-		"review_round":            "<REVIEW-ROUND-INT>",
 		"producer_agent_id":       "<PRODUCER-AGENT-ID>",
 		"producer_responsibility": "<Release Auditor|Acceptance>",
 		"subject_refs":            []any{},
 		"conclusion":              conclusion,
 		"audit_manifest_path":     manifest,
-		"audit_manifest_sha256":   "<SHA256-OF-MANIFEST-FILE>",
 		"disclosure":              "Legacy diagnostic example only, not a normal author task. Fill the existing fields at the exact current Hook Manifest path and save it; the system supplies machine metadata, records the report and handles this step. Do not copy this envelope or manually register evidence.",
 	}
 	if conclusion == "accepted" {
@@ -359,7 +357,7 @@ func runS10ManifestRender(args []string, stdout, stderr io.Writer) int {
 type s10StatusProjection struct {
 	Stage          string            `json:"stage"`
 	LifecycleState string            `json:"lifecycle_state"`
-	ReviewRound    int               `json:"review_round"`
+	ReviewPlanID   string            `json:"review_plan_id,omitempty"`
 	Acceptance     s10ArtifactStatus `json:"acceptance"`
 	ReleaseAudit   s10ArtifactStatus `json:"release_audit"`
 	Next           string            `json:"next"`
@@ -402,7 +400,7 @@ func runS10Status(args []string, stdout, stderr io.Writer) int {
 	result := s10StatusProjection{
 		Stage:          stage,
 		LifecycleState: lifecycle,
-		ReviewRound:    integerValue(nestedStateValue(state, "review", "round")),
+		ReviewPlanID:   acceptance.CurrentReviewIdentity(state).PlanID,
 		Acceptance:     inspectS10Artifact(*root, state, "acceptance"),
 		ReleaseAudit:   inspectS10Artifact(*root, state, "release_audit"),
 		Guardrails: []string{
@@ -437,7 +435,7 @@ func inspectS10Artifact(root string, state map[string]any, manifestType string) 
 		kind := stringValue(entry["kind"])
 		if (kind == manifestType || kind == manifestType+"_record") && stringValue(entry["status"]) == "valid" &&
 			integerValue(entry["baseline_generation"]) == integerValue(nestedStateValue(state, "baseline", "generation")) &&
-			integerValue(entry["review_round"]) == integerValue(nestedStateValue(state, "review", "round")) && entry["invalidated_by"] == nil {
+			acceptance.CurrentReviewArtifact(state, stringValue(entry["review_plan_id"])) && entry["invalidated_by"] == nil {
 			selected = entry
 		}
 	}
@@ -478,7 +476,7 @@ func inspectS10Artifact(root string, state map[string]any, manifestType string) 
 	}
 	if manifest.ManifestType != manifestType || manifest.RuntimeID != stringValue(state["runtime_id"]) ||
 		manifest.BaselineGeneration != integerValue(nestedStateValue(state, "baseline", "generation")) ||
-		manifest.ReviewRound != integerValue(nestedStateValue(state, "review", "round")) {
+		reviewmeta.CompareIdentity(acceptance.CurrentReviewIdentity(state), reviewmeta.ArtifactIdentity(manifest.ReviewPlanID)) == reviewmeta.Different {
 		return s10InvalidArtifact(result, "this questionnaire belongs to another responsibility or review round")
 	}
 	result.Conclusion = strings.TrimSpace(envelope.Conclusion)
@@ -541,20 +539,13 @@ func stateEvidence(state map[string]any) []any {
 	return items
 }
 
-// missingS10EvidenceRefsInState mirrors the gate's evidence-reference audit
-// (qualitygate.missingS10EvidenceRefs): an id only counts as available when
-// the registered entry is valid, current-generation, SHA-verified, kind-registered,
-// round-bound, and not the envelope's own self-proof. Execution anchors (://)
-// never satisfy S10 manifest refs. Keeping both consumers identical prevents
-// `s10 status` from declaring ready on a ledger the gate would reject
-// (2026-08-28 walkthrough defect C; RC-14 phantom/self-proof).
+// missingS10EvidenceRefsInState reports available registered material for S10 diagnostics.
 func missingS10EvidenceRefsInState(root string, state map[string]any, refs []string) []string {
 	return missingS10EvidenceRefsInStateWithSelf(root, state, "", refs)
 }
 
 func missingS10EvidenceRefsInStateWithSelf(root string, state map[string]any, selfID string, refs []string) []string {
 	currentGeneration := integerValue(nestedStateValue(state, "baseline", "generation"))
-	currentRound := integerValue(nestedStateValue(state, "review", "round"))
 	available := make(map[string]struct{})
 	for _, raw := range stateEvidence(state) {
 		entry, _ := raw.(map[string]any)
@@ -574,11 +565,6 @@ func missingS10EvidenceRefsInStateWithSelf(root string, state map[string]any, se
 		if id == "" || id == selfID {
 			continue
 		}
-		if currentRound > 0 {
-			if r := integerValue(entry["review_round"]); r != 0 && r != currentRound {
-				continue
-			}
-		}
 		kind := stringValue(entry["kind"])
 		if kind != "" && !evidence.DefaultCatalog().IsRegisteredKind(kind) {
 			continue
@@ -591,8 +577,7 @@ func missingS10EvidenceRefsInStateWithSelf(root string, state map[string]any, se
 		if pathErr != nil {
 			continue
 		}
-		data, err := os.ReadFile(full)
-		if err != nil || sha256HexForArtifact(data) != stringValue(entry["sha256"]) {
+		if _, err := os.Stat(full); err != nil {
 			continue
 		}
 		available[id] = struct{}{}

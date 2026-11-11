@@ -17,35 +17,9 @@ type authoringSource struct {
 
 const s5DocumentReviewTemplateID = "s5-document-review-v1"
 
-// knownNonS5WorkPacketSubtype recognizes the other packet types registered in
-// the Runtime. S5 consumers skip only these known typed domains; unknown or
-// malformed rows must still reach FindWorkPacket and fail closed.
-func knownNonS5WorkPacketSubtype(templateID any) bool {
-	value, ok := templateID.(string)
-	if !ok {
-		return false
-	}
-	switch value {
-	case s5DocumentReviewTemplateID:
-		return false
-	case "s2-design-v1", "s3-contract-v1", "s4-task-planning-v1",
-		"s7-review-result-v1", "s8-hypothesis-result-v1",
-		"s9-plan-report-v1", "s9-repair-result-v1":
-		return true
-	default:
-		return false
-	}
-}
-
-func shouldSkipKnownNonS5WorkPacketRow(row map[string]any) bool {
-	packetID, ok := row["packet_id"].(string)
-	return ok && packetID != "" && knownNonS5WorkPacketSubtype(row["template_id"])
-}
-
-// skipKnownNonS5WorkPacket routes a submission by its one registered packet
-// row. Duplicate identities are not skipped; the strict typed lookup below
-// remains responsible for rejecting them.
-func skipKnownNonS5WorkPacket(state map[string]any, packetID string) bool {
+// skipNonS5WorkPacket leaves other packet domains to their original reader.
+// An ambiguous matching identity is not guessed.
+func skipNonS5WorkPacket(state map[string]any, packetID string) bool {
 	if packetID == "" {
 		return false
 	}
@@ -53,12 +27,8 @@ func skipKnownNonS5WorkPacket(state map[string]any, packetID string) bool {
 	rows, _ := entities["work_packets"].([]any)
 	var matched map[string]any
 	for _, raw := range rows {
-		row, ok := raw.(map[string]any)
-		if !ok {
-			continue
-		}
-		rowPacketID, ok := row["packet_id"].(string)
-		if !ok || rowPacketID != packetID {
+		row, _ := raw.(map[string]any)
+		if row["packet_id"] != packetID {
 			continue
 		}
 		if matched != nil {
@@ -66,7 +36,7 @@ func skipKnownNonS5WorkPacket(state map[string]any, packetID string) bool {
 		}
 		matched = row
 	}
-	return matched != nil && shouldSkipKnownNonS5WorkPacketRow(matched)
+	return matched != nil && matched["template_id"] != s5DocumentReviewTemplateID
 }
 
 func workerAnswerAuthoringPath(state map[string]any, e workspace.Execution) (string, error) {
@@ -94,27 +64,27 @@ func (s *Service) source(ctx context.Context, state map[string]any, owner, path 
 	rows, _ := entities["work_packets"].([]any)
 	for _, raw := range rows {
 		row, _ := raw.(map[string]any)
-		if row != nil && shouldSkipKnownNonS5WorkPacketRow(row) {
+		if row == nil || row["template_id"] != s5DocumentReviewTemplateID {
 			continue
 		}
 		p, ok, err := runtime.FindWorkPacket(state, text(row["packet_id"]))
 		if err != nil || !ok {
-			return p, authoringSource{}, fmt.Errorf("issued packet cannot be read: %v", err)
-		}
-		// Never turn an old received source into a new delivery after revision.
-		if r, accepted, err := runtime.FindSubmission(state, p.ID); err != nil {
-			return p, authoringSource{}, err
-		} else if accepted && r.RevisionPacketID != "" {
-			if path == filepath.Join(s.Root, filepath.FromSlash(p.AnswerPath)) {
-				return p, authoringSource{}, runtime.ErrSubmissionSuperseded
+			if filepath.Join(s.Root, filepath.FromSlash(text(row["answer_path"]))) == path {
+				return p, authoringSource{}, fmt.Errorf("issued packet cannot be read: %v", err)
 			}
 			continue
 		}
-		e, declared, err := workspace.ReviewExecution(state, p)
-		if err != nil {
-			return p, authoringSource{}, err
+		if p.Binding.Owner != owner {
+			continue
 		}
+		e, declared, err := workspace.ReviewExecution(state, p)
 		mainPath := filepath.Join(s.Root, filepath.FromSlash(p.AnswerPath))
+		if err != nil {
+			if path == mainPath {
+				return p, authoringSource{}, err
+			}
+			continue
+		}
 		workerAnswerPath := ""
 		workerPath := ""
 		if declared {
@@ -127,11 +97,14 @@ func (s *Service) source(ctx context.Context, state map[string]any, owner, path 
 		if path != mainPath && (!declared || path != workerPath) {
 			continue
 		}
-		if p.Binding.Owner != owner {
-			return p, authoringSource{}, fmt.Errorf("answer belongs to another registered owner")
-		}
-		if err != nil {
+		// Never turn an old received source into a new delivery after revision.
+		if r, accepted, err := runtime.FindSubmission(state, p.ID); err != nil {
 			return p, authoringSource{}, err
+		} else if accepted && r.RevisionPacketID != "" {
+			if path == filepath.Join(s.Root, filepath.FromSlash(p.AnswerPath)) {
+				return p, authoringSource{}, runtime.ErrSubmissionSuperseded
+			}
+			continue
 		}
 		if path == mainPath {
 			if declared {
@@ -168,21 +141,8 @@ func (s *Service) validateSource(ctx context.Context, state map[string]any, p wo
 	// A retired execution can identify an already received answer for exact
 	// replay. It never provides a source for a new domain reception.
 	usable := e.Status == "ready" || accepted && e.Status == "retired"
-	if !declared || !usable || e.Generation != source.Execution.Generation || e.Path != source.Root || e.AgentID != p.Binding.Owner || e.BootstrapSHA256 == "" {
+	if !declared || !usable || e.Generation != source.Execution.Generation || e.Path != source.Root || e.AgentID != p.Binding.Owner {
 		return fmt.Errorf("Worker answer source is stale, replaced or not ready")
-	}
-	b, err := workspace.Decode(state)
-	if err != nil || b == nil {
-		return fmt.Errorf("Worker registry unavailable: %v", err)
-	}
-	if err := b.ValidateAuthority(state); err != nil {
-		return err
-	}
-	if err := b.ValidateExecution(ctx, e, false); err != nil {
-		return err
-	}
-	if err := b.ValidateDocumentReviewView(e, p); err != nil {
-		return err
 	}
 	if err := workpacket.CheckPath(source.Root, source.Path); err != nil {
 		return err
@@ -192,7 +152,22 @@ func (s *Service) validateSource(ctx context.Context, state map[string]any, p wo
 		if life["state"] != "document_verification" || number(life["phase_revision"]) != p.Binding.StageEntry {
 			return fmt.Errorf("Worker's S5 origin was replaced")
 		}
+		// Restore the structural source checks of the original reception chain.
+		// The registered execution must still match the REQ-bound authority,
+		// the frozen inputs must keep their original locations, and the Worker
+		// view must remain a valid questionnaire for this execution and packet.
+		// No revision, digest, fingerprint or checksum is compared or recorded.
+		b, err := workspace.Decode(state)
+		if err != nil || b == nil {
+			return fmt.Errorf("Worker registry unavailable: %v", err)
+		}
+		if err := b.ValidateAuthority(state); err != nil {
+			return err
+		}
 		if err := b.ValidateInputs(e); err != nil {
+			return err
+		}
+		if err := b.ValidateDocumentReviewView(e, p); err != nil {
 			return err
 		}
 	}

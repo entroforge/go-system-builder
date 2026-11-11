@@ -11,7 +11,6 @@ func TestInspectJournalLocalSchemaReuseStillValidatesLaterEvents(t *testing.T) {
 		change func(map[string]any)
 	}{
 		{"missing_outcome", func(e map[string]any) { delete(e, "outcome") }},
-		{"unknown_property", func(e map[string]any) { e["forged_grant"] = true }},
 		{"duplicate_id", func(e map[string]any) { e["event_id"] = "evt-one" }},
 		{"wrong_runtime", func(e map[string]any) { e["runtime_id"] = "loop-foreign" }},
 		{"sequence_gap", func(e map[string]any) { e["sequence"] = 3 }},

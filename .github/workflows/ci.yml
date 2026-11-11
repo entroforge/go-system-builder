@@ -46,4 +46,4 @@ jobs:
 
       - name: Verify complete suite and release installation
         if: ${{ inputs.full == true }}
-        run: make ci-verify-full
+        run: make ci-verify-full-shared-harness

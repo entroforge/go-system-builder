@@ -42,6 +42,65 @@ func packetModeFixture(t *testing.T) (string, string, string, loopruntime.Snapsh
 	return root, statePath, journalPath, snapshot, plan
 }
 
+// G18 §3.1: the Runtime write count is not a gate for a professional
+// completion (L4-revision-usage.md §4/§8). One delivery is still received
+// exactly once — the Assignment carries one receipt (已收行) and the journal
+// keeps one evt-review-result-<key> event (事件去重) — an unrelated Runtime
+// commit no longer refuses the delivery, and a retried delivery is still
+// deduplicated instead of committing a second time.
+func TestReviewResultDeliveryIsReceivedExactlyOnceWithoutWriteCount(t *testing.T) {
+	root, statePath, journalPath, snapshot, plan := packetModeFixture(t)
+	qaPath := writeResultFile(t, root, plan, "assignment-qa-1", "review-result-qa-once", "agent-qa-1", "pass",
+		map[string]string{"claim-qa-1": "pass", "claim-qa-2": "pass"}, nil)
+
+	// An unrelated Runtime commit moves the write count; the delivery asserts
+	// no Runtime revision: the omission marker is -1.
+	moved := commitUnrelatedRuntime(t, root, statePath, journalPath, snapshot.Revision)
+
+	accepted, err := SubmitResult(root, statePath, journalPath, SubmitRequest{
+		ExpectedRevision: -1, AssignmentID: "assignment-qa-1", ResultPath: qaPath,
+	})
+	if err != nil {
+		t.Fatalf("an unrelated Runtime commit refused the ReviewResult: %v", err)
+	}
+	if accepted.Revision <= moved.Revision {
+		t.Fatalf("the ReviewResult did not commit: revision %d", accepted.Revision)
+	}
+	row := accepted.State["review"].(map[string]any)["assignments"].(map[string]any)["assignment-qa-1"].(map[string]any)
+	if row["status"] != "consumed" || row["result_receipt"] == nil {
+		t.Fatalf("the consumed Assignment lost its receipt: %#v", row)
+	}
+	var receipt ResultReceipt
+	encoded, _ := json.Marshal(row["result_receipt"])
+	if err := json.Unmarshal(encoded, &receipt); err != nil {
+		t.Fatal(err)
+	}
+	journal, err := os.ReadFile(journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count := countJournalEvent(t, journal, receipt.EventID); count != 1 {
+		t.Fatalf("review_result events = %d, want exactly 1", count)
+	}
+	// The retried delivery is still deduplicated: no second commit, no second event.
+	retry, err := SubmitResult(root, statePath, journalPath, SubmitRequest{
+		ExpectedRevision: -1, AssignmentID: "assignment-qa-1", ResultPath: qaPath,
+	})
+	if err != nil {
+		t.Fatalf("the retried delivery was refused: %v", err)
+	}
+	if retry.Revision != accepted.Revision {
+		t.Fatalf("the retried delivery committed again: revision %d", retry.Revision)
+	}
+	journal, err = os.ReadFile(journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count := countJournalEvent(t, journal, receipt.EventID); count != 1 {
+		t.Fatalf("the retried delivery wrote another event: %d", count)
+	}
+}
+
 func TestTypedResultReceiptsFollowPacketRuntimeVersions(t *testing.T) {
 	for _, test := range []struct {
 		version string
@@ -89,14 +148,12 @@ func TestTypedResultReceiptPassReplayIgnoresCaptureAndStaleRevision(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	var envelope map[string]json.RawMessage
-	if err := json.Unmarshal(resultArtifact, &envelope); err != nil {
+	var result map[string]any
+	if err := json.Unmarshal(resultArtifact, &result); err != nil {
 		t.Fatal(err)
 	}
-	for _, field := range []string{"submitted_answer", "answer_sha256", "effective_answer", "effective_answer_sha256"} {
-		if len(envelope[field]) == 0 {
-			t.Fatalf("typed envelope missing %s", field)
-		}
+	if result["verdict"] != "pass" {
+		t.Fatalf("accepted professional verdict missing: %#v", result)
 	}
 	dvPath := writeResultFile(t, root, plan, "assignment-dv-1", "review-result-dv-final", "agent-dv-1", "pass",
 		map[string]string{"claim-dv-1": "pass"}, nil)
@@ -106,17 +163,8 @@ func TestTypedResultReceiptPassReplayIgnoresCaptureAndStaleRevision(t *testing.T
 	if err != nil {
 		t.Fatalf("final typed pass: %v", err)
 	}
-	if PlanPointerFromState(accepted.State).Status != "clean" || accepted.State["review"].(map[string]any)["clean_round"] != 1 {
-		t.Fatalf("fixture did not create its original CleanRound: %+v", PlanPointerFromState(accepted.State))
-	}
-	cleanEvidenceCount := 0
-	for _, raw := range accepted.State["evidence"].([]any) {
-		if raw.(map[string]any)["kind"] == "clean_round" {
-			cleanEvidenceCount++
-		}
-	}
-	if cleanEvidenceCount != 1 {
-		t.Fatalf("CleanRound evidence count = %d, want exactly 1", cleanEvidenceCount)
+	if PlanPointerFromState(accepted.State).Status != "clean" {
+		t.Fatalf("final accepted results did not produce clean Plan: %+v", PlanPointerFromState(accepted.State))
 	}
 	beforeState, _ := os.ReadFile(statePath)
 	beforeJournal, _ := os.ReadFile(journalPath)
@@ -148,7 +196,7 @@ func TestTypedResultReceiptPassReplayIgnoresCaptureAndStaleRevision(t *testing.T
 	_, err = SubmitResult(root, statePath, journalPath, SubmitRequest{
 		ExpectedRevision: -1, AssignmentID: "assignment-qa-1", ResultPath: qaPath,
 	})
-	if err == nil || !strings.Contains(err.Error(), "conflicts with the originally accepted") {
+	if err == nil || !strings.Contains(err.Error(), "differs from originally accepted professional answer") {
 		t.Fatalf("same key with changed answer must conflict, got %v", err)
 	}
 	changed["result_id"] = "review-result-qa-replacement"
@@ -159,78 +207,12 @@ func TestTypedResultReceiptPassReplayIgnoresCaptureAndStaleRevision(t *testing.T
 	_, err = SubmitResult(root, statePath, journalPath, SubmitRequest{
 		ExpectedRevision: -1, AssignmentID: "assignment-qa-1", ResultPath: qaPath,
 	})
-	if err == nil || !strings.Contains(err.Error(), "new result_id cannot replace") {
+	if err == nil || !strings.Contains(err.Error(), "already consumed result") {
 		t.Fatalf("new key must not overwrite consumed Assignment, got %v", err)
 	}
 }
 
-func TestTypedResultReceiptRejectsTamperedDurableClosure(t *testing.T) {
-	for _, tamper := range []string{"receipt", "envelope", "journal"} {
-		t.Run(tamper, func(t *testing.T) {
-			root, statePath, journalPath, snapshot, plan := packetModeFixture(t)
-			resultPath := writeResultFile(t, root, plan, "assignment-qa-1", "review-result-qa-tamper", "agent-qa-1", "pass",
-				map[string]string{"claim-qa-1": "pass", "claim-qa-2": "pass"}, nil)
-			accepted, err := SubmitResult(root, statePath, journalPath, SubmitRequest{
-				ExpectedRevision: snapshot.Revision, AssignmentID: "assignment-qa-1", ResultPath: resultPath,
-			})
-			if err != nil {
-				t.Fatalf("accept result: %v", err)
-			}
-			row := accepted.State["review"].(map[string]any)["assignments"].(map[string]any)["assignment-qa-1"].(map[string]any)
-			receiptJSON, _ := json.Marshal(row["result_receipt"])
-			var receipt ResultReceipt
-			if err := json.Unmarshal(receiptJSON, &receipt); err != nil {
-				t.Fatal(err)
-			}
-			switch tamper {
-			case "receipt":
-				stateData, _ := os.ReadFile(statePath)
-				var state map[string]any
-				if err := json.Unmarshal(stateData, &state); err != nil {
-					t.Fatal(err)
-				}
-				assignmentRow := state["review"].(map[string]any)["assignments"].(map[string]any)["assignment-qa-1"].(map[string]any)
-				assignmentRow["result_receipt"].(map[string]any)["answer_sha256"] = strings.Repeat("0", 64)
-				writeJSONFile(t, statePath, state)
-			case "envelope":
-				artifactPath := filepath.Join(root, filepath.FromSlash(receipt.ResultRef))
-				data, _ := os.ReadFile(artifactPath)
-				var envelope map[string]any
-				if err := json.Unmarshal(data, &envelope); err != nil {
-					t.Fatal(err)
-				}
-				envelope["verdict"] = "tampered"
-				writeJSONFile(t, artifactPath, envelope)
-			case "journal":
-				data, _ := os.ReadFile(journalPath)
-				var lines []string
-				for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
-					var event map[string]any
-					if err := json.Unmarshal([]byte(line), &event); err != nil {
-						t.Fatal(err)
-					}
-					if event["event_id"] == receipt.EventID {
-						event["idempotency_key"] = "runtime:tampered"
-					}
-					encoded, _ := json.Marshal(event)
-					lines = append(lines, string(encoded))
-				}
-				if err := os.WriteFile(journalPath, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
-					t.Fatal(err)
-				}
-			}
-			_, err = SubmitResult(root, statePath, journalPath, SubmitRequest{
-				ExpectedRevision: -1, AssignmentID: "assignment-qa-1", ResultPath: resultPath,
-				CaptureDir: filepath.Join(root, "missing-captures"),
-			})
-			if err == nil {
-				t.Fatalf("replay accepted %s tampering", tamper)
-			}
-		})
-	}
-}
-
-func TestTypedResultReceiptRejectsIncomingMachineTupleEditsWithoutWrites(t *testing.T) {
+func TestTypedResultReceiptRejectsWrongAssignmentWithoutWrites(t *testing.T) {
 	root, statePath, journalPath, snapshot, plan := packetModeFixture(t)
 	resultPath := writeResultFile(t, root, plan, "assignment-qa-1", "review-result-qa-tuple", "agent-qa-1", "pass",
 		map[string]string{"claim-qa-1": "pass", "claim-qa-2": "pass"}, nil)
@@ -262,13 +244,6 @@ func TestTypedResultReceiptRejectsIncomingMachineTupleEditsWithoutWrites(t *test
 		requestAssign string
 	}{
 		{name: "assignment", field: "assignment_id", value: "assignment-other", requestAssign: "assignment-qa-1"},
-		{name: "assignment revision", field: "assignment_revision", value: 22, requestAssign: "assignment-qa-1"},
-		{name: "plan id", field: "review_plan_id", value: "review-plan-other", requestAssign: "assignment-qa-1"},
-		{name: "round", field: "review_round", value: 22, requestAssign: "assignment-qa-1"},
-		{name: "baseline generation", field: "baseline_generation", value: 22, requestAssign: "assignment-qa-1"},
-		{name: "owner", field: "producer_agent_id", value: "agent-other", requestAssign: "assignment-qa-1"},
-		{name: "subject digest", field: "subject_digest", value: strings.Repeat("a", 64), requestAssign: "assignment-qa-1"},
-		{name: "verification artifact digest", field: "verification_artifact_digest", value: strings.Repeat("b", 64), requestAssign: "assignment-qa-1"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -309,114 +284,6 @@ func TestTypedResultReceiptRejectsIncomingMachineTupleEditsWithoutWrites(t *test
 	}
 }
 
-func TestTypedResultReceiptRejectsEvidenceInvalidationMarkers(t *testing.T) {
-	root, statePath, journalPath, snapshot, plan := packetModeFixture(t)
-	resultPath := writeResultFile(t, root, plan, "assignment-qa-1", "review-result-qa-invalidated", "agent-qa-1", "pass",
-		map[string]string{"claim-qa-1": "pass", "claim-qa-2": "pass"}, nil)
-	accepted, err := SubmitResult(root, statePath, journalPath, SubmitRequest{
-		ExpectedRevision: snapshot.Revision, AssignmentID: "assignment-qa-1", ResultPath: resultPath,
-	})
-	if err != nil {
-		t.Fatalf("accept result: %v", err)
-	}
-	row := accepted.State["review"].(map[string]any)["assignments"].(map[string]any)["assignment-qa-1"].(map[string]any)
-	rawReceipt, _ := json.Marshal(row["result_receipt"])
-	var receipt ResultReceipt
-	if err := json.Unmarshal(rawReceipt, &receipt); err != nil {
-		t.Fatal(err)
-	}
-	var incoming Result
-	answer, err := os.ReadFile(resultPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := json.Unmarshal(answer, &incoming); err != nil {
-		t.Fatal(err)
-	}
-	for _, marker := range []string{"invalidated_by", "invalidation_rule", "invalidation_reason"} {
-		t.Run(marker, func(t *testing.T) {
-			stateBytes, _ := json.Marshal(accepted.State)
-			var state map[string]any
-			if err := json.Unmarshal(stateBytes, &state); err != nil {
-				t.Fatal(err)
-			}
-			evidence, err := uniqueEvidenceByID(state, receipt.SubmissionKey)
-			if err != nil {
-				t.Fatal(err)
-			}
-			evidence[marker] = "forged-invalidation"
-			if err := verifyResultReceiptClosure(root, state, state["review"].(map[string]any)["assignments"].(map[string]any)["assignment-qa-1"].(map[string]any), receipt, &incoming); err == nil {
-				t.Fatalf("accepted valid evidence row with non-null %s", marker)
-			}
-		})
-	}
-}
-
-func TestTypedResultReceiptChecksEffectiveAnswerMachineTuple(t *testing.T) {
-	root, statePath, journalPath, snapshot, plan := packetModeFixture(t)
-	resultPath := writeResultFile(t, root, plan, "assignment-qa-1", "review-result-qa-effective-tuple", "agent-qa-1", "pass",
-		map[string]string{"claim-qa-1": "pass", "claim-qa-2": "pass"}, nil)
-	accepted, err := SubmitResult(root, statePath, journalPath, SubmitRequest{
-		ExpectedRevision: snapshot.Revision, AssignmentID: "assignment-qa-1", ResultPath: resultPath,
-	})
-	if err != nil {
-		t.Fatalf("accept result: %v", err)
-	}
-	stateBytes, _ := json.Marshal(accepted.State)
-	var state map[string]any
-	if err := json.Unmarshal(stateBytes, &state); err != nil {
-		t.Fatal(err)
-	}
-	row := state["review"].(map[string]any)["assignments"].(map[string]any)["assignment-qa-1"].(map[string]any)
-	var receipt ResultReceipt
-	receiptBytes, _ := json.Marshal(row["result_receipt"])
-	if err := json.Unmarshal(receiptBytes, &receipt); err != nil {
-		t.Fatal(err)
-	}
-	artifactPath := filepath.Join(root, filepath.FromSlash(receipt.ResultRef))
-	artifact, err := workpacket.ReadFile(root, receipt.ResultRef, resultReceiptReadLimit)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var envelope map[string]json.RawMessage
-	if err := json.Unmarshal(artifact, &envelope); err != nil {
-		t.Fatal(err)
-	}
-	var effective map[string]any
-	if err := json.Unmarshal(envelope["effective_answer"], &effective); err != nil {
-		t.Fatal(err)
-	}
-	effective["baseline_generation"] = 77
-	envelope["effective_answer"], err = json.Marshal(effective)
-	if err != nil {
-		t.Fatal(err)
-	}
-	artifact, err = json.Marshal(envelope)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(artifactPath, artifact, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	receipt.ResultSHA256 = sha256Of(artifact)
-	evidence, err := uniqueEvidenceByID(state, receipt.SubmissionKey)
-	if err != nil {
-		t.Fatal(err)
-	}
-	evidence["sha256"] = receipt.ResultSHA256
-	var incoming Result
-	authored, err := os.ReadFile(resultPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := json.Unmarshal(authored, &incoming); err != nil {
-		t.Fatal(err)
-	}
-	if err := verifyResultReceiptClosure(root, state, row, receipt, &incoming); err == nil || !strings.Contains(err.Error(), "tuple") {
-		t.Fatalf("replay accepted effective answer machine tuple tampering, err=%v", err)
-	}
-}
-
 func TestReviewResultCleanupRetainsArtifactForPendingOrReferencedRuntime(t *testing.T) {
 	for _, mode := range []struct {
 		name  string
@@ -450,7 +317,7 @@ func TestReviewResultCleanupRetainsArtifactForPendingOrReferencedRuntime(t *test
 			if err := os.WriteFile(marker, []byte(`{"pending":true}`), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			removed, err := removeStagedArtifactIfUnreferenced(store, state, intField(state["revision"]), relative, sha256Of(artifactBytes))
+			removed, err := store.RemoveUnreferencedArtifact(loopruntime.ArtifactCleanupRequest{ExpectedRevision: intField(state["revision"]), ArtifactPath: relative, ArtifactBytes: artifactBytes, ReferencedPaths: stateArtifactReferences(state, relative)})
 			if err != nil || removed {
 				t.Fatalf("cleanup with a durable pending marker = (%t,%v), want (false,nil)", removed, err)
 			}
@@ -461,7 +328,7 @@ func TestReviewResultCleanupRetainsArtifactForPendingOrReferencedRuntime(t *test
 				t.Fatal(err)
 			}
 			state["evidence"] = []any{map[string]any{"path": relative}}
-			removed, err = removeStagedArtifactIfUnreferenced(store, state, intField(state["revision"]), relative, sha256Of(artifactBytes))
+			removed, err = store.RemoveUnreferencedArtifact(loopruntime.ArtifactCleanupRequest{ExpectedRevision: intField(state["revision"]), ArtifactPath: relative, ArtifactBytes: artifactBytes, ReferencedPaths: stateArtifactReferences(state, relative)})
 			if err != nil || removed {
 				t.Fatalf("cleanup of a state-referenced artifact = (%t,%v), want (false,nil)", removed, err)
 			}
@@ -490,7 +357,7 @@ func TestTypedResultReceiptRecoversSealedCommitAndReplaysOnce(t *testing.T) {
 				findings = []Finding{finding}
 				qaVerdict = "finding"
 				qaConclusions["claim-qa-1"] = "fail"
-				capturePath = CaptureFile(root, "loop-REQ-TEST", 1, "assignment-qa-1")
+				capturePath = filepath.Join(root, ".claude", "evidence", "legacy-unreferenced-capture.jsonl")
 				if err := os.MkdirAll(filepath.Dir(capturePath), 0o755); err != nil {
 					t.Fatal(err)
 				}
@@ -628,11 +495,11 @@ func TestTypedResultReceiptRecoversSealedCommitAndReplaysOnce(t *testing.T) {
 			}
 			if withFinding {
 				findings := replayed.State["entities"].(map[string]any)["findings"].([]any)
-				if len(findings) != 1 || replayed.State["review"].(map[string]any)["observation_batch"] == nil || cleanRounds != 0 {
-					t.Fatalf("finding recovery duplicated or altered closing projections: findings=%d batch=%v cleanRounds=%d", len(findings), replayed.State["review"].(map[string]any)["observation_batch"], cleanRounds)
+				if len(findings) != 1 || cleanRounds != 0 {
+					t.Fatalf("finding recovery duplicated or altered projections: findings=%d cleanRounds=%d", len(findings), cleanRounds)
 				}
-			} else if cleanRounds != 1 || intField(replayed.State["review"].(map[string]any)["clean_round"]) != 1 {
-				t.Fatalf("clean-round recovery duplicated or lost its projection: evidence=%d projection=%v", cleanRounds, replayed.State["review"].(map[string]any)["clean_round"])
+			} else if cleanRounds != 0 || !RequiredResponsibilitiesComplete(replayed.State) {
+				t.Fatalf("clean recovery lost responsibility completion or manufactured machine proof: evidence=%d", cleanRounds)
 			}
 		})
 	}
@@ -729,6 +596,142 @@ func countJournalEvent(t *testing.T, data []byte, eventID string) int {
 		}
 	}
 	return count
+}
+
+// G18: the ReviewResult journal identity is the original responsibility and
+// the delivery intent, never the Runtime write count. The same delivery keeps
+// one identity, a different delivery gets a different one, and the direct
+// submit path publishes the same shape as the typed receipt.
+func TestReviewResultEventIdentityIsSemanticAndUnique(t *testing.T) {
+	ptr := &PlanPointer{PlanID: "plan-review", Revision: 2}
+	first := &Result{AssignmentID: "assignment-qa-1", ProducerAgentID: "agent-qa-1", ResultID: "review-result-legacy"}
+	second := &Result{AssignmentID: "assignment-qa-1", ProducerAgentID: "agent-qa-1", ResultID: "review-result-other"}
+	eventA, keyA := receiptEventIdentity("loop-1", 1, ptr, first)
+	eventB, keyB := receiptEventIdentity("loop-1", 1, ptr, first)
+	eventC, keyC := receiptEventIdentity("loop-1", 1, ptr, second)
+	if eventA != eventB || keyA != keyB {
+		t.Fatalf("the same delivery received two identities: %q/%q and %q/%q", eventA, keyA, eventB, keyB)
+	}
+	if eventA == eventC || keyA == keyC {
+		t.Fatalf("two different deliveries share one identity: %q/%q and %q/%q", eventA, keyA, eventC, keyC)
+	}
+	if !strings.HasPrefix(eventA, "evt-review-result-") || !strings.HasPrefix(keyA, "runtime:review-result:") {
+		t.Fatalf("review result identity shape = %q / %q", eventA, keyA)
+	}
+	if strings.HasSuffix(eventA, "-r1") || strings.HasSuffix(eventA, "-r2") || strings.HasSuffix(keyA, ":1") || strings.HasSuffix(keyA, ":2") {
+		t.Fatalf("review result identity carries a revision suffix: %q / %q", eventA, keyA)
+	}
+}
+
+// G18: the identity a direct submit publishes is the identity the typed
+// receipt records for the same delivery.
+func TestReviewResultSubmittedEventCarriesNoWriteCount(t *testing.T) {
+	root := t.TempDir()
+	statePath, journalPath := writeState(t, root, baseVerificationState())
+	fixtureEvidenceRoot = root
+	t.Cleanup(func() { fixtureEvidenceRoot = "" })
+	snapshot := registerFixturePlan(t, root, statePath, journalPath)
+	snapshot = markDispatched(t, root, statePath, journalPath, snapshot, "assignment-qa-1", "agent-qa-1")
+	plan, _, err := LoadPlan(root, snapshot.State)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resultPath := writeResultFile(t, root, plan, "assignment-qa-1", "review-result-identity", "agent-qa-1", "pass",
+		map[string]string{"claim-qa-1": "pass", "claim-qa-2": "pass"}, nil)
+	if _, err := SubmitResult(root, statePath, journalPath, SubmitRequest{
+		ExpectedRevision: snapshot.Revision, AssignmentID: "assignment-qa-1", ResultPath: resultPath,
+	}); err != nil {
+		t.Fatalf("submit original result: %v", err)
+	}
+	journal, err := os.ReadFile(journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := ""
+	for _, line := range strings.Split(strings.TrimSpace(string(journal)), "\n") {
+		var event map[string]any
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			t.Fatal(err)
+		}
+		if event["transition_id"] != "REVIEW-RESULT" {
+			continue
+		}
+		found = stringField(event["event_id"])
+		key := stringField(event["idempotency_key"])
+		if !strings.HasPrefix(found, "evt-review-result-") {
+			t.Fatalf("review result event id = %q, want the semantic evt-review-result shape", found)
+		}
+		if !strings.HasPrefix(key, "runtime:review-result:") {
+			t.Fatalf("review result idempotency key = %q, want the runtime:review-result shape", key)
+		}
+	}
+	if found == "" {
+		t.Fatal("review_result_submitted journal event missing")
+	}
+	if strings.Contains(found, fmt.Sprintf("-r%d", snapshot.Revision+1)) {
+		t.Fatalf("review result event id carries the Runtime write count: %q", found)
+	}
+}
+
+// G18: a re-delivery of the same unfinished responsibility takes its identity
+// from the domain facts of the delivery it replaces, never from the Runtime
+// write count and never from an accumulated round counter.
+func TestRedeliveryResultIDUsesDomainFactsOnly(t *testing.T) {
+	base := "review-result-abc123"
+	previous := map[string]any{
+		"submission_key": base,
+		"result_ref":     ".claude/evidence/loop-1/g1/reviews/agent-qa-1/" + base + ".json",
+	}
+	first, err := redeliveryResultID(base, previous)
+	if err != nil {
+		t.Fatalf("re-delivery identity: %v", err)
+	}
+	if first == base {
+		t.Fatalf("the re-delivery reused the previous delivery identity %q", base)
+	}
+	if !strings.HasPrefix(first, base+"-redelivery-") {
+		t.Fatalf("re-delivery identity = %q, want the %q shape", first, base+"-redelivery-")
+	}
+	if strings.Contains(first, "-attempt-") {
+		t.Fatalf("re-delivery identity carries an accumulated round counter: %q", first)
+	}
+	again, err := redeliveryResultID(base, previous)
+	if err != nil || again != first {
+		t.Fatalf("the same delivery received two identities: %q and %q (%v)", first, again, err)
+	}
+	// A different previous delivery yields a different identity, so the new
+	// delivery can never reuse the previous identity or its save path.
+	other := map[string]any{
+		"submission_key": base + "-redelivery-0123456789abcdef",
+		"result_ref":     ".claude/evidence/loop-1/g1/reviews/agent-qa-1/other.json",
+	}
+	second, err := redeliveryResultID(base, other)
+	if err != nil {
+		t.Fatalf("second re-delivery identity: %v", err)
+	}
+	if second == first || second == base {
+		t.Fatalf("two deliveries share one identity: %q and %q", first, second)
+	}
+	if _, err := redeliveryResultID(base, map[string]any{}); err == nil {
+		t.Fatal("a previous delivery without any recorded identity produced an identity")
+	}
+}
+
+// G18: historical re-delivery identities stay readable by their saved form.
+func TestResultIDForPacketReadsHistoricalAndCurrentReDelivery(t *testing.T) {
+	packet := workpacket.ReviewResultPacket{ResultID: "review-result-abc123"}
+	if !resultIDForPacket(packet, "review-result-abc123") {
+		t.Fatal("the packet's own identity is not accepted")
+	}
+	if !resultIDForPacket(packet, "review-result-abc123-attempt-3") {
+		t.Fatal("the historical re-delivery identity is no longer readable")
+	}
+	if !resultIDForPacket(packet, "review-result-abc123-redelivery-0123456789abcdef") {
+		t.Fatal("the current re-delivery identity is not accepted")
+	}
+	if resultIDForPacket(packet, "review-result-abc123-redelivery-nothexadecimal") {
+		t.Fatal("a malformed re-delivery identity was accepted")
+	}
 }
 
 func TestLegacyResultSubmissionDoesNotAddTypedReceipt(t *testing.T) {
@@ -1097,7 +1100,7 @@ func TestTypedResultReceiptFindingReplayDoesNotDuplicateFindingOrSeal(t *testing
 	qaPath := writeResultFile(t, root, plan, "assignment-qa-1", "review-result-qa-finding", "agent-qa-1", "finding",
 		map[string]string{"claim-qa-1": "fail", "claim-qa-2": "pass"},
 		[]Finding{finding})
-	capturePath := CaptureFile(root, "loop-REQ-TEST", 1, "assignment-qa-1")
+	capturePath := filepath.Join(root, ".claude", "evidence", "legacy-unreferenced-capture.jsonl")
 	if err := os.MkdirAll(filepath.Dir(capturePath), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -1114,69 +1117,33 @@ func TestTypedResultReceiptFindingReplayDoesNotDuplicateFindingOrSeal(t *testing
 	if got := len(accepted.State["entities"].(map[string]any)["findings"].([]any)); got != 1 {
 		t.Fatalf("finding count = %d, want 1", got)
 	}
-	resultEvidence, err := uniqueEvidenceByID(accepted.State, "review-result-qa-finding")
-	if err != nil {
-		t.Fatal(err)
-	}
-	artifactBytes, err := workpacket.ReadFile(root, stringField(resultEvidence["path"]), resultReceiptReadLimit)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var envelope map[string]json.RawMessage
-	if err := json.Unmarshal(artifactBytes, &envelope); err != nil {
-		t.Fatal(err)
-	}
-	var submitted, effective Result
-	if err := json.Unmarshal(envelope["submitted_answer"], &submitted); err != nil {
-		t.Fatal(err)
-	}
-	if err := json.Unmarshal(envelope["effective_answer"], &effective); err != nil {
-		t.Fatal(err)
-	}
-	if len(submitted.Findings[0].Encounter.Timeline) != 0 || len(effective.Findings[0].Encounter.Timeline) != 1 || stringFieldFromRaw(envelope["answer_sha256"]) == stringFieldFromRaw(envelope["effective_answer_sha256"]) {
-		t.Fatal("typed envelope must preserve the authored empty timeline and separately digest its capture-enriched effective answer")
-	}
-	if accepted.State["review"].(map[string]any)["observation_batch"] != nil {
-		t.Fatal("ordinary finding should drain while another Assignment is pending")
-	}
-	dvPath := writeResultFile(t, root, plan, "assignment-dv-1", "review-result-dv-1", "agent-dv-1", "pass",
-		map[string]string{"claim-dv-1": "pass"}, nil)
-	sealed, err := SubmitResult(root, statePath, journalPath, SubmitRequest{
-		ExpectedRevision: accepted.Revision, AssignmentID: "assignment-dv-1", ResultPath: dvPath,
-	})
-	if err != nil {
-		t.Fatalf("submit final pass: %v", err)
-	}
-	batchBefore := sealed.State["review"].(map[string]any)["observation_batch"]
-	findingsBefore := len(sealed.State["entities"].(map[string]any)["findings"].([]any))
-	_, err = SubmitResult(root, statePath, journalPath, SubmitRequest{
-		ExpectedRevision: snapshot.Revision, AssignmentID: "assignment-qa-1", ResultPath: qaPath,
-		CaptureDir: filepath.Join(root, "missing-captures"),
-	})
-	if err != nil {
-		t.Fatalf("replay finding result after round seal: %v", err)
+	beforeState, beforeJournal := mustReadTestFile(t, statePath), mustReadTestFile(t, journalPath)
+	findingsBefore := len(accepted.State["entities"].(map[string]any)["findings"].([]any))
+	if _, err := SubmitResult(root, statePath, journalPath, SubmitRequest{ExpectedRevision: snapshot.Revision, AssignmentID: "assignment-qa-1", ResultPath: qaPath}); err != nil {
+		t.Fatalf("replay accepted original Finding: %v", err)
 	}
 	current, err := loopruntime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{}).Snapshot()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(current.State["entities"].(map[string]any)["findings"].([]any)) != findingsBefore || !reflect.DeepEqual(current.State["review"].(map[string]any)["observation_batch"], batchBefore) {
-		t.Fatal("finding replay duplicated a Finding or changed the sealed ObservationBatch")
+	if len(current.State["entities"].(map[string]any)["findings"].([]any)) != findingsBefore || !reflect.DeepEqual(beforeState, mustReadTestFile(t, statePath)) || !reflect.DeepEqual(beforeJournal, mustReadTestFile(t, journalPath)) {
+		t.Fatal("original Finding replay duplicated or rewrote the accepted result")
 	}
+
 }
 
-func TestProfessionalAnswerDigestCanonicalizesNestedObjectKeys(t *testing.T) {
-	left := []byte(`{"verdict":"pass","claim_results":[{"claim_id":"c1","conclusion":"pass","observed":"ok","evidence_refs":["path:x#sha256=abc"]}]}`)
-	right := []byte(`{"claim_results":[{"evidence_refs":["path:x#sha256=abc"],"observed":"ok","conclusion":"pass","claim_id":"c1"}],"verdict":"pass"}`)
-	leftDigest, err := professionalAnswerDigest(left)
+func TestProfessionalAnswerCanonicalizesNestedObjectKeys(t *testing.T) {
+	left := []byte(`{"verdict":"pass","claim_results":[{"claim_id":"c1","conclusion":"pass","observed":"ok","evidence_refs":["path:docs/evidence"]}]}`)
+	right := []byte(`{"claim_results":[{"evidence_refs":["path:docs/evidence"],"observed":"ok","conclusion":"pass","claim_id":"c1"}],"verdict":"pass"}`)
+	leftAnswer, err := professionalAnswerContent(left)
 	if err != nil {
 		t.Fatal(err)
 	}
-	rightDigest, err := professionalAnswerDigest(right)
+	rightAnswer, err := professionalAnswerContent(right)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if leftDigest != rightDigest {
-		t.Fatalf("JSON key order changed canonical answer digest: %s != %s", leftDigest, rightDigest)
+	if leftAnswer != rightAnswer {
+		t.Fatalf("JSON key order changed canonical professional answer: %s != %s", leftAnswer, rightAnswer)
 	}
 }

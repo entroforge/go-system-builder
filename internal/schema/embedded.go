@@ -12,7 +12,7 @@ import (
 // at runtime. They are compiled into the binary and never read from disk, so
 // they are invisible to users and to AI agents.
 //
-//go:embed assets/*.json
+//go:embed assets/*.schema.json assets/*.example.json assets/*.examples.json assets/*.template.json assets/stage-form-*-template.json
 var embeddedFS embed.FS
 
 const assetDir = "assets"

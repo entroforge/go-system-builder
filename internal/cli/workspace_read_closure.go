@@ -1,32 +1,22 @@
 package cli
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
-	"time"
 
 	"github.com/entroforge/go-system-builder/internal/fileview"
-	"github.com/entroforge/go-system-builder/internal/workpacket"
 	"github.com/entroforge/go-system-builder/internal/workspace"
 )
 
-const (
-	assignmentReadEntryLimit = 256
-	assignmentReadByteLimit  = 4 << 20
-)
+const assignmentReadEntryLimit = 256
 
 // freezeAssignmentReadClosure resolves canonical Assignment read declarations
-// against the bound development branch. It returns exact file paths and hashes
-// from one pinned Git tree only after checking that the Main checkout has the
-// same regular-file bytes.
+// against the bound development branch and returns the selected source paths.
 func freezeAssignmentReadClosure(ctx context.Context, root string, state map[string]any, declarations []string, originalCommit string) (*fileview.View, []string, map[string]string, error) {
 	if len(declarations) == 0 {
 		return nil, nil, map[string]string{}, nil
@@ -34,28 +24,16 @@ func freezeAssignmentReadClosure(ctx context.Context, root string, state map[str
 	if len(declarations) > assignmentReadEntryLimit {
 		return nil, nil, nil, fmt.Errorf("Assignment read declarations exceed %d entries", assignmentReadEntryLimit)
 	}
-	ref := originalCommit
-	if ref == "" {
-		branch, err := fileview.DevelopmentRef(state)
-		if err != nil {
-			return nil, nil, nil, err
-		}
-		ref = "refs/heads/" + branch
+	// Existing paths are used as locations, not an OID-based proof. The
+	// professional owner remains responsible for the actual task inputs.
+	branch, err := fileview.DevelopmentRef(state)
+	if err != nil {
+		return nil, nil, nil, err
 	}
+	ref := "refs/heads/" + branch
 	view, err := fileview.New(root, ref, []fileview.Rule{{Path: ".", Source: "git_tree"}})
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("pin Assignment read sources: %w", err)
-	}
-	if originalCommit == "" {
-		head, err := workspace.Git(ctx, root, "rev-parse", "HEAD")
-		if err != nil {
-			return nil, nil, nil, err
-		}
-		if head != view.Commit {
-			return nil, nil, nil, fmt.Errorf("Assignment read sources are not from the prepared development HEAD")
-		}
-	} else if originalCommit != view.Commit {
-		return nil, nil, nil, fmt.Errorf("existing execution has an invalid original Assignment source commit")
 	}
 
 	selected := map[string]bool{}
@@ -137,75 +115,12 @@ func freezeAssignmentReadClosure(ctx context.Context, root string, state map[str
 		paths = append(paths, rel)
 	}
 	sort.Strings(paths)
-	hashes := make(map[string]string, len(paths))
-	sizes, err := assignmentReadBlobSizes(ctx, root, view.Commit, paths)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	totalBytes := int64(0)
-	for _, size := range sizes {
-		totalBytes += size
-		if totalBytes > assignmentReadByteLimit {
-			return nil, nil, nil, fmt.Errorf("Assignment read closure exceeds %d bytes", assignmentReadByteLimit)
-		}
-	}
-	for i, rel := range paths {
-		data, err := view.ReadFile(rel)
-		if err != nil {
-			return nil, nil, nil, fmt.Errorf("Assignment read source is not a regular Git blob: %s: %w", rel, err)
-		}
-		if int64(len(data)) != sizes[i] {
-			return nil, nil, nil, fmt.Errorf("pinned Git blob size changed while reading Assignment source: %s", rel)
-		}
-		if err := verifyAssignmentReadCheckout(root, rel, data); err != nil {
-			return nil, nil, nil, err
-		}
-		hashes[rel] = workpacket.Digest(data)
-	}
-	if err := view.Verify(); err != nil {
-		return nil, nil, nil, err
-	}
-	return view, paths, hashes, nil
-}
-
-func assignmentReadBlobSizes(ctx context.Context, root, commit string, paths []string) ([]int64, error) {
-	if len(paths) == 0 {
-		return nil, nil
-	}
-	var input strings.Builder
+	locations := make(map[string]string, len(paths))
 	for _, rel := range paths {
-		if strings.ContainsAny(rel, "\x00\r\n") {
-			return nil, fmt.Errorf("Assignment read source name cannot be represented in the bounded Git query")
-		}
-		input.WriteString(commit)
-		input.WriteByte(':')
-		input.WriteString(rel)
-		input.WriteByte('\n')
+		locations[rel] = rel
 	}
-	queryCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-	defer cancel()
-	command := exec.CommandContext(queryCtx, "git", "-C", root, "cat-file", "--batch-check=%(objecttype) %(objectsize)")
-	command.Stdin = strings.NewReader(input.String())
-	output, err := command.Output()
-	if err != nil {
-		return nil, fmt.Errorf("size pinned Assignment Git blobs: %w", err)
-	}
-	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
-	if len(lines) != len(paths) {
-		return nil, fmt.Errorf("pinned Assignment Git blob size query returned an incomplete closure")
-	}
-	sizes := make([]int64, len(lines))
-	for i, line := range lines {
-		fields := strings.Fields(line)
-		if len(fields) != 2 || fields[0] != "blob" {
-			return nil, fmt.Errorf("Assignment read source is not a regular Git blob: %s", paths[i])
-		}
-		sizes[i], err = strconv.ParseInt(fields[1], 10, 64)
-		if err != nil || sizes[i] < 0 {
-			return nil, fmt.Errorf("invalid pinned Assignment Git blob size: %s", paths[i])
-		}
-	}
-	return sizes, nil
+
+	return view, paths, locations, nil
 }
 
 func normalizeAssignmentReadPattern(raw string) (pattern string, directory bool, err error) {
@@ -276,43 +191,6 @@ func walkAssignmentReadTree(view *fileview.View, directory, pattern string, note
 			selected[rel] = true
 			(*matches)++
 		}
-	}
-	return nil
-}
-
-func verifyAssignmentReadCheckout(root, rel string, pinned []byte) error {
-	if filepath.IsAbs(filepath.FromSlash(rel)) {
-		return fmt.Errorf("Assignment read source is absolute: %s", rel)
-	}
-	full := filepath.Join(root, filepath.FromSlash(rel))
-	relative, err := filepath.Rel(root, full)
-	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
-		return fmt.Errorf("Assignment read source escapes Main: %s", rel)
-	}
-	current := root
-	parts := strings.Split(rel, "/")
-	for i, part := range parts {
-		current = filepath.Join(current, part)
-		info, err := os.Lstat(current)
-		if err != nil {
-			return fmt.Errorf("Assignment read source is absent from Main checkout: %s", rel)
-		}
-		if info.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("Assignment read source refuses checkout symlink: %s", rel)
-		}
-		if i < len(parts)-1 && !info.IsDir() {
-			return fmt.Errorf("Assignment read source parent is not a directory: %s", rel)
-		}
-		if i == len(parts)-1 && !info.Mode().IsRegular() {
-			return fmt.Errorf("Assignment read source is not a regular checkout file: %s", rel)
-		}
-		if i == len(parts)-1 && info.Size() != int64(len(pinned)) {
-			return fmt.Errorf("Assignment read source checkout differs from pinned Git blob: %s", rel)
-		}
-	}
-	actual, err := os.ReadFile(full)
-	if err != nil || !bytes.Equal(actual, pinned) {
-		return fmt.Errorf("Assignment read source checkout differs from pinned Git blob: %s", rel)
 	}
 	return nil
 }

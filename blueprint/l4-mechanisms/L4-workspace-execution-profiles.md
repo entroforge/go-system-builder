@@ -34,13 +34,13 @@ CheckProfile 是原检查的显式执行配置。它按 `check_index` 与 `comma
 | id、version、check_index、command | 固定本项配置与原命令槽，供接收和重放核对 |
 | location、timeout_seconds | 明确 Main／Worker 位置及有界执行时间 |
 | environment_policy、environment | 区分继承环境与仅声明环境，声明值及未设置状态有不同含义 |
-| dependencies、fixtures | 指定实际依赖和测试材料的仓库路径及来源摘要 |
+| dependencies、fixtures | 指定实际依赖和测试材料的仓库路径与用途 |
 | input_closure、side_effects | 说明掌握了什么输入，是否可能生成或改变内容 |
 | reuse_policy、reuse_mode | 表达允许的有限复用与观察／启用选择，不自动授予复用资格 |
 
 当前 profile 的超时范围为 1～300 秒，环境名称有明确白名单。依赖／fixture 使用实际仓库相对路径，不能指向控制文件或经符号链接逃出来源根；原冻结步骤把必要来源纳入既有输入关联。
 
-已有执行的 profile、runner 位置和输入不能在运行中静默改变。模式变化要走原替换／修订能力，保留旧接收和专业工作。内部摘要由系统维护，不要求作者手抄。
+已有执行的 profile、runner 位置和输入发生实际变化时，由原责任按替换／修订能力处理，保留旧接收和专业工作。Hook 及其可达消费者不计算、登记或校验来源、输入、回执、权限或日志的散列，不将此工作转交作者。
 
 ### 3.2 一个静态检查配置的形状
 
@@ -107,7 +107,7 @@ Main 在合并后实际树运行必要检查，保留原 checkpoint。S9 的真�
 
 当前 Linux runner 使用 Bubblewrap 与 seccomp：Main、原 Worker 及 Git 元数据按只读来源处理，把临时副本映射为检查 cwd，生成文件留在副本；临时目录也单独安排。完成后丢弃副本，不把测试生成物自动变成产品交付。
 
-实际网络策略保留宿主 network namespace，并以原 seccomp 规则拒绝 socket／相关调用；不能描述成已经建立了独立网络命名空间。它也保留宿主文件系统的只读可见面，因此整个仓库摘要不足以闭合任意 shell 的全部输入。
+实际网络策略保留宿主 network namespace，并以原 seccomp 规则拒绝 socket／相关调用；不能描述成已经建立了独立网络命名空间。它也保留宿主文件系统的只读可见面，因此框架不能声称掌握任意 shell 的全部输入。
 
 命令、位置、平台与隔离失败都应如实表达。不支持的宿主直接给出能力限制，不能悄悄运行一个无隔离 Worker 检查。原生平台隔离、受限检查副本与工程写范围，各有实际用途，不能相互冒充。
 
@@ -115,17 +115,17 @@ Main 在合并后实际树运行必要检查，保留原 checkpoint。S9 的真�
 
 ### 6.1 runner 记录实际发生的内容
 
-实际执行保留原命令、责任关联、被测副本、环境／runner／依赖／fixture 观察、耗时、状态及原日志。显式 profile 的 v2 回执还带完整性与日志摘要；没有 profile 的旧回执保持原格式，不静默升级为新复用来源。
+实际执行保留原命令、责任关联、被测副本、环境／runner／依赖／fixture 观察、耗时、状态及原日志。新回执不计算或登记完整性、日志及输入散列；旧回执按原路径读取，历史散列不重算、校验或变成复用资格。
 
-runner 在执行前后核对需要保持的输入、环境及权限事实。输入改变、取消、超时、日志写入失败或结果发布失败，都不能生成可复用 PASS。记录了失败仍有诊断价值，应保留而非删除后重新命名为成功。
+runner 记录实际环境及执行结果。已知输入发生影响检查的变化、取消、超时、日志写入失败或结果发布失败时，如实保留实际状态，不制造可复用 PASS；不能声称系统凭路径自动发现所有输入变化。失败保留诊断价值。
 
 ### 6.2 真实调用捕获与领域接收分别成立
 
-原 runner 用进程内 capture 交出它实际发布的字节摘要、日志、命令、checkout 和 binding。原 CLI 随后在 Writer／CAS 中重读当前 owner、execution、profile、输入及适用原责任，再登记该工具事实；Main runner 则沿原集成 checkpoint 保留事实。
+原 runner 通过原调用交出实际命令、日志、执行结果及责任关联；原 CLI 沿 Writer 保存工具事实，Main runner 沿原集成 checkpoint 保留事实。调用链不采集或登记字节散列、Git OID 或其他内容指纹。
 
-作者不手写这份接收元数据，也不能把一个自行封装、重新计算摘要的文件导入成真实执行。完整性摘要帮助检出变化，但不是来源签名或原领域已接受的证明。
+作者不手写接收元数据，单独放置日志或自造文件也不能冒充框架实际执行。记录只说明原调用可知的事实，不声称具有独立字节完整性认证或自动发现所有改动的能力。
 
-原工具接收引用与文件的内容、日志、profile 和责任要匹配，单纯日志存在不够。当前普通执行回执引用有有界保留，过期只意味着不能复用，不能抹去失败；不同 owned-check 集合按其原索引与保留规则处理，不能把一处数量限制推广为所有回执统一配额。
+原工具接收引用沿实际调用、原 profile 和责任关联；单纯日志存在不够，不计算散列验证日志或回执。当前普通执行回执引用有有界保留，过期只意味着不能复用，不能抹去失败；不同 owned-check 集合按其原索引与保留规则处理，不能把一处数量限制推广为所有回执统一配额。
 
 ### 6.3 接收失败不补造历史
 
@@ -137,17 +137,17 @@ runner 在执行前后核对需要保持的输入、环境及权限事实。输�
 
 ### 7.1 重复输入不等于重复命令文字
 
-同一个命令可以读不同环境、宿主文件、工具版本或外部服务。只比较命令与 Git HEAD，可能复用一份根本未覆盖当前输入的结果。whole_tree 摘要也只覆盖采集的树，不认证任意 shell 的外部闭包。
+同一个命令可以读不同环境、宿主文件、工具版本或外部服务。相同命令或路径不能证明当前输入相同；Hook 不计算 whole_tree 散列或登记 Git OID 来判断。
 
-当前复用依据包括原已接收 PASS、完整当前观察、原 profile、相同责任／代际／execution generation、相同实际 checkout、输入与环境／runner／依赖／fixture，以及真实隔离权限观察。缺失或不一致就执行，不接受调用者填一个 PermissionKnown 布尔值代替来源。
+复用须有原已接收 PASS，且原责任和实际配置适用；Main／原执行责任按既有工作处理已知影响检查的输入、环境和工作变化。无散列后，不能独立认证输入未发生过未记录变化；这种未知本身不等于已知不适用，也不要求作者另作判断、声明或证明。已知输入或环境变化确实影响本次检查，或者原记录不属于实际责任／配置时，不把原 PASS 冒充当前检查，按原责任执行所需检查；不计算或重验散列、Git OID 或整树／逐文件内容来补证。
 
-权限观察来自原 runner 预检，包含隔离工具、shell／运行库、filter／策略、内核与身份、控制根／仓库／Worker／cwd 和原授权来源的实际可得事实。它是有限比对条件，不是给所有执行建立一份新平台许可证。
+权限观察来自原 runner 预检，包含隔离工具、shell／运行库、filter／策略、内核与身份、控制根／仓库／Worker／cwd 和原授权来源的实际可得事实；已知会影响检查的变化按原责任处理。历史观察不完整本身不是补交平台证明或认证全量运行环境的理由；需要新执行时仍沿原 runner 如实处理实际隔离能力和失败，不将未执行冒充成功。
 
 ### 7.2 默认观察，显式启用仍保留原责任
 
-当前 `reuse_policy` 不允许或 profile 不存在时正常重跑。shadow 可以反馈 would_reuse，但仍运行；显式 enabled 只允许原 Worker 的同输入同责任政策，且环境 declared_only、无副作用、whole_tree 和当前已闭合静态语法都成立。
+当前 `reuse_policy` 不允许或 profile 不存在时正常重跑。shadow 可以反馈 would_reuse，但仍运行；显式 enabled 只允许原 Worker 的 `same_input_same_responsibility` 策略，且原 profile 为 declared_only、无副作用、whole_tree 并使用当前已闭合静态语法。这里 whole_tree 是已有 profile 声明，不要求计算树摘要或比较全部文件；同输入不再被表述为机器已证明，实际未知及已知变化按 §7.1 处理，不因这一放宽扩展 profile 的适用命令或责任范围。
 
-当前静态语法范围仅 `true`、`false`、`test -f`、`test -s` 的受测树内字面路径。它不覆盖任意测试工具、流水线或脚本。即使命令属于此集合，旧失败、缺权限事实、来源损坏或未被原消费者接收，也不能命中。
+当前静态语法范围仅 `true`、`false`、`test -f`、`test -s` 的受测树内字面路径。它不覆盖任意测试工具、流水线或脚本。即使命令属于此集合，旧失败、原记录真实不可读或未被原消费者接收，也不能作为已收 PASS 命中；历史权限观察缺项不凭空推断失败，也不要求补一份证明。
 
 真正命中返回原已接收引用，不新造一份 PASS 或刷新执行时间。旧 shadow 回执不因为配置改 enabled 就升级资格；冻结配置变化仍走原机制。
 
@@ -155,7 +155,7 @@ runner 在执行前后核对需要保持的输入、环境及权限事实。输�
 
 Main 必需集成检查、独立验证、新的判别假设及 fresh 要求均优先重新执行。当前检查协调器也为修复状态带 fresh guard，不能把 S9 专业复验变成同名命令缓存命中。
 
-换 checkout、换责任、换输入或未知环境均不复用。搬迁证据路径只保留可读历史，不把原 checkout 改写成新的执行坐标来取得复用资格。
+已知换责任、输入或环境会影响检查时重新执行；搬迁路径只保留可读历史，不将旧检查冒充新的实际执行。
 
 ## 8. 并发检查与运行诊断怎样配合
 
@@ -192,15 +192,15 @@ Main 必需集成检查、独立验证、新的判别假设及 fresh 要求均�
 
 ### 10.2 安装中断只恢复可证明的原内容
 
-旧新建工作区可能继承已提交 launcher／settings。仅在原 preparing、尚未发布 bootstrap receipt 的窗口，已有普通文件确与准确 base_commit 的原始 Git blob 字节相同，且没有暂存／未暂存修改时，安装器才可按原规则替换对应资产。
+旧新建工作区可能继承已提交 launcher／settings。原 preparing、尚未发布 bootstrap receipt 的窗口仍须保护现场；若根据已有实际内容不能安全判断能否替换，则保留文件交系统／Main 处理，不凭旧 Git OID、散列或缺失证明猜测覆盖。
 
-不能用去掉尾空白的 Git 文本作等同证明；来源不可读、未跟踪内容、符号链接或已变字节保持原现场。发布 receipt 以后不再享有这项继承例外，重试只接受已正确安装内容，不覆盖用户后来修改。
+来源不可读、已有用户内容或结果不确定时保持原现场；重试不覆盖用户后来修改。
 
 Main 权限、Runtime、journal 和凭据不会因为恢复安装而复制进 Worker。新原生责任也不为使用某个检查器安装一套 bootstrap。
 
 ### 10.3 作者位置按冻结上下文读取
 
-旧宿主保护目录问题通过原准确 authoring path 处理，部分新准备的旧式执行使用 `.loop-submissions/` 下具名文件。旧上下文仍可能指向 `.claude/submissions/`；恢复沿其原记录，不按目录中哪个文件存在猜新旧版本。
+当前原生题面提供准确 authoring path；删除 `.claude/submissions/` 等旧式执行路径及其兼容恢复接线，不按目录中哪个文件存在猜版本。用户实际文件保留，不因清理代码删除。
 
 某条平台写限制不能靠让作者换 Bash、修改全局宿主权限或复制一份控制文件绕过。准确私人路径的用途是正常保存原专业内容，不授予新的产品范围或另建接收入口。
 
@@ -216,29 +216,29 @@ Main 权限、Runtime、journal 和凭据不会因为恢复安装而复制进 Wo
 
 ### 12.1 改路径不能绕过权威检查
 
-项目目录移动后，普通 Writer 拒绝不同控制根是必要行为；直接修改 root 字段或增加 skip-authority 会破坏单一权威。原搬迁能力因此显式提供旧／新 Main、common dir、分支、预期 HEAD 和每个执行目录映射。
+项目目录移动后，普通 Writer 拒绝不同控制根是必要行为；直接修改 root 字段或增加 skip-authority 会破坏单一权威。原搬迁能力因此处理旧／新 Main、实际工作区和每个执行目录映射。
 
-先完成实际 Git worktree move／repair，再按原计划核对同一仓库、分支、HEAD、原绑定提交、旧根已不存在及映射无重叠。只找到同名分支或相同 remote 不足以确认身份，旧／新目录同时存在也不能当成正常搬迁。
+Main 可正常使用 Git 完成实际 worktree move／repair 并判断现场；系统按原搬迁意图和实际路径处理映射，不登记、计算或比对 Git OID 来认证搬迁。旧／新现场有冲突或原意图缺失时保留现场并反馈具体未知。
 
 ### 12.2 原意图、原事务与指针恢复
 
 原 CLI 先持久化不可变搬迁意图，包含准确源 Snapshot、前后目录注册与原检查点映射；持原工作区和相关旧 launch lease，再经 Runtime 的窄事务修改允许的坐标并更新指针／检查点。
 
-响应丢失时沿同一意图和原 marker／journal 继续，不重建源 Snapshot 来追认。Runtime 并发变化、原生 Git 身份不符、仍活动的旧 lease 或尚未完成的交付／检查点，保持现场并反馈实际恢复条件。
+响应丢失时沿同一意图和原 marker／journal 继续，不重建源 Snapshot 来追认。Runtime 并发变化、实际工作区冲突、仍活动的旧 lease 或尚未完成的交付／检查点，保持现场并反馈实际恢复条件。
 
-移动证据 locator 不改原回执字节、原 checkout、检查摘要或被测提交，也不刷新成一项新执行。原记录仍有可读历史来源，其对当前资格的效力由原消费者判断。
+移动证据 locator 不改原回执、原工作区或实际检查结论，也不刷新成一项新执行；旧记录内的散列只作为历史数据读取，不再重算或验证。原记录仍有可读历史来源，其对当前资格的效力由原消费者判断。
 
 ### 12.3 当前组合边界
 
-原 PlanRebind 移动执行记录与历史记录中的 ToolCheckReceipts、OwnedCheckReceipts 读取路径。Runtime 的窄事务只接受准确旧 Main 相对位置在新 Main 中的对应位置；比较时归一这些 locator，再按原完整注册逐字段核对。列表成员、顺序、WorkerCheck 索引、摘要、原 checkout、命令、Profile 和责任绑定均不能借搬迁改写。路径越界、任意新位置或其他事实变化仍拒绝，不要求作者删除工具事实来换取通过。
+原 PlanRebind 移动执行记录与历史记录中的 ToolCheckReceipts、OwnedCheckReceipts 读取路径。Runtime 的窄事务只接受准确旧 Main 相对位置在新 Main 中的对应位置；按原意图映射这些 locator，保留原责任、WorkerCheck 索引、命令、Profile 和已收事实，不通过重算散列或 Git OID 验证搬迁。路径越界、任意新位置或其他事实变化仍拒绝，不要求作者删除工具事实来换取通过。
 
-原回执与其日志可在准确新位置继续读取，封印的历史字节保持不变。它仍描述旧 checkout 上发生的检查；新的实际 checkout 不凭这份可读历史取得复用资格。原生来源、新的回执类型和复杂历史是否可接续，仍按原领域消费者、实际 Git 关系和原意图验证；本路径服务已有记录的显式恢复，不成为正常子代理的启动或搬迁前置。
+原回执与其日志可在准确新位置继续读取；历史是否被外部原地改动不能仅凭路径和版本独立认证。它仍描述旧 checkout 上发生的检查；新的实际 checkout 不凭这份可读历史取得复用资格。新的回执类型和复杂历史是否可接续，按原领域消费者、实际可用内容及原意图判断；本路径服务已有记录的显式恢复，不成为正常子代理的启动或搬迁前置。
 
 ## 13. 有限修复授权怎样减少重复打断
 
 检查能力与批准修复是不同问题。这里保留原有限授权，是为了在明确人意范围内减少重复批准，而不把 runner 可用误作修复许可。S8 的具体专业工作与合同内容见 [问题调查](../l3-stages/L3-S8-finding-investigation.md)。
 
-默认仍由人按原入口批准最终合同。另有明确 per-REQ 委托，或在需求绑定时固定、由原需求批准者授权的项目政策；它们指定 reviewer、允许／禁止路径、正数合同预算及适用有效期，并绑定原 REQ 摘要、Runtime 与代际。per-REQ 委托有明确到期要求；原绑定项目政策可不设墙钟到期时间，但仍受其绑定、内容有效性与有限预算约束。
+默认仍由人按原入口批准最终合同。另有明确 per-REQ 委托，或在需求绑定时固定、由原需求批准者授权的项目政策；它们指定 reviewer、允许／禁止路径、正数合同预算及适用有效期，并关联原 REQ、Runtime 与实际责任。per-REQ 委托有明确到期要求；原绑定项目政策可不设墙钟到期时间，但仍受其绑定、内容有效性与有限预算约束。
 
 批准前核对最终合同的实际内容、路径与授权范围、真实技术审查、原已登记支持证据及剩余预算。技术 reviewer 说明语义未变、可逆性、范围完整与依据；这些布尔字段不是机器自动证明其判断正确。
 
@@ -248,9 +248,11 @@ Main 权限、Runtime、journal 和凭据不会因为恢复安装而复制进 Wo
 
 ## 14. 当前实现与验证边界
 
+以下列现有实现落点，不表示已经符合无散列目标；runner、回执、复用、授权、搬迁及其 schema／后继须共同调整并按原入口验证。
+
 | 责任 | 当前落点 |
 | --- | --- |
-| Profile、入口能力、观察与失败 DTO | [checkexec/profile.go](../../internal/checkexec/profile.go)、[capability.go](../../internal/checkexec/capability.go)、[fingerprint.go](../../internal/checkexec/fingerprint.go)、[failure.go](../../internal/checkexec/failure.go) |
+| Profile、入口能力、观察与失败 DTO | [checkexec/profile.go](../../internal/checkexec/profile.go)、[capability.go](../../internal/checkexec/capability.go)、[fingerprint.go](../../internal/checkexec/fingerprint.go)、[failure.go](../../internal/checkexec/failure.go)；现有指纹逻辑须从 Hook 及其可达消费者摘除 |
 | 原 runner 与隔离预检 | [workspace/check.go](../../internal/workspace/check.go)、[capabilities.go](../../internal/workspace/capabilities.go)、[check_linux.go](../../internal/workspace/check_linux.go) |
 | 工具捕获、验证、有限复用与运行诊断 | [accepted.go](../../internal/checkexec/accepted.go)、[reuse.go](../../internal/checkexec/reuse.go)、[permissions.go](../../internal/checkexec/permissions.go)、[running.go](../../internal/checkexec/running.go) |
 | Worker 工具事实与原 Writer 接收 | [check_receipt.go](../../internal/workspace/check_receipt.go)、[check_owned.go](../../internal/workspace/check_owned.go)、[workspace_check.go](../../internal/cli/workspace_check.go) |

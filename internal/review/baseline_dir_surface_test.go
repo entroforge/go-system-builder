@@ -65,7 +65,7 @@ func TestDraftPlanSkipsDirectoryChangedPathFromEnvelope(t *testing.T) {
 		"scope_refs": []any{},
 	}}
 
-	plan, notes := DraftPlanForRoot(root, state, 1)
+	plan, notes := DraftPlanForRoot(root, state)
 	if plan == nil {
 		t.Fatal("DraftPlanForRoot returned nil plan")
 	}

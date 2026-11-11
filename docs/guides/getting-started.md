@@ -96,8 +96,8 @@ After installation, verify the project:
 .claude/bin/loop-harness release-graph validate --installed --root .
 ```
 
-`init` computes the local Loop Definition and Hook policy fingerprints and
-writes a schema-valid inactive `.claude/loop-state.json` only when no runtime
+`init` writes a schema-valid inactive `.claude/loop-state.json` that references
+the local Loop Definition and Hook policy only when no runtime
 files exist. It refuses to overwrite a state file or journal; if its own
 bootstrap marker remains after an interruption, rerun `init` to complete it.
 Use it to bootstrap a project; after a terminal REQ, a human uses `loop-harness runtime
@@ -195,9 +195,10 @@ Claude Code subagents use `.claude/agents/*.md`. Main follows
 independence and real dependencies, then carries the original references into
 native Agent. Engineering registration alone does not start a platform Agent.
 
-S5/S7/S8 Workers read their exact domain view, save their own private answer
-and return the original reference for SubagentStop reception. Main does not
-write an independent judgment on their behalf. For S6, Main runs
+S5/S7/S8 Workers read their exact domain view and save their own private answer.
+S7/S8 natural PreToolUse observes it, with successful PostToolUse and Stop as
+fallbacks; S5 retains its original return path. Main does not write an independent
+judgment on their behalf. For S6, Main runs
 `loop-harness s6 prepare --root <Main> --task <TASK> --role <role>` and passes
 the returned brief into a native Agent with worktree isolation. S6/S9 Builders
 save their professional plan before implementation, continue with real work
@@ -206,8 +207,8 @@ Main separately integrates and performs its required checks.
 
 Ordinary native work has no generic read-back, activation or per-save receipt.
 An explicit `plan_approval_required` responsibility retains its actual domain
-approval; only an already registered frozen execution uses the recovery steps
-in [workspace execution recovery](../workspace-execution-recovery.md).
+approval; actual integration and interruption recovery follow
+[workspace execution recovery](../workspace-execution-recovery.md).
 Follow the actual return and original reception feedback. Report real blockers
 and unfinished work; platform exit is not proof that the responsibility or
 stage is complete.

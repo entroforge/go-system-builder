@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/entroforge/go-system-builder/internal/runtime"
+	"github.com/entroforge/go-system-builder/tests/fixtures/factory"
 	fixtures "github.com/entroforge/go-system-builder/tests/fixtures/req039"
 )
 
@@ -62,11 +63,16 @@ func TestRegisteredCustomToolSaveReachesOriginalDesignReceiver(t *testing.T) {
 	if len(commands) != 1 || preCommand == "" {
 		t.Fatalf("custom tools must reach one original PostToolUse receiver; got %v", commands)
 	}
-	binary := filepath.Join(t.TempDir(), "loop-harness")
-	build := exec.Command("go", "build", "-o", binary, "./cmd/loop-harness")
-	build.Dir = repo
-	if output, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build real registered Harness: %v %s", err, output)
+	var binary string
+	if os.Getenv("HOOK_ACCEPTANCE_BINARY") != "" {
+		binary = factory.BuildHarness(t)
+	} else {
+		binary = filepath.Join(t.TempDir(), "loop-harness")
+		build := exec.Command("go", "build", "-o", binary, "./cmd/loop-harness")
+		build.Dir = repo
+		if output, err := build.CombinedOutput(); err != nil {
+			t.Fatalf("build real registered Harness: %v %s", err, output)
+		}
 	}
 	for _, test := range []struct {
 		name, tool, owner                        string

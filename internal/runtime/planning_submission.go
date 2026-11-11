@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
@@ -30,8 +31,38 @@ func FindDesignPacket(state map[string]any, id string) (workpacket.DesignPacket,
 	return workpacket.DesignPacket{}, false, nil
 }
 
-func RecordDesignPacket(root, statePath, journalPath string, p workpacket.DesignPacket, files fileview.Reader, validator CandidateValidator) (Snapshot, error) {
-	writer := NewWriter(statePath, journalPath, root, validator)
+// CurrentIssuedDesignPacket returns the existing current Main issuance and its
+// recorded paths without constructing or comparing the current template.
+func CurrentIssuedDesignPacket(state map[string]any) (workpacket.DesignPacket, bool, error) {
+	binding, err := CurrentDesignBinding(state)
+	if err != nil {
+		return workpacket.DesignPacket{}, false, err
+	}
+	entities, _ := state["entities"].(map[string]any)
+	rows, _ := entities["work_packets"].([]any)
+	var original workpacket.DesignPacket
+	for _, raw := range rows {
+		row, _ := raw.(map[string]any)
+		if row["template_id"] != "s2-design-v1" {
+			continue
+		}
+		candidate, exists, err := FindDesignPacket(state, stringValue(row["packet_id"]))
+		if err != nil {
+			return original, false, err
+		}
+		if !exists || !samePlanningResponsibility(candidate.Binding, binding) {
+			continue
+		}
+		if original.ID != "" {
+			return original, false, fmt.Errorf("multiple design questionnaires belong to the current entry")
+		}
+		original = candidate
+	}
+	return original, original.ID != "", nil
+}
+
+func RecordDesignPacket(ctx context.Context, root, statePath, journalPath string, p workpacket.DesignPacket, files fileview.Reader, validator CandidateValidator) (Snapshot, error) {
+	writer := NewWriter(statePath, journalPath, root, validator).WithContext(ctx)
 	snap, err := writer.Snapshot()
 	if err != nil {
 		return Snapshot{}, err
@@ -44,9 +75,6 @@ func RecordDesignPacket(root, statePath, journalPath string, p workpacket.Design
 	} else if found {
 		return snap, nil
 	}
-	data, _ := json.Marshal(p)
-	var row map[string]any
-	json.Unmarshal(data, &row)
 	cursor := map[string]any{"state": "planning", "phase": "design"}
 	next, err := writer.UpdateCurrent(Mutation{EventID: "evt-design-packet-" + p.ID, TransitionID: "PACKET-ISSUE", Event: "work_packet_issued", Actor: "orchestrator", IdempotencyKey: "packet:" + p.ID, RuntimeID: p.Binding.RuntimeID, From: cursor, To: cursor, RetainLastTransition: true, OccurredAt: time.Now().UTC(), Apply: func(state map[string]any) error {
 		if err := ValidateDesignPacket(root, state, p, files); err != nil {
@@ -75,6 +103,18 @@ func RecordDesignPacket(root, statePath, journalPath string, p workpacket.Design
 				}
 			}
 		}
+		issued, err := publishDesignPacketFiles(ctx, root, p)
+		if err != nil {
+			return err
+		}
+		data, err := json.Marshal(issued)
+		if err != nil {
+			return err
+		}
+		var row map[string]any
+		if err := json.Unmarshal(data, &row); err != nil {
+			return err
+		}
 		entities["work_packets"] = append(rows, row)
 		return nil
 	}})
@@ -88,6 +128,55 @@ func RecordDesignPacket(root, statePath, journalPath string, p workpacket.Design
 		}
 	}
 	return next, err
+}
+
+// publishDesignPacketFiles runs only within the original issuance Writer lock.
+// A failed or interrupted candidate remains unknown; only the packet paths
+// committed with the pending Runtime mutation are subsequently authoritative.
+func publishDesignPacketFiles(ctx context.Context, root string, original workpacket.DesignPacket) (workpacket.DesignPacket, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	for attempt := 0; ; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return original, err
+		}
+		p := original
+		if attempt > 0 {
+			p.ViewPath = strings.Replace(original.ViewPath, ".claude/work-packets/", fmt.Sprintf(".claude/work-packets-alt-%d/", attempt), 1)
+			p.AnswerPath = strings.Replace(original.AnswerPath, ".claude/submissions/", fmt.Sprintf(".claude/submissions-alt-%d/", attempt), 1)
+			if p.ViewPath == original.ViewPath || p.AnswerPath == original.AnswerPath {
+				return original, fmt.Errorf("S2 original publication roots are invalid")
+			}
+		}
+		view, err := json.MarshalIndent(p, "", "  ")
+		if err != nil {
+			return original, err
+		}
+		draft, err := json.MarshalIndent(p.Draft, "", "  ")
+		if err != nil {
+			return original, err
+		}
+		view, draft = append(view, '\n'), append(draft, '\n')
+		created, err := workpacket.PublishNewBounded(root, p.ViewPath, view, int64(len(view)))
+		if err != nil {
+			return original, err
+		}
+		if !created {
+			continue
+		}
+		if err := ctx.Err(); err != nil {
+			return original, err
+		}
+		created, err = workpacket.PublishNewBounded(root, p.AnswerPath, draft, 256<<10)
+		if err != nil {
+			return original, err
+		}
+		if !created {
+			continue
+		}
+		return p, nil
+	}
 }
 
 // DesignArchitecture preserves the original gate's directory/name/header rules.
@@ -121,7 +210,7 @@ func DesignArchitecture(root, path string, files fileview.Reader) (workpacket.Re
 		return ""
 	}
 	version := field("版本", "Version")
-	return workpacket.Reference{ID: strings.TrimSuffix(name, ".md"), Path: clean, Version: version, SHA256: workpacket.Digest(view)}, nil
+	return workpacket.Reference{ID: strings.TrimSuffix(name, ".md"), Path: clean, Version: version}, nil
 }
 
 func prepareDesignSubmission(root string, state map[string]any, req EvidenceRequest, data []byte) (SubmissionRecord, error) {
@@ -137,18 +226,11 @@ func prepareDesignSubmission(root string, state map[string]any, req EvidenceRequ
 	if len(issues) > 0 {
 		return SubmissionRecord{}, fmt.Errorf("design answer %s: %s", issues[0].Pointer, issues[0].Expected)
 	}
-	digest, err := workpacket.DesignAnswerDigest(answer)
-	if err != nil {
-		return SubmissionRecord{}, err
-	}
 	prior, accepted, err := FindSubmission(state, p.ID)
 	if err != nil {
 		return SubmissionRecord{}, err
 	}
 	if accepted {
-		if prior.ContentHash != digest {
-			return prior, ErrSubmissionConflict
-		}
 		return prior, errSubmissionAccepted
 	}
 	if err := ValidateDesignPacket(root, state, p, s.Files); err != nil {
@@ -157,58 +239,6 @@ func prepareDesignSubmission(root string, state map[string]any, req EvidenceRequ
 	if answer.Conclusion == nil || *answer.Conclusion != "pass" || answer.ArchitecturePath == nil || *answer.ArchitecturePath == "" {
 		return SubmissionRecord{}, fmt.Errorf("design remains a draft until the actual self-review and architecture are supplied")
 	}
-	key := workpacket.Digest([]byte("submission:" + p.ID))
-	return SubmissionRecord{Key: key, PacketID: p.ID, Owner: "Main", ContentHash: digest, EvidenceID: req.ID, FollowupID: workpacket.Digest([]byte(key + ":after-domain")), ControlStatus: "pending", OriginState: "planning", OriginPhase: "design", OriginEntry: p.Binding.StageEntry}, nil
-}
-
-func progressCanonicalJSON(v any) string {
-	data, _ := json.Marshal(v)
-	var value any
-	json.Unmarshal(data, &value)
-	data, _ = json.Marshal(value)
-	return string(data)
-}
-
-func ValidateDesignEnvelope(p workpacket.DesignPacket, id string, answer workpacket.DesignAnswer, data []byte) error {
-	if err := workpacket.ValidateUniqueJSON(data); err != nil {
-		return err
-	}
-	// Map decoding below checks exact keys and reconstructs the original shape.
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return err
-	}
-	for _, key := range []string{"schema_version", "evidence_id", "kind", "runtime_id", "baseline_generation", "producer_agent_id", "producer_responsibility", "subject_refs", "conclusion", "created_at"} {
-		if _, ok := raw[key]; !ok {
-			return fmt.Errorf("planning envelope missing %s", key)
-		}
-	}
-	if len(raw) != 10 {
-		return fmt.Errorf("planning envelope has unsupported fields")
-	}
-	var value map[string]any
-	if err := json.Unmarshal(data, &value); err != nil {
-		return err
-	}
-	var subjects []workpacket.Subject
-	if err := json.Unmarshal(raw["subject_refs"], &subjects); err != nil || len(subjects) != 2 {
-		return fmt.Errorf("planning envelope needs exact REQ and architecture subjects")
-	}
-	req := p.Binding.Requirement
-	if subjects[0] != (workpacket.Subject{Path: req.Path, Version: req.Version, SHA256: req.SHA256}) || answer.ArchitecturePath == nil || subjects[1].Path != *answer.ArchitecturePath {
-		return fmt.Errorf("planning envelope frozen subjects differ")
-	}
-	at, err := time.Parse(time.RFC3339Nano, stringValue(value["created_at"]))
-	if err != nil {
-		return err
-	}
-	expected, err := workpacket.DesignEvidence(p, id, workpacket.Reference{Path: subjects[1].Path, Version: subjects[1].Version, SHA256: subjects[1].SHA256}, answer, at)
-	if err != nil {
-		return err
-	}
-	expected["created_at"] = value["created_at"]
-	if progressCanonicalJSON(value) != progressCanonicalJSON(expected) {
-		return fmt.Errorf("planning envelope differs from validated professional answer")
-	}
-	return nil
+	key := "submission:" + p.ID
+	return SubmissionRecord{Key: key, PacketID: p.ID, Owner: "Main", EvidenceID: req.ID, FollowupID: "followup:" + p.ID, ControlStatus: "pending", OriginState: "planning", OriginPhase: "design", OriginEntry: p.Binding.StageEntry}, nil
 }

@@ -35,16 +35,16 @@ or gates; responsibility attempts use the separate five-state contract in
 
 ## 3. Baseline Index
 
-| Artifact | Path | Status | Fingerprint / Version |
+| Artifact | Path | Status | Version / Scope |
 |:---|:---|:---|:---|
 | rules | `docs/rules/README.md` | locked | {version} |
 | engineering conventions | `docs/rules/project-conventions.json` (optional) | absent / candidate / indexed | {source refs; no duplicated decisions} |
-| REQ | `docs/requirements/REQ-{id}.md` | {status} | {version/hash} |
+| REQ | `docs/requirements/REQ-{id}.md` | {status} | {version} |
 | design investment | `local / core / extended / N/A` | {复用、换手、Surface、风险依据} | upgrade when: {事实触发} |
 | design foundation | `docs/design/DESIGN.md` / local / N/A | missing / draft / in-review / provisional / published / superseded | {version or scope; `provisional` is not a lock; `published+PENDING` is a fake lock} |
-| design/UI | `{path}` | {status/N/A} | {version/hash} |
-| contracts | `docs/dev/contracts/CONTRACTS-{id}.md` | {status} | {version/hash} |
-| tasks | `docs/dev/tasks/index-REQ-{id}.md` | {status} | {version/hash} |
+| design/UI | `{path}` | {status/N/A} | {version} |
+| contracts | `docs/dev/contracts/CONTRACTS-{id}.md` | {status} | {version} |
+| tasks | `docs/dev/tasks/index-REQ-{id}.md` | {status} | {version} |
 | runtime | `.claude/loop-state.json` | authoritative | {state / phase / next} |
 
 ## 4. PM Todo

@@ -1,9 +1,10 @@
 package assignment
 
 import (
-	"bytes"
 	"fmt"
+	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/entroforge/go-system-builder/internal/assignmentinputs"
 	"github.com/entroforge/go-system-builder/internal/assignmentrecord"
@@ -22,10 +23,10 @@ func stageRegisteredRecordSources(root string, state map[string]any, record Reco
 	if err != nil {
 		return record, fmt.Errorf("capture Record authority source snapshots: %w", err)
 	}
-	return publishRegisteredRecordSources(root, state, captured, artifacts, staged, workpacket.PublishBounded)
+	return publishRegisteredRecordSources(root, state, captured, artifacts, staged, workpacket.PublishNewBounded)
 }
 
-func publishRegisteredRecordSources(root string, state map[string]any, captured Record, artifacts map[string][]byte, staged *[]loopruntime.ArtifactCleanupRequest, publish func(string, string, []byte, int64) ([]byte, error)) (Record, error) {
+func publishRegisteredRecordSources(root string, state map[string]any, captured Record, artifacts map[string][]byte, staged *[]loopruntime.ArtifactCleanupRequest, publish func(string, string, []byte, int64) (bool, error)) (Record, error) {
 	record := captured
 	revision, err := commitRevision(-1, state)
 	if err != nil {
@@ -37,18 +38,42 @@ func publishRegisteredRecordSources(root string, state map[string]any, captured 
 		paths = append(paths, path)
 	}
 	sort.Strings(paths)
+	record.SourceSnapshots = append([]assignmentrecord.SourceSnapshot(nil), captured.SourceSnapshots...)
 	for _, path := range paths {
 		body := artifacts[path]
-		// Publish may have linked final bytes before a sync/readback error.
-		// Track intent first; original cleanup validates actual SHA/references.
-		*staged = append(*staged, loopruntime.ArtifactCleanupRequest{ExpectedRevision: revision, ArtifactPath: path, ArtifactSHA256: sha256Of(body), ReferencedPaths: referenced})
-		published, err := publish(root, path, body, 16<<20)
-		if err != nil {
-			return record, fmt.Errorf("publish Record source snapshot: %w", err)
-		}
-		if !bytes.Equal(body, published) {
-			return record, fmt.Errorf("Record source snapshot conflicts with original immutable bytes")
+		for attempt := 0; ; attempt++ {
+			actual := path
+			if attempt == 1 {
+				actual = filepath.ToSlash(filepath.Join(".claude/evidence", fmt.Sprintf("assignment-source-candidate-%d", attempt), filepath.Base(path)))
+			} else if attempt > 1 {
+				actual = filepath.ToSlash(filepath.Join(".claude", fmt.Sprintf("evidence-alt-%d", attempt-1), strings.TrimPrefix(path, ".claude/evidence/")))
+			}
+			created, err := publish(root, actual, body, 16<<20)
+			if err != nil {
+				return record, fmt.Errorf("publish Record source snapshot: %w", err)
+			}
+			if !created {
+				// Only the common control parent must be available. An occupied
+				// evidence root is preserved while later candidates use another root.
+				parent, _, err := workpacket.OpenParent(root, ".claude/assignment-source-root-probe", true)
+				if err != nil {
+					return record, fmt.Errorf("Assignment source storage unavailable: %w", err)
+				}
+				if err := parent.Close(); err != nil {
+					return record, fmt.Errorf("Assignment source storage unavailable: %w", err)
+				}
+				continue
+			}
+			// Ownership comes from exclusive creation, never matching contents.
+			// If publication reports an error after linking, retain the orphan.
+			*staged = append(*staged, loopruntime.ArtifactCleanupRequest{ExpectedRevision: revision, ArtifactPath: actual, ArtifactBytes: append([]byte(nil), body...), ReferencedPaths: referenced})
+			for i := range record.SourceSnapshots {
+				if record.SourceSnapshots[i].Path == path {
+					record.SourceSnapshots[i].Path = actual
+				}
+			}
+			break
 		}
 	}
-	return captured, nil
+	return record, nil
 }

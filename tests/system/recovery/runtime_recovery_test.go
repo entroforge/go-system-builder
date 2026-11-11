@@ -64,8 +64,8 @@ func TestRuntimeRecoveryInspectAndPlanSurviveMalformedOrBOMState(t *testing.T) {
 			if !containsAny(stdout+stderr, "recovery", "plan") {
 				t.Fatalf("plan must report a recovery plan, got stdout=%s stderr=%s", stdout, stderr)
 			}
-			if !planReferencesBytes(t, root, plan, tc.raw) {
-				t.Fatalf("plan must content-address or retain damaged runtime bytes; plan=%s", planPath)
+			if !planReferencesDamagedRuntime(t, root, plan, tc.raw) {
+				t.Fatalf("plan must identify the damaged runtime by path and size; plan=%s", planPath)
 			}
 		})
 	}
@@ -115,12 +115,18 @@ func TestRuntimeRecoveryApplyRebindsREQAndQuarantinesCorruptRuntime(t *testing.T
 	if got := bound["status"]; got != "locked" {
 		t.Fatalf("recovered Runtime bound_req.status = %v, want locked", got)
 	}
+	// The rebound REQ is identified by its actual identity and path. The
+	// recovery path neither registers nor compares a REQ digest: the
+	// blueprint forbids comparing branch REQ bytes against the old
+	// `bound_req.sha256`, and forbids the transaction recovery path from
+	// computing, registering or validating any hash at all
+	// (blueprint/l4-mechanisms/L4-workflow-convergence.md:138 and :292).
 	reqBytes, err := os.ReadFile(filepath.Join(root, recoveryReqPath))
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("rebound REQ file must exist after recovery: %v", err)
 	}
-	if got, want := bound["sha256"], sha256Hex(reqBytes); got != want {
-		t.Fatalf("recovered Runtime bound_req.sha256 = %v, want current REQ digest %s", got, want)
+	if !strings.Contains(string(reqBytes), "REQ-039") {
+		t.Fatalf("rebound REQ file is not the selected REQ: %s", reqBytes)
 	}
 	if runtimeID, _ := state["runtime_id"].(string); runtimeID == "" {
 		t.Fatal("recovered Runtime must have a runtime_id")
@@ -135,9 +141,30 @@ func TestRuntimeRecoveryApplyRebindsREQAndQuarantinesCorruptRuntime(t *testing.T
 	}
 }
 
+// TestRuntimeRecoveryApplyQuarantinesAndClearsLegacyPendingMarker covers a
+// legacy `.commit-pending.json` that carries no target state/event.
+//
+// The test name is kept because the audit harness pins this selector, but the
+// expectation follows the blueprint instead of the retired legacy handling.
+//
+// blueprint/l4-mechanisms/L4-state-transition-core.md:215 requires that an
+// unknown pending source keeps the scene intact ("保留现场") and never forces
+// a deletion of resources, and :217 requires that a legacy
+// `.commit-pending.json` whose target cannot be established from the actual
+// material must preserve the unknown and escalate it to the system/Main
+// ("必须保留未知并交系统／Main") instead of guessing a target, rehashing an old
+// SHA or retiring the marker. The retired behaviour — quarantine the marker
+// bytes and clear the marker — is gone, so it must not reappear.
+//
+// RED contract: `runtime recover apply` must refuse the unresolved original
+// pending operation, report it as unresolved and preserved, and leave both the
+// legacy marker and the active Runtime bytes exactly as they were. Repeating
+// the apply must refuse the same way: the refusal has to be stable instead of
+// a one-shot that quietly succeeds on the second attempt.
 func TestRuntimeRecoveryApplyQuarantinesAndClearsLegacyPendingMarker(t *testing.T) {
 	root := newRecoveryRoot(t)
-	writeActiveRuntimeBytes(t, root, []byte(`{"runtime":"corrupt-with-pending"}`))
+	activeBytes := []byte(`{"runtime":"corrupt-with-pending"}`)
+	writeActiveRuntimeBytes(t, root, activeBytes)
 	pendingPath := filepath.Join(root, ".claude", "loop-state.json.commit-pending.json")
 	pendingBytes := []byte(`{"legacy":"pending-commit"}`)
 	if err := os.WriteFile(pendingPath, pendingBytes, 0o600); err != nil {
@@ -145,29 +172,46 @@ func TestRuntimeRecoveryApplyQuarantinesAndClearsLegacyPendingMarker(t *testing.
 	}
 	planPath := createRecoveryPlan(t, root)
 
-	code, stdout, stderr := runRecovery(t, root,
-		"runtime", "recover", "apply",
-		"--root", root, "--plan", planPath, "--approved-by", "recovery-owner",
-	)
-	if code != 0 {
-		t.Fatalf("apply with legacy pending marker failed: code=%d stdout=%s stderr=%s", code, stdout, stderr)
-	}
-	if _, err := os.Stat(pendingPath); !os.IsNotExist(err) {
-		t.Fatalf("legacy pending marker remains after recovery: %v", err)
-	}
-	contained, err := recoveryTreeContains(root, pendingBytes)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !contained {
-		t.Fatal("legacy pending marker bytes were not quarantined")
-	}
-	code, stdout, stderr = runRecovery(t, root,
-		"runtime", "recover", "apply",
-		"--root", root, "--plan", planPath, "--approved-by", "recovery-owner",
-	)
-	if code != 0 || !strings.Contains(stdout+stderr, "LOOP_RECOVERY_ALREADY_APPLIED") {
-		t.Fatalf("same pending-source plan must remain idempotent: code=%d stdout=%s stderr=%s", code, stdout, stderr)
+	for attempt := 1; attempt <= 2; attempt++ {
+		code, stdout, stderr := runRecovery(t, root,
+			"runtime", "recover", "apply",
+			"--root", root, "--plan", planPath, "--approved-by", "recovery-owner",
+		)
+		if code == 0 {
+			t.Fatalf("apply %d must refuse an unresolved legacy pending marker: code=%d stdout=%s stderr=%s", attempt, code, stdout, stderr)
+		}
+		diagnostics := stdout + stderr
+		if !strings.Contains(diagnostics, "unresolved") {
+			t.Fatalf("apply %d must report the pending operation as unresolved, got stdout=%s stderr=%s", attempt, stdout, stderr)
+		}
+		if !strings.Contains(diagnostics, "preserve") {
+			t.Fatalf("apply %d must report that the existing files are preserved, got stdout=%s stderr=%s", attempt, stdout, stderr)
+		}
+		if strings.Contains(diagnostics, "LOOP_RECOVERY_ALREADY_APPLIED") {
+			t.Fatalf("apply %d must not report a completed recovery for an unresolved pending marker, got stdout=%s stderr=%s", attempt, stdout, stderr)
+		}
+
+		marker, err := os.ReadFile(pendingPath)
+		if err != nil {
+			t.Fatalf("apply %d must keep the legacy pending marker in place: %v", attempt, err)
+		}
+		if !bytes.Equal(marker, pendingBytes) {
+			t.Fatalf("apply %d changed the legacy pending marker bytes: %s", attempt, marker)
+		}
+		active, err := os.ReadFile(filepath.Join(root, ".claude", "loop-state.json"))
+		if err != nil {
+			t.Fatalf("apply %d must keep the active Runtime in place: %v", attempt, err)
+		}
+		if !bytes.Equal(active, activeBytes) {
+			t.Fatalf("apply %d changed the active Runtime bytes: %s", attempt, active)
+		}
+		quarantined, err := recoveryTreeContains(root, pendingBytes)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if quarantined {
+			t.Fatalf("apply %d quarantined the legacy pending marker; the blueprint requires the unknown to be preserved and escalated instead of retired", attempt)
+		}
 	}
 }
 
@@ -187,18 +231,15 @@ func TestRuntimeRecoveryApplyResumesFromDurableMarkerBeforeReadingCorruptPlanOrD
 		t.Fatal(err)
 	}
 	_, err = runtime.ApplyRecovery(runtime.RecoveryRequest{
-		Root:                   root,
-		StatePath:              filepath.Join(root, ".claude", "loop-state.json"),
-		JournalPath:            filepath.Join(root, ".claude", "loop-events.jsonl"),
-		PlanID:                 plan["plan_id"].(string),
-		PlanSHA:                plan["document_sha256"].(string),
-		CandidateState:         candidateState,
-		CandidateJournal:       candidateJournal,
-		CandidateStateSHA256:   plan["candidate_state_sha256"].(string),
-		CandidateJournalSHA256: plan["candidate_journal_sha256"].(string),
-		Approver:               "recovery-owner",
-		OccurredAt:             time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC),
-		Validator:              semantic.RuntimeCandidateValidator{},
+		Root:             root,
+		StatePath:        filepath.Join(root, ".claude", "loop-state.json"),
+		JournalPath:      filepath.Join(root, ".claude", "loop-events.jsonl"),
+		PlanID:           plan["plan_id"].(string),
+		CandidateState:   candidateState,
+		CandidateJournal: candidateJournal,
+		Approver:         "recovery-owner",
+		OccurredAt:       time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC),
+		Validator:        semantic.RuntimeCandidateValidator{},
 		FailureInjector: recoveryFailureFunc(func(step runtime.RecoveryFailureStep) error {
 			if step == runtime.RecoveryBeforeStateReplace {
 				return errors.New("simulated process crash after durable marker")
@@ -646,19 +687,40 @@ func decodeStateFile(t *testing.T, path string) map[string]any {
 	return decodeState(t, data)
 }
 
-func planReferencesBytes(t *testing.T, root string, plan map[string]any, want []byte) bool {
+// planReferencesDamagedRuntime asserts that the recovery plan identifies the
+// damaged Runtime artifact by its actual repository-relative path, kind and
+// size.
+//
+// The plan used to content-address the damaged bytes. That mechanism was
+// removed with the hash-proof machinery: the Hook-side writer, transaction
+// recovery and successors compute, register and validate no hash, and the
+// content-addressed recovery wiring is explicitly deleted
+// (blueprint/l4-mechanisms/L4-workflow-convergence.md:138,
+// blueprint/l4-mechanisms/L4-runtime-control-plane.md:84). The plan therefore
+// records the damaged artifact by path and size, and the exact bytes are
+// preserved and checked at apply time.
+func planReferencesDamagedRuntime(t *testing.T, root string, plan map[string]any, want []byte) bool {
 	t.Helper()
-	wantHash := sha256Hex(want)
-	if recursiveContainsString(plan, wantHash) || recursiveContainsString(plan, "loop-state.json") {
-		// The plan must contain both the damaged artifact identity and the
-		// recovery source path; the exact bytes are checked at apply time.
-		return recursiveContainsString(plan, wantHash)
+	if recursiveContainsString(plan, sha256Hex(want)) {
+		t.Fatalf("recovery plan must not content-address the damaged Runtime bytes")
 	}
-	contained, err := recoveryTreeContains(root, want)
-	if err != nil {
-		t.Fatalf("scan recovery tree for damaged bytes: %v", err)
+	inputs, _ := plan["inputs"].([]any)
+	for _, raw := range inputs {
+		row, _ := raw.(map[string]any)
+		if row == nil {
+			continue
+		}
+		if row["path"] != ".claude/loop-state.json" {
+			continue
+		}
+		if row["kind"] != "runtime_state" {
+			continue
+		}
+		if size, ok := row["size"].(float64); ok && int(size) == len(want) {
+			return true
+		}
 	}
-	return contained
+	return false
 }
 
 func targetStage(plan map[string]any) (int, bool) {

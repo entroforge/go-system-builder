@@ -19,7 +19,7 @@ func TestSessionStartCommittedS7HandoffDefersOnlyMissingMainQuestionnaire(t *tes
 		"configuration": map[string]any{"optimization": map[string]any{"packet": true}},
 		"baseline":      map[string]any{"generation": 1},
 		"lifecycle":     map[string]any{"state": "verification", "phase": "planned"},
-		"review":        map[string]any{"round": 1},
+		"review":        map[string]any{"round_entry": map[string]any{"plan_id": "review-plan-s7-handoff"}},
 	}
 	result := controller.ControlResult{Snapshot: runtime.Snapshot{State: state}, QualityGate: controller.QualityGateResult{TransitionCommitted: true}}
 	request := policy.Input{Event: "SessionStart", AgentID: "Main"}

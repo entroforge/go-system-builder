@@ -6,13 +6,15 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/entroforge/go-system-builder/internal/assignmentrecord"
 	"github.com/entroforge/go-system-builder/internal/cli"
+	"github.com/entroforge/go-system-builder/internal/hook"
+	"github.com/entroforge/go-system-builder/internal/hookctx"
 	"github.com/entroforge/go-system-builder/internal/integration"
-	"github.com/entroforge/go-system-builder/internal/workpacket"
 	"github.com/entroforge/go-system-builder/internal/workspace"
 	"github.com/entroforge/go-system-builder/internal/workstate"
 )
@@ -91,8 +93,8 @@ func nativeCommit(t *testing.T, source string) {
 }
 
 func TestNativeS6StartStopReceivesWithoutActivationOrSaveHook(t *testing.T) {
-	root, source, r := nativeDeliveryFixture(t)
-	brief, _, result := assignmentrecord.NativePaths(r)
+	root, source, r := nativeDeliveryFixtureWithMainBaseline(t)
+	brief, plan, result := assignmentrecord.NativePaths(r)
 	mainInput, _ := json.Marshal(map[string]any{"hook_event_name": "SessionStart", "session_id": "native-main-session", "cwd": root, "source": "startup"})
 	var mainOut, mainErr bytes.Buffer
 	if code := cli.Run([]string{"hook", "--event", "SessionStart", "--root", root}, bytes.NewReader(mainInput), &mainOut, &mainErr); code != 0 {
@@ -149,24 +151,92 @@ func TestNativeS6StartStopReceivesWithoutActivationOrSaveHook(t *testing.T) {
 		t.Fatalf("completed native integration still asks for missing ACK: %s", &integrateOut)
 	}
 	cp, found, err := integration.DefaultCheckpointStore().Load(assignmentrecord.IntegrationCheckpointPath(root, r.Reference()))
-	if err != nil || !found || cp.State != integration.StateComplete || cp.CanonicalMainFacts == nil || cp.VerifiedAt == "" {
-		t.Fatalf("Main did not verify and clean up: %+v %v / %s %s", cp, err, &integrateOut, &integrateErr)
+	if err != nil || !found || cp.State != integration.StateCleanupPending || cp.CanonicalMainFacts == nil || cp.VerifiedAt == "" || len(cp.CheckReceipts) == 0 {
+		t.Fatalf("Main did not record verified integration and pending cleanup: %+v %v / %s %s", cp, err, &integrateOut, &integrateErr)
 	}
-	if _, err := os.Stat(source); !os.IsNotExist(err) {
-		t.Fatalf("verified native worktree was not removed: %v", err)
+	for _, name := range []string{plan, result} {
+		if _, err := os.Stat(filepath.Join(source, name)); err != nil {
+			t.Fatalf("private original %s was not preserved: %v", name, err)
+		}
+	}
+	for _, fact := range []string{source, "cleanup authorization", "cleanup_pending", "completion_ack recorded", "TR-006", "ReviewPlan questionnaire:"} {
+		if !strings.Contains(integrateOut.String(), fact) {
+			t.Fatalf("handoff omitted %q: %s %s", fact, &integrateOut, &integrateErr)
+		}
+	}
+	// The current generation owns the original TR-003 common Main baseline, so
+	// the integration exit reads the current batch and reports the original
+	// hand-off instead of a missing baseline or an uninferrable start.
+	for _, gap := range []string{"no original TR-003 common Main baseline", "historical start cannot be inferred"} {
+		if strings.Contains(integrateOut.String(), gap) {
+			t.Fatalf("integration reported a missing TR-003 baseline: %s %s", &integrateOut, &integrateErr)
+		}
+	}
+	if lifecycle := stageSnapshot(t, root).State["lifecycle"].(map[string]any)["state"]; lifecycle != "verification" {
+		t.Fatalf("integrated batch did not reach S7: %v", lifecycle)
+	}
+	if product, err := os.ReadFile(filepath.Join(root, "src/pkg/proof.txt")); err != nil || string(product) != "Actual implementation evidence.\n" {
+		t.Fatalf("Main did not receive actual product: %q %v", product, err)
 	}
 	receipt := stageCLI(t, "runtime", "task-receipt", "--root", root, "--assignment-id", r.AssignmentID, "--agent-id", r.OwnerAgentID)
 	if !strings.Contains(receipt, `"integrated":true`) || !strings.Contains(receipt, `"work_complete":true`) {
 		t.Fatalf("Main receipt incomplete: %s", receipt)
 	}
+	loaded, err := hookctx.LoadFull(root, r.OwnerAgentID)
+	if err != nil {
+		t.Fatalf("load original Builder hook context: %v", err)
+	}
+	if loaded.PolicyContext.Agent == nil {
+		t.Fatal("original Builder missing from Hook context")
+	}
+	var original *hookctx.AssignmentContext
+	for i := range loaded.Assignments {
+		if loaded.Assignments[i].AssignmentID == r.AssignmentID && loaded.Assignments[i].OwnerAgentID == r.OwnerAgentID {
+			original = &loaded.Assignments[i]
+			break
+		}
+	}
+	if original == nil {
+		t.Fatal("original Builder assignment missing from Hook context")
+	}
+	projected := hook.CurrentResponsibility(root, stageSnapshot(t, root), loaded.PolicyContext.Agent, original, false)
+	if projected.Status != workstate.Done || !projected.ExecutionMayEnd {
+		t.Fatalf("Hook failed to project the original completed Builder receipt: %+v", projected)
+	}
 	closed := stageSnapshot(t, root)
 	if code, out := nativeEvent(t, root, root, "SubagentStop", text, false); code != 0 {
-		t.Fatalf("late Stop reopened cleaned delivery: %d %s", code, out)
+		t.Fatalf("late Stop reopened accepted delivery: %d %s", code, out)
 	}
 	if stageSnapshot(t, root).Revision != closed.Revision {
 		t.Fatal("late Stop changed closed responsibility")
 	}
 
+}
+
+func nativeS6AcceptedResultForTest(t *testing.T, root, owner string) map[string]any {
+	t.Helper()
+	snapshot := stageSnapshot(t, root)
+	for _, raw := range snapshot.State["entities"].(map[string]any)["agents"].([]any) {
+		row := raw.(map[string]any)
+		if row["id"] != owner {
+			continue
+		}
+		ref, _ := row["completion_reported_ref"].(string)
+		if ref == "" {
+			t.Fatal("original owner has no Result receipt")
+		}
+		data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(ref)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var result map[string]any
+		if err := json.Unmarshal(data, &result); err != nil {
+			t.Fatal(err)
+		}
+		return result
+	}
+	t.Fatal("original owner missing from Runtime")
+	return nil
 }
 
 func TestNativeS6ProfessionalFieldFeedbackTargetsOriginalSchema(t *testing.T) {
@@ -188,6 +258,13 @@ func TestNativeS6ProfessionalFieldFeedbackTargetsOriginalSchema(t *testing.T) {
 	stageJSON(t, source, result, answer)
 	before := stageSnapshot(t, root)
 	text := filepath.Join(root, brief) + "\n" + filepath.Join(source, result)
+	if err := os.WriteFile(filepath.Join(source, result), []byte("{incomplete"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if code, output := nativeEvent(t, root, source, "SubagentStop", text, false); code != 2 || !strings.Contains(output, "professional Result") || !strings.Contains(output, filepath.Join(source, result)) {
+		t.Fatalf("unparseable original Result did not produce precise feedback: %d %s", code, output)
+	}
+	stageJSON(t, source, result, answer)
 	code, output := nativeEvent(t, root, source, "SubagentStop", text, false)
 	if code != 2 || !strings.Contains(output, "professional Result fields") || !strings.Contains(output, filepath.Join(source, result)) || !strings.Contains(output, "assertion_evidence/0") || strings.Contains(output, "closest to branch") {
 		t.Fatalf("unhelpful professional feedback: %d %s", code, output)
@@ -207,18 +284,28 @@ func TestNativeS6ProfessionalFieldFeedbackTargetsOriginalSchema(t *testing.T) {
 	}
 	answer["assertion_evidence"].([]any)[0].(map[string]any)["evidence_refs"] = []string{"go test ./src/pkg -> PASS"}
 	stageJSON(t, source, result, answer)
-	if code, output := nativeEvent(t, root, source, "SubagentStop", text, true); code != 0 || !strings.Contains(output, "must be exact existing worktree-relative files") {
-		t.Fatalf("unhelpful or unbounded evidence feedback: %d %s", code, output)
-	}
-	if stageSnapshot(t, root).Revision != before.Revision {
-		t.Fatal("command prose was accepted as file evidence")
-	}
-	nativeAnswer(t, source, r)
 	if code, output := nativeEvent(t, root, source, "SubagentStop", text, true); code != 0 {
-		t.Fatalf("corrected native delivery: %d %s", code, output)
+		t.Fatalf("professional observation was not received: %d %s", code, output)
 	}
-	if stageSnapshot(t, root).Revision <= before.Revision {
-		t.Fatal("corrected native delivery was not received")
+	accepted := stageSnapshot(t, root)
+	if accepted.Revision <= before.Revision {
+		t.Fatal("professional Result was not received")
+	}
+	received := nativeS6AcceptedResultForTest(t, root, r.OwnerAgentID)
+	answerRow := received["answer"].(map[string]any)["assertion_evidence"].([]any)[0].(map[string]any)
+	refs := answerRow["evidence_refs"].([]any)
+	if len(refs) != 1 || refs[0] != "go test ./src/pkg -> PASS" {
+		t.Fatalf("professional observation not preserved in original receipt: %v", refs)
+	}
+	if received["producer_agent_id"] != r.OwnerAgentID || received["task_id"] != r.Task.ID || received["conclusion"] != "submitted" {
+		t.Fatalf("receipt lost original responsibility: %v", received)
+	}
+	status := stageCLI(t, "runtime", "task-receipt", "--root", root, "--assignment-id", r.AssignmentID, "--agent-id", r.OwnerAgentID)
+	if !strings.Contains(status, `"work_complete":true`) {
+		t.Fatalf("Main could not read the actual received responsibility: %s", status)
+	}
+	if code, output := nativeEvent(t, root, source, "SubagentStop", text, false); code != 0 || stageSnapshot(t, root).Revision != accepted.Revision {
+		t.Fatalf("replayed Result changed original receipt: %d %s", code, output)
 	}
 }
 
@@ -252,6 +339,12 @@ func TestNativeS6PlanAndResultKeepTheirOwnFields(t *testing.T) {
 	if !strings.Contains(resultInstructions, "Result has no dependencies field") || strings.Contains(resultInstructions, "dependencies, risks_blockers and scope_deviations") {
 		t.Fatalf("Result instructions mix Plan fields: %s", resultInstructions)
 	}
+	if !strings.Contains(resultInstructions, "Commands, output and professional descriptions are acceptable") || strings.Contains(resultInstructions, "exact existing file paths") {
+		t.Fatalf("Result instructions still demand file evidence for reception: %s", resultInstructions)
+	}
+	if !strings.Contains(resultInstructions, "Nonempty lists alone do not determine completion or approval") || strings.Contains(resultInstructions, "scope deviation prevents completion/integration") {
+		t.Fatalf("Result instructions turn original risk or scope notes into a gate: %s", resultInstructions)
+	}
 	nativeCommit(t, source)
 	before := stageSnapshot(t, root)
 	text := filepath.Join(root, brief) + "\n" + filepath.Join(source, result)
@@ -277,7 +370,8 @@ func TestNativeS6PlanAndResultKeepTheirOwnFields(t *testing.T) {
 			t.Fatal("invalid field changed Runtime")
 		}
 	}
-	// Old explicit dependency fields still use the original exact-set check.
+	// A historical private field is preserved, while the system-owned
+	// canonical dependency projection remains the original Record's fact.
 	nativeAnswer(t, source, r)
 	privateData, err := os.ReadFile(filepath.Join(source, plan))
 	if err != nil {
@@ -289,18 +383,12 @@ func TestNativeS6PlanAndResultKeepTheirOwnFields(t *testing.T) {
 	}
 	explicit["dependencies"] = []string{"TASK-not-a-registered-assignment"}
 	stageJSON(t, source, plan, explicit)
-	if _, output := nativeEvent(t, root, source, "SubagentStop", text, false); !strings.Contains(output, "dependencies differ from the canonical Assignment") {
-		t.Fatalf("wrong explicit dependency was not rejected: %s", output)
-	}
-	if stageSnapshot(t, root).Revision != before.Revision {
-		t.Fatal("wrong explicit dependency changed Runtime")
-	}
-	nativeAnswer(t, source, r)
 	if code, output := nativeEvent(t, root, source, "SubagentStop", text, false); code != 0 {
-		t.Fatalf("corrected original professional files: %d %s", code, output)
+		t.Fatalf("original private Plan/Result were not received: %d %s", code, output)
 	}
-	if stageSnapshot(t, root).Revision <= before.Revision {
-		t.Fatal("corrected professional files were not received")
+	accepted := stageSnapshot(t, root)
+	if accepted.Revision <= before.Revision {
+		t.Fatal("original professional files were not received")
 	}
 	privateData, err = os.ReadFile(filepath.Join(source, plan))
 	if err != nil {
@@ -310,11 +398,16 @@ func TestNativeS6PlanAndResultKeepTheirOwnFields(t *testing.T) {
 	if err := json.Unmarshal(privateData, &privatePlan); err != nil {
 		t.Fatal(err)
 	}
-	if _, hasDependencies := privatePlan["dependencies"]; hasDependencies {
-		t.Fatal("normal private answer copied system-owned dependencies")
+	legacyDeps, _ := privatePlan["dependencies"].([]any)
+	if len(legacyDeps) != 1 || legacyDeps[0] != "TASK-not-a-registered-assignment" {
+		t.Fatalf("private original Plan was rewritten: %v", privatePlan)
 	}
-	canonicalRef := filepath.Join(filepath.Dir(plan), "plan-"+workpacket.Digest(privateData)+".json")
-	canonicalData, err := os.ReadFile(filepath.Join(root, canonicalRef))
+	received := nativeS6AcceptedResultForTest(t, root, r.OwnerAgentID)
+	planRef, _ := received["plan_ref"].(string)
+	if planRef == "" {
+		t.Fatal("original Result did not reference its Plan")
+	}
+	canonicalData, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(planRef)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -324,10 +417,15 @@ func TestNativeS6PlanAndResultKeepTheirOwnFields(t *testing.T) {
 	if err := json.Unmarshal(canonicalData, &canonical); err != nil {
 		t.Fatal(err)
 	}
-	// Normal native prepare owns one TASK per workgroup; its TASK prerequisites
-	// are satisfied before registration, so the local Assignment set is empty.
-	if canonical.Dependencies == nil || len(canonical.Dependencies) != 0 || len(r.DependsOn) != 0 {
-		t.Fatalf("registered dependencies were not automatically bound: %#v / %#v", canonical.Dependencies, r.DependsOn)
+	current, found, err := assignmentrecord.ForOwner(accepted.State, r.OwnerAgentID)
+	if err != nil || !found {
+		t.Fatalf("read original Record: %v", err)
+	}
+	if canonical.Dependencies == nil || !slices.Equal(canonical.Dependencies, current.DependsOn) || !slices.Equal(current.DependsOn, r.DependsOn) {
+		t.Fatalf("private field changed registered dependencies: %v / %v / %v", canonical.Dependencies, current.DependsOn, r.DependsOn)
+	}
+	if code, output := nativeEvent(t, root, source, "SubagentStop", text, false); code != 0 || stageSnapshot(t, root).Revision != accepted.Revision {
+		t.Fatalf("replayed original delivery changed Runtime: %d %s", code, output)
 	}
 }
 
@@ -359,6 +457,25 @@ func TestNativeS6UnifiedReworkAndRecoveryUseOriginalRecordWriter(t *testing.T) {
 	}
 	nativeCommit(t, source)
 	nativeAnswer(t, source, r)
+	makeIncomplete := func(source string, record assignmentrecord.Record) {
+		t.Helper()
+		_, _, answerPath := assignmentrecord.NativePaths(record)
+		data, err := os.ReadFile(filepath.Join(source, answerPath))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var answer map[string]any
+		if err := json.Unmarshal(data, &answer); err != nil {
+			t.Fatal(err)
+		}
+		closing := answer["closing_assessment"].(map[string]any)
+		closing["disposition"] = "incomplete"
+		condition := closing["conditions"].([]any)[0].(map[string]any)
+		condition["judgment"] = "incomplete"
+		condition["rationale"] = "The assigned work remains incomplete."
+		stageJSON(t, source, answerPath, answer)
+	}
+	makeIncomplete(source, r)
 	brief, _, result := assignmentrecord.NativePaths(r)
 	text := filepath.Join(root, brief) + "\n" + filepath.Join(source, result)
 	if code, out := nativeEvent(t, source, source, "SubagentStop", text, false); code != 0 {
@@ -368,15 +485,49 @@ func TestNativeS6UnifiedReworkAndRecoveryUseOriginalRecordWriter(t *testing.T) {
 	if err := os.WriteFile(dirty, []byte("preserve uncommitted work"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	stageCLI(t, "runtime", "task-integrate", "--root", root, "--assignment-id", r.AssignmentID, "--agent-id", r.OwnerAgentID)
+	var blockedOut, blockedErr bytes.Buffer
+	if code := cli.Run([]string{"runtime", "task-integrate", "--root", root, "--assignment-id", r.AssignmentID, "--agent-id", r.OwnerAgentID}, nil, &blockedOut, &blockedErr); code != 1 || !strings.Contains(blockedErr.String(), "closing contract is pending") {
+		t.Fatalf("first actual closing blocker: %d %s %s", code, &blockedOut, &blockedErr)
+	}
 	cp, found, err := integration.DefaultCheckpointStore().Load(assignmentrecord.IntegrationCheckpointPath(root, r.Reference()))
 	if err != nil || !found || cp.State != integration.StatePreserved {
 		t.Fatalf("expected original dirty checkpoint, got %+v %v", cp, err)
 	}
-	args := []string{"s6", "prepare", "--root", root, "--task", r.Task.ID, "--role", r.RoleFamily, "--revise-assignment", r.AssignmentID, "--revision-intent-key", "native-rework-1"}
+	// Simulate interruption after the original revision draft was created but
+	// before its Writer accepted it. Re-entry keeps that exact draft.
+	manifestData, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(r.Manifest.Ref)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var draft map[string]any
+	if err := json.Unmarshal(manifestData, &draft); err != nil {
+		t.Fatal(err)
+	}
+	draft["manifest_id"] = "team-manifest-build-" + r.Task.ID + "-r2"
+	draft["workgroup_id"] = "workgroup-build-" + r.Task.ID + "-r2"
+	draft["platform_team_id"] = "engineering-" + r.Task.ID + "-r2"
+	draft["version"], draft["status"] = "v1.0.1", "planned"
+	item := draft["assignments"].([]any)[0].(map[string]any)
+	item["agent_id"], item["status"] = "native-"+r.Task.ID+"-r2", "planned"
+	draftData, err := json.MarshalIndent(draft, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	draftData = append(draftData, '\n')
+	draftPath := filepath.Join(root, ".claude", "workgroups", "REQ-039", r.Task.ID, "manifest-s6-r2.json")
+	if err := os.MkdirAll(filepath.Dir(draftPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(draftPath, draftData, 0644); err != nil {
+		t.Fatal(err)
+	}
+	args := []string{"s6", "prepare", "--root", root, "--task", r.Task.ID, "--role", r.RoleFamily, "--revise-assignment", r.AssignmentID}
 	output := stageCLI(t, args...)
 	if strings.Contains(output, "workspace launch") || !strings.Contains(output, "native Agent") {
 		t.Fatal(output)
+	}
+	if got, err := os.ReadFile(draftPath); err != nil || !bytes.Equal(got, draftData) {
+		t.Fatalf("re-entry changed the original interrupted draft: %v", err)
 	}
 	revised := stageSnapshot(t, root)
 	records, err := assignmentrecord.RecordsFromState(revised.State)
@@ -397,6 +548,17 @@ func TestNativeS6UnifiedReworkAndRecoveryUseOriginalRecordWriter(t *testing.T) {
 	if stageSnapshot(t, root).Revision != revised.Revision {
 		t.Fatal("revision replay issued another responsibility")
 	}
+	// The revision identity is derived from real facts; the removed
+	// author-supplied content key must not be offered again and must not
+	// change the current original revision (L4-workflow-convergence.md:250/269).
+	var legacyOut, legacyErr bytes.Buffer
+	legacyArgs := append(append([]string(nil), args...), "--revision-intent-key", "ignored-old-key")
+	if code := cli.Run(legacyArgs, nil, &legacyOut, &legacyErr); code == 0 {
+		t.Fatalf("removed revision intent key was accepted: %s", legacyOut.String())
+	}
+	if stageSnapshot(t, root).Revision != revised.Revision {
+		t.Fatal("legacy key changed the current original revision")
+	}
 	if _, err := os.Stat(dirty); err != nil {
 		t.Fatalf("rework discarded original source: %v", err)
 	}
@@ -405,6 +567,39 @@ func TestNativeS6UnifiedReworkAndRecoveryUseOriginalRecordWriter(t *testing.T) {
 	}
 	if stageSnapshot(t, root).Revision != revised.Revision {
 		t.Fatal("historical Stop acquired current authority")
+	}
+	secondSource := filepath.Join(t.TempDir(), "second-native-worktree")
+	if _, err := workspace.Git(t.Context(), root, "worktree", "add", "-b", "native/delivery-r2", secondSource, "HEAD"); err != nil {
+		t.Fatal(err)
+	}
+	nativeCommit(t, secondSource)
+	nativeAnswer(t, secondSource, current)
+	makeIncomplete(secondSource, current)
+	secondBrief, _, secondResult := assignmentrecord.NativePaths(current)
+	secondText := filepath.Join(root, secondBrief) + "\n" + filepath.Join(secondSource, secondResult)
+	if code, out := nativeEvent(t, secondSource, secondSource, "SubagentStop", secondText, false); code != 0 {
+		t.Fatalf("second original result: %d %s", code, out)
+	}
+	if err := os.WriteFile(filepath.Join(secondSource, "src/pkg/unfinished-r2.txt"), []byte("preserve second rework"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	blockedOut.Reset()
+	blockedErr.Reset()
+	if code := cli.Run([]string{"runtime", "task-integrate", "--root", root, "--assignment-id", current.AssignmentID, "--agent-id", current.OwnerAgentID}, nil, &blockedOut, &blockedErr); code != 1 || !strings.Contains(blockedErr.String(), "closing contract is pending") {
+		t.Fatalf("second actual closing blocker: %d %s %s", code, &blockedOut, &blockedErr)
+	}
+	if checkpoint, found, err := integration.DefaultCheckpointStore().Load(assignmentrecord.IntegrationCheckpointPath(root, current.Reference())); err != nil || !found || checkpoint.State != integration.StatePreserved {
+		t.Fatalf("expected second actual preserved checkpoint: %+v %v", checkpoint, err)
+	}
+	stageCLI(t, args...)
+	next := stageSnapshot(t, root)
+	records, err = assignmentrecord.RecordsFromState(next.State)
+	if err != nil {
+		t.Fatal(err)
+	}
+	third, found, err := assignmentrecord.FindRecord(records, r.RuntimeID, r.BaselineGeneration, r.AssignmentID)
+	if err != nil || !found || third.Revision != 3 || third.OwnerAgentID == current.OwnerAgentID {
+		t.Fatalf("second actual rework did not issue the next revision: %+v %v", third, err)
 	}
 }
 
@@ -457,13 +652,24 @@ func TestNativeS6HandbackUsesInitialTaskAndActualArtifacts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	blocked := stageCLI(t, "runtime", "task-integrate", "--root", root, "--assignment-id", r.AssignmentID, "--agent-id", r.OwnerAgentID)
-	if !strings.Contains(blocked, "changed after accepted Result") {
-		t.Fatalf("unreported source borrowed receipt: %s", blocked)
+	// A post-report commit is no longer qualified by a recorded source head
+	// (L4-worktree-governance.md:43, L4-workflow-convergence.md:300): the
+	// framework does not re-verify Git OIDs as proof, and Main integrates the
+	// actual current worktree content and judges it.
+	merged := stageCLI(t, "runtime", "task-integrate", "--root", root, "--assignment-id", r.AssignmentID, "--agent-id", r.OwnerAgentID)
+	if strings.Contains(merged, "changed after accepted Result") {
+		t.Fatalf("integration still qualified the delivery by a recorded source head: %s", merged)
 	}
 	mainAfter, err := workspace.Git(t.Context(), root, "rev-parse", "HEAD")
-	if err != nil || mainBefore != mainAfter {
-		t.Fatal("unreported source was merged")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mainBefore == mainAfter {
+		t.Fatal("integration did not merge the actual current worktree content")
+	}
+	content, err := os.ReadFile(filepath.Join(root, "src/pkg/proof.txt"))
+	if err != nil || !strings.Contains(string(content), "unreported new source") {
+		t.Fatalf("merged tree does not carry the actual current worktree content: %v", err)
 	}
 
 }
@@ -503,12 +709,6 @@ func TestNativeS6SameRoleConcurrentWorktreesDoNotBorrowDeliveries(t *testing.T) 
 	}
 	state := stageSnapshot(t, root).State
 	docs := state["documents"].([]any)
-	for _, raw := range docs {
-		row := raw.(map[string]any)
-		if row["path"] == planPath {
-			row["sha256"] = workpacket.Digest(plan)
-		}
-	}
 	state["documents"] = append(docs, s6RecordContextDocument(second, "task", secondPath, "v1.0.0", secondBytes))
 	stageJSON(t, root, ".claude/loop-state.json", state)
 	for _, id := range []string{task, second} {
@@ -621,13 +821,9 @@ func TestNativeS6RecoveredGitDeliveryDoesNotNeedAuthoringCaches(t *testing.T) {
 	root, source, r := nativeDeliveryFixture(t)
 	nativeCommit(t, source)
 	nativeAnswer(t, source, r)
-	brief, plan, result := assignmentrecord.NativePaths(r)
+	brief, _, result := assignmentrecord.NativePaths(r)
 	if code, out := nativeEvent(t, root, source, "SubagentStop", filepath.Join(root, brief)+"\n"+filepath.Join(source, result), false); code != 0 {
 		t.Fatalf("original Stop: %d %s", code, out)
-	}
-	head, err := workspace.Git(t.Context(), source, "rev-parse", "HEAD")
-	if err != nil {
-		t.Fatal(err)
 	}
 	branch, err := workspace.Git(t.Context(), source, "branch", "--show-current")
 	if err != nil {
@@ -638,38 +834,12 @@ func TestNativeS6RecoveredGitDeliveryDoesNotNeedAuthoringCaches(t *testing.T) {
 	if _, err := workspace.Git(t.Context(), root, "worktree", "remove", "--force", source); err != nil {
 		t.Fatal(err)
 	}
-	beforeState := mustStageFile(t, filepath.Join(root, ".claude/loop-state.json"))
-	beforeJournal := mustStageFile(t, filepath.Join(root, ".claude/loop-events.jsonl"))
-	var missingOut, missingErr bytes.Buffer
-	code := cli.Run([]string{"runtime", "task-integrate", "--root", root, "--assignment-id", r.AssignmentID, "--agent-id", r.OwnerAgentID}, nil, &missingOut, &missingErr)
-	diagnostic := missingOut.String() + missingErr.String()
-	// task-integrate represents a normal domain blocker in its JSON result;
-	// its process exit code alone is not a completion verdict.
-	if code != 0 || !strings.Contains(missingOut.String(), `"blocked":true`) {
-		t.Fatalf("missing source was not returned as a preserved blocker: %d %s", code, diagnostic)
-	}
-	for _, want := range []string{source, strings.TrimSpace(head), strings.TrimSpace(branch), "Main restores", "do not recreate private answer caches"} {
-		if !strings.Contains(diagnostic, want) {
-			t.Fatalf("missing original source omitted recovery coordinate %q: %d %s", want, code, diagnostic)
-		}
-	}
-	if !bytes.Equal(beforeState, mustStageFile(t, filepath.Join(root, ".claude/loop-state.json"))) || !bytes.Equal(beforeJournal, mustStageFile(t, filepath.Join(root, ".claude/loop-events.jsonl"))) {
-		t.Fatal("missing source manufactured or changed a reception")
-	}
-	if _, err := workspace.Git(t.Context(), root, "worktree", "add", source, strings.TrimSpace(branch)); err != nil {
-		t.Fatal(err)
-	}
-	if got, err := workspace.Git(t.Context(), source, "rev-parse", "HEAD"); err != nil || strings.TrimSpace(got) != strings.TrimSpace(head) {
-		t.Fatalf("recovery drifted Git source: %s %v", got, err)
-	}
-	for _, path := range []string{plan, result} {
-		if _, err := os.Stat(filepath.Join(source, path)); !os.IsNotExist(err) {
-			t.Fatalf("private authoring cache unexpectedly survived: %s %v", path, err)
-		}
-	}
 	var out, recoveredDiagnostic bytes.Buffer
 	if code := cli.Run([]string{"runtime", "task-integrate", "--root", root, "--assignment-id", r.AssignmentID, "--agent-id", r.OwnerAgentID}, nil, &out, &recoveredDiagnostic); code != 0 {
-		t.Fatalf("Main integration of recovered accepted source: %d %s %s", code, &out, &recoveredDiagnostic)
+		t.Fatalf("Main integration of accepted source after checkout removal: %d %s %s", code, &out, &recoveredDiagnostic)
+	}
+	if _, err := workspace.Git(t.Context(), root, "merge-base", "--is-ancestor", strings.TrimSpace(branch), "test-development"); err != nil {
+		t.Fatalf("accepted source branch was not integrated: %v", err)
 	}
 	cp, found, err := integration.DefaultCheckpointStore().Load(assignmentrecord.IntegrationCheckpointPath(root, r.Reference()))
 	if err != nil || !found || cp.State != integration.StateComplete || cp.CanonicalMainFacts == nil || cp.VerifiedAt == "" {

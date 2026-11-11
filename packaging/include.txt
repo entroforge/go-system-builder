@@ -132,7 +132,6 @@ docs/rules/ui-prototype.md
 
 LICENSE
 packaging/project.gitattributes
-tools/release-manifest.py
 docs/bounded-repair-autonomy.md
 docs/claude-platform-compatibility.md
 docs/examples/autonomy/repair-delegation.json

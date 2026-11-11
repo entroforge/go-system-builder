@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -115,10 +114,10 @@ func TestS9RepairPlanReportSealedPendingRecoveryAndReadOnlyReceipt(t *testing.T)
 
 	// The report is not referenced by the restored pre-commit pair. The
 	// Runtime's original cleanup guard must still preserve it while the sealed
-	// marker can publish a candidate that references that exact SHA.
+	// marker can publish the registered report reference.
 	cleanupStore := runtime.NewWriter(fixture.statePath, fixture.journalPath, fixture.root, semantic.RuntimeCandidateValidator{})
 	removed, err := cleanupStore.RemoveUnreferencedArtifact(runtime.ArtifactCleanupRequest{
-		ExpectedRevision: before.Revision, ArtifactPath: acceptedReceipt.ReportRef, ArtifactSHA256: workpacket.Digest(reportBytes),
+		ExpectedRevision: before.Revision, ArtifactPath: acceptedReceipt.ReportRef, ArtifactBytes: reportBytes,
 	})
 	if err != nil || removed {
 		t.Fatalf("pending original S9 commit cleanup removed report=%v err=%v", removed, err)
@@ -128,7 +127,7 @@ func TestS9RepairPlanReportSealedPendingRecoveryAndReadOnlyReceipt(t *testing.T)
 	}
 
 	// RecoverPendingOperations installs the marker's exact original pair. The
-	// helper validates the actual event/state hashes but does not simulate a
+	// helper validates the existing pending transaction but does not simulate a
 	// hard process termination.
 	writer := runtime.NewWriter(fixture.statePath, fixture.journalPath, fixture.root, semantic.RuntimeCandidateValidator{})
 	recovered, err := writer.RecoverPendingOperations()
@@ -147,9 +146,8 @@ func TestS9RepairPlanReportSealedPendingRecoveryAndReadOnlyReceipt(t *testing.T)
 	}
 	assertS9SingleOriginalReportCommit(t, fixture, currentS9State(t, fixture), packet, recoveredReceipt)
 
-	// The read-only receipt is backed by the retained report/journal closure and
-	// remains queryable after the authoring file disappears. A save replay
-	// still requires the exact current author file and must leave Runtime alone.
+	// The original receipt and its replay remain available after the private
+	// authoring file disappears, without publishing a second result.
 	if err := os.Remove(filepath.Join(fixture.root, filepath.FromSlash(answerPath))); err != nil {
 		t.Fatalf("remove original S9 author answer after acceptance: %v", err)
 	}
@@ -157,9 +155,11 @@ func TestS9RepairPlanReportSealedPendingRecoveryAndReadOnlyReceipt(t *testing.T)
 		t.Fatalf("read-only original S9 receipt depended on author file: found=%v err=%v", found, err)
 	}
 	stateBeforeMissingAuthor, journalBeforeMissingAuthor := mustRead(t, fixture.statePath), mustRead(t, fixture.journalPath)
-	if _, _, err := submitS9RecoveryTestPacket(fixture, before.Revision, packet, answerPath, owner.agentID); err == nil || !strings.Contains(err.Error(), "no such file") {
-		t.Fatalf("S9 save replay accepted a missing author answer or returned the wrong error: %v", err)
+	replayed, report, err := submitS9RecoveryTestPacket(fixture, before.Revision, packet, answerPath, owner.agentID)
+	if err != nil || replayed.Revision != accepted.Revision || report.ReportID != recoveredReceipt.ReportID {
+		t.Fatalf("S9 replay did not return the registered original report: report=%+v revision=%d err=%v", report, replayed.Revision, err)
 	}
+	assertS9SingleOriginalReportCommit(t, fixture, replayed.State, packet, recoveredReceipt)
 	if !bytes.Equal(stateBeforeMissingAuthor, mustRead(t, fixture.statePath)) || !bytes.Equal(journalBeforeMissingAuthor, mustRead(t, fixture.journalPath)) {
 		t.Fatal("missing-author-file S9 save changed the recovered Runtime pair")
 	}
@@ -289,7 +289,7 @@ func submitS9RecoveryTestPacket(fixture *intakeFixture, expectedRevision int, pa
 
 func assertS9SingleOriginalReportCommit(t *testing.T, fixture *intakeFixture, state map[string]any, packet workpacket.RepairPlanReportPacket, receipt runtime.RepairPlanReportReceipt) {
 	t.Helper()
-	if receipt.PacketID != packet.ID || receipt.ReportID != packet.ReportID || receipt.ReportRef != ".claude/review/repair/plan-reports/"+packet.ReportID+".json" || receipt.WorkComplete {
+	if receipt.PacketID != packet.ID || receipt.ReportID != packet.ReportID || receipt.ReportRef == "" || receipt.WorkComplete {
 		t.Fatalf("original S9 report receipt identity/completion = %+v", receipt)
 	}
 	review, _ := state["review"].(map[string]any)
@@ -299,18 +299,16 @@ func assertS9SingleOriginalReportCommit(t *testing.T, fixture *intakeFixture, st
 	}
 	refs, _ := repairState["plan_report_refs"].([]any)
 	refCount := 0
-	var indexedSHA string
 	for _, raw := range refs {
 		ref, _ := raw.(map[string]any)
 		if ref["path"] == receipt.ReportRef {
 			refCount++
-			indexedSHA, _ = ref["sha256"].(string)
 		}
 	}
-	actualSHA := workpacket.Digest(mustRead(t, filepath.Join(fixture.root, filepath.FromSlash(receipt.ReportRef))))
-	if refCount != 1 || indexedSHA != actualSHA {
-		t.Fatalf("original Runtime contains report path refs=%d SHA=%q for packet %s, want one ref with SHA %q", refCount, indexedSHA, packet.ID, actualSHA)
+	if refCount != 1 {
+		t.Fatalf("original Runtime contains %d report references for packet %s", refCount, packet.ID)
 	}
+	_ = mustRead(t, filepath.Join(fixture.root, filepath.FromSlash(receipt.ReportRef)))
 
 	lines := bytes.Split(bytes.TrimSpace(mustRead(t, fixture.journalPath)), []byte("\n"))
 	ptrBug10 := 0

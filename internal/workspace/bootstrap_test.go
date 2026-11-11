@@ -3,6 +3,7 @@ package workspace
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -39,13 +40,8 @@ func trackedBootstrapFixture(t *testing.T, trackLauncher bool) (*ExecutionRegist
 	if _, err := Git(ctx, b.MainRoot, "commit", "-m", "install project bootstrap files"); err != nil {
 		t.Fatal(err)
 	}
-	head, err := Git(ctx, b.MainRoot, "rev-parse", "HEAD")
-	if err != nil {
-		t.Fatal(err)
-	}
-	b.BoundHead = head
 	state := map[string]any{
-		"bound_req":  map[string]any{"workspace": Binding{b.MainRoot, b.Branch, "main", b.BoundHead}.Map()},
+		"bound_req":  map[string]any{"workspace": Binding{ProjectRoot: b.MainRoot, DevBranch: b.Branch, ReleaseUpstream: "main"}.Map()},
 		"runtime_id": "loop-test", "revision": 0, "baseline": map[string]any{"generation": 1},
 	}
 	saveControlState(t, b.MainRoot, state)
@@ -225,8 +221,8 @@ func TestBootstrapResumesAndPreservesChangedAssets(t *testing.T) {
 	if err := os.WriteFile(asset, []byte("local change"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := b.ValidateBootstrap(e); err == nil {
-		t.Fatal("accepted asset drift")
+	if err := b.ValidateBootstrap(e); err != nil {
+		t.Fatalf("existing asset was rejected by byte authentication: %v", err)
 	}
 	if err := b.Bootstrap(e, executable); err == nil {
 		t.Fatal("overwrote changed asset")
@@ -237,9 +233,9 @@ func TestBootstrapResumesAndPreservesChangedAssets(t *testing.T) {
 	}
 }
 
-func TestFrozenInputChangesBlockPreparation(t *testing.T) {
+func TestChangedInputDoesNotRequireContentAuthentication(t *testing.T) {
 	b, ctx := repository(t)
-	state := map[string]any{"bound_req": map[string]any{"workspace": Binding{b.MainRoot, b.Branch, "main", b.BoundHead}.Map()}, "runtime_id": "loop-test", "baseline": map[string]any{"generation": 1}}
+	state := map[string]any{"bound_req": map[string]any{"workspace": Binding{ProjectRoot: b.MainRoot, DevBranch: b.Branch, ReleaseUpstream: "main"}.Map()}, "runtime_id": "loop-test", "baseline": map[string]any{"generation": 1}}
 	e, err := b.Plan(ctx, state, "assignment", "builder", []string{"input.md"}, nil, []string{"input.md"})
 	if err != nil {
 		t.Fatal(err)
@@ -248,10 +244,57 @@ func TestFrozenInputChangesBlockPreparation(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(b.MainRoot, "input.md"), []byte("changed"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := b.Materialize(ctx, e); err == nil {
-		t.Fatal("materialized changed frozen inputs")
+	if err := b.Materialize(ctx, e); err != nil {
+		t.Fatalf("changed input blocked original workspace preparation: %v", err)
 	}
-	if _, err := os.Stat(e.Path); !os.IsNotExist(err) {
-		t.Fatal("created Worker before input validation")
+	if _, err := os.Stat(e.Path); err != nil {
+		t.Fatalf("workspace was not materialized: %v", err)
+	}
+}
+
+func TestBootstrapReceiptUsesActualPathsWithArbitraryStoredValues(t *testing.T) {
+	b, e, _ := trackedBootstrapFixture(t, true)
+	if err := b.Bootstrap(e, bootstrapExecutable(t)); err != nil {
+		t.Fatal(err)
+	}
+	receiptPath := filepath.Join(e.Path, ".claude", "loop-bootstrap.json")
+	raw, err := os.ReadFile(receiptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var receipt map[string]any
+	if err := json.Unmarshal(raw, &receipt); err != nil {
+		t.Fatal(err)
+	}
+	files := receipt["files"].(map[string]any)
+	var onePath string
+	index := 0
+	for path := range files {
+		onePath = path
+		switch index % 3 {
+		case 0:
+			files[path] = map[string]any{"arbitrary": true}
+		case 1:
+			files[path] = []any{1, "value"}
+		default:
+			files[path] = false
+		}
+		index++
+	}
+	updated, err := json.Marshal(receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(receiptPath, updated, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.ValidateBootstrap(e); err != nil {
+		t.Fatalf("stored values narrowed existing path validation: %v", err)
+	}
+	if err := os.Remove(filepath.Join(e.Path, filepath.FromSlash(onePath))); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.ValidateBootstrap(e); err == nil {
+		t.Fatal("missing actual installed asset path accepted")
 	}
 }

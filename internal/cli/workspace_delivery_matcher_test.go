@@ -2,7 +2,6 @@ package cli
 
 import (
 	"encoding/json"
-	"strings"
 	"testing"
 
 	"github.com/entroforge/go-system-builder/internal/repair"
@@ -30,7 +29,7 @@ func TestRepairResultPacketMatchesOnlyExactRegisteredExecution(t *testing.T) {
 			t.Fatalf("unregistered alias matched original authority: %v", selected)
 		}
 	})
-	t.Run("frozen assignment cannot substitute another ID", func(t *testing.T) {
+	t.Run("packet content cannot substitute another registered execution", func(t *testing.T) {
 		packet, _, state := repairResultMatcherFixture(t, "assignment-registered", "repair-assignment-canonical", "assignment-registered")
 		var frozen map[string]any
 		if err := json.Unmarshal(packet.Inputs.Execution, &frozen); err != nil {
@@ -38,16 +37,40 @@ func TestRepairResultPacketMatchesOnlyExactRegisteredExecution(t *testing.T) {
 		}
 		frozen["assignment_id"] = "assignment-forged"
 		packet.Inputs.Execution, _ = json.Marshal(frozen)
+		// The embedded projection is not a qualification: the matcher resolves
+		// the exact registered execution from the binding identity
+		// (L4-workflow-convergence.md:250/269).
+		selected, err := runtime.RepairResultExecution(state, packet)
+		if err != nil {
+			t.Fatalf("registered execution could not be resolved: %v", err)
+		}
+		if selected["assignment_id"] != "assignment-registered" {
+			t.Fatalf("matcher resolved a forged execution: %v", selected)
+		}
+		packet.Binding.Sources.RepairAssignmentID = "assignment-unregistered"
+		packet.Binding.Sources.ManifestAssignmentID = "assignment-unregistered"
 		if selected, err := runtime.RepairResultExecution(state, packet); err == nil {
-			t.Fatalf("forged frozen execution accepted: %v", selected)
+			t.Fatalf("unregistered execution accepted: %v", selected)
 		}
 	})
-	t.Run("frozen definition must equal current registered definition", func(t *testing.T) {
+	t.Run("matcher reports the actual registered definition", func(t *testing.T) {
 		packet, execution, state := repairResultMatcherFixture(t, "assignment-registered", "repair-assignment-canonical", "assignment-registered")
 		current := state["workspace"].(map[string]any)["executions"].(map[string]any)[execution.AssignmentID].(map[string]any)
 		current["write_paths"] = []any{"src/other/**"}
-		if selected, err := runtime.RepairResultExecution(state, packet); err == nil {
-			t.Fatalf("drifted actual registered definition accepted: %v", selected)
+		// The framework does not re-authenticate a registered definition by
+		// digest and does not claim to detect external rewrites
+		// (L4-workflow-convergence.md:250/271): it reports the actual
+		// registered execution, not the packet's frozen copy.
+		selected, err := runtime.RepairResultExecution(state, packet)
+		if err != nil {
+			t.Fatalf("registered execution could not be resolved: %v", err)
+		}
+		if selected["assignment_id"] != "assignment-registered" {
+			t.Fatalf("matcher resolved another execution: %v", selected)
+		}
+		paths, _ := selected["write_paths"].([]any)
+		if len(paths) != 1 || paths[0] != "src/other/**" {
+			t.Fatalf("matcher did not report the actual registered definition: %v", selected)
 		}
 	})
 }
@@ -58,32 +81,27 @@ func TestRepairResultCandidateMustMatchPacketAndRegisteredExecution(t *testing.T
 	packet.IssuanceEventID = "evt-repair-result-packet-packet-test"
 	packet.ResultID = "repair-result-test"
 	packet.Binding.PlanReportRef = "runtime/g2/S9/assignment/owner/report.json"
-	packet.Binding.PlanReportSHA256 = strings.Repeat("a", 64)
+
 	packet.Binding.ReworkRef = ""
-	packet.Binding.ReworkSHA256 = ""
-	packetSHA, err := workpacket.RepairResultPacketContentDigest(packet)
-	if err != nil {
-		t.Fatal(err)
-	}
 
 	base := repair.WorkspaceCandidate{
 		RuntimeID: execution.RuntimeID, BaselineGeneration: execution.BaselineGeneration,
 		ExecutionGeneration: execution.Generation, AssignmentID: execution.AssignmentID,
-		SourceHead: strings.Repeat("c", 40), BaseCommit: execution.BaseCommit,
+
 		SessionID: packet.Binding.Sources.SessionID, PlanID: packet.Binding.Sources.PlanID,
-		ContractSHA256: packet.Binding.Sources.ContractSHA256,
-		Proposal:       repair.RepairResultRequest{ResultID: packet.ResultID, AssignmentID: packet.Binding.Sources.RepairAssignmentID, ProducerAgentID: execution.AgentID},
+
+		Proposal: repair.RepairResultRequest{ResultID: packet.ResultID, AssignmentID: packet.Binding.Sources.RepairAssignmentID, ProducerAgentID: execution.AgentID},
 		Provenance: &runtime.RepairResultCandidateProvenance{
-			Contract: "s9-repair-result-candidate-v1", PacketID: packet.ID, PacketSHA256: packetSHA,
+			Contract: "s9-repair-result-candidate-v1", PacketID: packet.ID,
 			IssuanceEventID: packet.IssuanceEventID, OwnerAgentID: execution.AgentID,
 			RuntimeID: execution.RuntimeID, BaselineGeneration: execution.BaselineGeneration,
-			ReviewRound: packet.Binding.Sources.ReviewRound, ExecutionAssignmentID: execution.AssignmentID,
-			ExecutionGeneration: execution.Generation, ExecutionSHA256: packet.Binding.ExecutionSHA256,
-			ExecutionRoot: execution.Path, SourceHead: strings.Repeat("c", 40), BaseCommit: execution.BaseCommit,
-			PlanReportRef: packet.Binding.PlanReportRef, PlanReportSHA256: packet.Binding.PlanReportSHA256,
+			ExecutionAssignmentID: execution.AssignmentID,
+			ExecutionGeneration:   execution.Generation,
+			ExecutionRoot:         execution.Path,
+			PlanReportRef:         packet.Binding.PlanReportRef,
 		},
 	}
-	if !repairResultCandidateMatchesPacketExecution(base, packet, execution, packetSHA) {
+	if !repairResultCandidateMatchesPacketExecution(base, packet, execution) {
 		t.Fatal("exact candidate/packet/execution tuple was rejected")
 	}
 
@@ -97,11 +115,8 @@ func TestRepairResultCandidateMustMatchPacketAndRegisteredExecution(t *testing.T
 		{name: "candidate generation", mutate: func(c *repair.WorkspaceCandidate) { c.ExecutionGeneration++ }},
 		{name: "candidate session", mutate: func(c *repair.WorkspaceCandidate) { c.SessionID = "session-other" }},
 		{name: "candidate plan", mutate: func(c *repair.WorkspaceCandidate) { c.PlanID = "plan-other" }},
-		{name: "candidate contract", mutate: func(c *repair.WorkspaceCandidate) { c.ContractSHA256 = strings.Repeat("d", 64) }},
-		{name: "packet digest", mutate: func(c *repair.WorkspaceCandidate) { c.Provenance.PacketSHA256 = strings.Repeat("e", 64) }},
 		{name: "execution assignment", mutate: func(c *repair.WorkspaceCandidate) { c.Provenance.ExecutionAssignmentID = "assignment-other" }},
 		{name: "execution source", mutate: func(c *repair.WorkspaceCandidate) { c.Provenance.ExecutionRoot = "/other/worker" }},
-		{name: "plan report digest", mutate: func(c *repair.WorkspaceCandidate) { c.Provenance.PlanReportSHA256 = strings.Repeat("f", 64) }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -109,11 +124,20 @@ func TestRepairResultCandidateMustMatchPacketAndRegisteredExecution(t *testing.T
 			provenance := *base.Provenance
 			candidate.Provenance = &provenance
 			tc.mutate(&candidate)
-			if repairResultCandidateMatchesPacketExecution(candidate, packet, execution, packetSHA) {
+			if repairResultCandidateMatchesPacketExecution(candidate, packet, execution) {
 				t.Fatal("candidate with mismatched tuple was accepted")
 			}
 		})
 	}
+	t.Run("historical digest and Git OID are not responsibility", func(t *testing.T) {
+		candidate := base
+		provenance := *base.Provenance
+		candidate.Provenance = &provenance
+
+		if !repairResultCandidateMatchesPacketExecution(candidate, packet, execution) {
+			t.Fatal("historical digests or Git OIDs became a responsibility gate")
+		}
+	})
 }
 
 func repairResultMatcherFixture(t *testing.T, registeredID, canonicalID, manifestID string) (workpacket.RepairResultPacket, workspace.Execution, map[string]any) {
@@ -121,7 +145,7 @@ func repairResultMatcherFixture(t *testing.T, registeredID, canonicalID, manifes
 	execution := workspace.Execution{
 		AssignmentID: registeredID, RuntimeID: "loop-s9-matcher", BaselineGeneration: 2,
 		Generation: 3, AgentID: "agent-builder", Path: "/tmp/worker-s9", Branch: "s9-worker",
-		TargetBranch: "main", BaseCommit: strings.Repeat("1", 40), Status: "ready",
+		TargetBranch: "main", Status: "ready",
 		WritePaths: []string{"src/**"}, Checks: []string{"go test ./..."}, Inputs: map[string]string{"task": "TASK-1"},
 	}
 	encoded, err := json.Marshal(execution)
@@ -140,11 +164,9 @@ func repairResultMatcherFixture(t *testing.T, registeredID, canonicalID, manifes
 		Binding: workpacket.RepairResultBinding{
 			Sources: workpacket.RepairPlanReportBinding{
 				RuntimeID: execution.RuntimeID, BaselineGeneration: execution.BaselineGeneration,
-				ReviewRound: 1, RepairAssignmentID: canonicalID, ManifestAssignmentID: manifestID,
+				RepairAssignmentID: canonicalID, ManifestAssignmentID: manifestID,
 				OwnerAgentID: execution.AgentID, SessionID: "repair-session-1", PlanID: "repair-plan-1",
-				ContractSHA256: strings.Repeat("2", 64),
 			},
-			ExecutionSHA256: workpacket.Digest(projection),
 		},
 		Inputs: workpacket.RepairResultInputs{Execution: projection},
 	}

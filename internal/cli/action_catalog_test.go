@@ -22,8 +22,7 @@ func TestActionsCatalogShowsCanonicalReviewRepairLoop(t *testing.T) {
 		"continues implementation and actual TASK self-checks",
 		"ACK and cleanup",
 		"SubagentStart supplies short context",
-		"--revise-assignment <id> --revision-intent-key <stable-key>",
-		"runtime workspace pending",
+		"--revise-assignment <id>",
 		"runtime task-integrate --assignment-id <id>",
 		"ReviewPlan questionnaire",
 		"s7 manifest-draft --assignment <id>",
@@ -55,10 +54,12 @@ func TestActionsCatalogShowsCanonicalReviewRepairLoop(t *testing.T) {
 		"runtime review-plan --file <plan.json>",
 		"runtime review-result submit --assignment-id <id> --result <result.json>",
 		"runtime investigation hypothesis result` →",
-		"runtime repair plan-report submit --file <plan-report.json>",
 		"runtime repair result submit --file <result.json>",
 		"runtime repair impact create|commit",
 		"s10 manifest validate --file <manifest.json>` → register evidence",
+		// The legacy workspace route only serves old frozen records. It must not
+		// be presented as a canonical action for current responsibilities.
+		"runtime workspace pending",
 	} {
 		if strings.Contains(stdout.String(), obsoleteNormalFlow) {
 			t.Fatalf("action catalog still presents %q as normal flow:\n%s", obsoleteNormalFlow, stdout.String())

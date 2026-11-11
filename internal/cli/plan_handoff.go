@@ -8,8 +8,7 @@ package cli
 
 import (
 	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -73,7 +72,7 @@ func planReportUsesAuthorityRoot(root, cwd string) bool {
 
 // importWorkerPlanReport reads a PLAN_REPORT only from the registered
 // assignment worktree that owns the sender. It returns the normalized,
-// authority-root-relative content-addressed path. The caller must pass that
+// authority-root-relative path associated with the original responsibility. The caller must pass that
 // returned path to both validation/registration and AutoAdvanceToWorking.
 func importWorkerPlanReport(root string, snapshot runtime.Snapshot, request policy.Input, agentID, ref string) (string, error) {
 	if strings.TrimSpace(ref) == "" {
@@ -341,9 +340,6 @@ func rejectSymlinkComponents(base, target string) error {
 }
 
 func importPlanReportBytes(root string, data []byte) (string, error) {
-	digest := sha256.Sum256(data)
-	name := hex.EncodeToString(digest[:]) + ".json"
-	rel := filepath.ToSlash(filepath.Join(planHandoffDir, name))
 	rootAbs, err := filepath.Abs(root)
 	if err != nil {
 		return "", fmt.Errorf("resolve plan handoff root: %w", err)
@@ -352,7 +348,34 @@ func importPlanReportBytes(root string, data []byte) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolve plan handoff root: %w", err)
 	}
-	dir := filepath.Join(rootReal, filepath.FromSlash(planHandoffDir))
+	base := filepath.Join(rootReal, filepath.FromSlash(planHandoffDir))
+	if err := rejectSymlinkComponents(rootReal, base); err != nil {
+		return "", fmt.Errorf("plan handoff store rejected: %w", err)
+	}
+	var message struct {
+		RuntimeID    string `json:"runtime_id"`
+		AssignmentID string `json:"assignment_id"`
+		AgentID      string `json:"agent_id"`
+		MessageID    string `json:"message_id"`
+	}
+	if err := json.Unmarshal(data, &message); err != nil {
+		return "", fmt.Errorf("decode original plan handoff: %w", err)
+	}
+	if message.RuntimeID == "" || message.AssignmentID == "" || message.AgentID == "" || message.MessageID == "" {
+		return "", fmt.Errorf("original plan handoff lacks its responsibility identity")
+	}
+	identity, err := json.Marshal([]string{message.RuntimeID, message.AssignmentID, message.AgentID, message.MessageID})
+	if err != nil {
+		return "", err
+	}
+	encoded := base64.RawURLEncoding.EncodeToString(identity)
+	parts := []string{planHandoffDir, "r"}
+	for len(encoded) > 120 {
+		parts = append(parts, encoded[:120])
+		encoded = encoded[120:]
+	}
+	parts = append(parts, encoded)
+	dir := filepath.Join(append([]string{rootReal}, parts...)...)
 	if err := rejectSymlinkComponents(rootReal, dir); err != nil {
 		return "", fmt.Errorf("plan handoff store rejected: %w", err)
 	}
@@ -362,59 +385,50 @@ func importPlanReportBytes(root string, data []byte) (string, error) {
 	if err := rejectSymlinkComponents(rootReal, dir); err != nil {
 		return "", fmt.Errorf("plan handoff store rejected: %w", err)
 	}
-	dest := filepath.Join(rootReal, filepath.FromSlash(rel))
-	if info, err := os.Lstat(dest); err == nil {
-		if info.Mode()&os.ModeSymlink != 0 {
-			return "", fmt.Errorf("content-addressed plan handoff is a symlink: %s", rel)
+	for version := 0; ; version++ {
+		name := fmt.Sprintf("plan-%d.json", version)
+		dest := filepath.Join(dir, name)
+		if info, statErr := os.Lstat(dest); statErr == nil {
+			if info.Mode()&os.ModeSymlink != 0 {
+				return "", fmt.Errorf("plan handoff is a symlink: %s", dest)
+			}
+			existing, readErr := os.ReadFile(dest)
+			if readErr != nil {
+				return "", fmt.Errorf("read original plan handoff: %w", readErr)
+			}
+			if bytes.Equal(existing, data) {
+				return filepath.ToSlash(filepath.Join(append(parts, name)...)), nil
+			}
+			continue
+		} else if !errors.Is(statErr, os.ErrNotExist) {
+			return "", statErr
 		}
-		existing, readErr := os.ReadFile(dest)
-		if readErr != nil {
-			return "", fmt.Errorf("read existing content-addressed plan handoff: %w", readErr)
+		tmp, err := os.CreateTemp(dir, ".plan-handoff-*")
+		if err != nil {
+			return "", err
 		}
-		if !bytes.Equal(existing, data) {
-			return "", fmt.Errorf("content-addressed plan handoff collision: %s", rel)
+		tmpName := tmp.Name()
+		if _, err = tmp.Write(data); err == nil {
+			err = tmp.Chmod(0o444)
 		}
-		if err := os.Chmod(dest, 0o444); err != nil {
-			return "", fmt.Errorf("freeze content-addressed plan handoff: %w", err)
+		if closeErr := tmp.Close(); err == nil {
+			err = closeErr
 		}
-		return rel, nil
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return "", fmt.Errorf("inspect content-addressed plan handoff: %w", err)
+		if err != nil {
+			os.Remove(tmpName)
+			return "", err
+		}
+		err = os.Link(tmpName, dest)
+		os.Remove(tmpName)
+		if os.IsExist(err) {
+			version--
+			continue
+		}
+		if err != nil {
+			return "", fmt.Errorf("publish original plan handoff: %w", err)
+		}
+		return filepath.ToSlash(filepath.Join(append(parts, name)...)), nil
 	}
-	tmp, err := os.CreateTemp(dir, ".plan-handoff-*")
-	if err != nil {
-		return "", fmt.Errorf("stage content-addressed plan handoff: %w", err)
-	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		return "", fmt.Errorf("write content-addressed plan handoff: %w", err)
-	}
-	if err := tmp.Chmod(0o444); err != nil {
-		tmp.Close()
-		return "", fmt.Errorf("freeze content-addressed plan handoff: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return "", fmt.Errorf("close content-addressed plan handoff: %w", err)
-	}
-	if err := os.Link(tmpName, dest); err != nil {
-		if !os.IsExist(err) {
-			return "", fmt.Errorf("publish content-addressed plan handoff: %w", err)
-		}
-		info, statErr := os.Lstat(dest)
-		if statErr != nil {
-			return "", fmt.Errorf("inspect raced content-addressed plan handoff: %w", statErr)
-		}
-		if info.Mode()&os.ModeSymlink != 0 {
-			return "", fmt.Errorf("content-addressed plan handoff is a symlink: %s", rel)
-		}
-		existing, readErr := os.ReadFile(dest)
-		if readErr != nil || !bytes.Equal(existing, data) {
-			return "", fmt.Errorf("content-addressed plan handoff collision: %s", rel)
-		}
-	}
-	return rel, nil
 }
 
 func normalizedPlanReportInput(input map[string]any, ref string) map[string]any {

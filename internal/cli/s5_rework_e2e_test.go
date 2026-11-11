@@ -41,7 +41,7 @@ func currentS5ReworkFixture(t *testing.T) (string, []workpacket.Packet) {
 func settleOriginalS5Followup(t *testing.T, root string, p workpacket.Packet) {
 	t.Helper()
 	before, found, err := runtime.FindSubmission(stageSnapshot(t, root).State, p.ID)
-	if err != nil || !found || before.ContentHash == "" || before.EvidenceID == "" {
+	if err != nil || !found || before.EvidenceID == "" {
 		t.Fatalf("original S5 reception missing: %+v found=%t err=%v", before, found, err)
 	}
 	if before.ControlStatus != "pending" {
@@ -56,7 +56,7 @@ func settleOriginalS5Followup(t *testing.T, root string, p workpacket.Packet) {
 		t.Fatalf("Main failed to resume the original S5 reception: %+v err=%v", recovered, err)
 	}
 	after, found, err := runtime.FindSubmission(stageSnapshot(t, root).State, p.ID)
-	if err != nil || !found || after.ControlStatus == "pending" || after.Key != before.Key || after.ContentHash != before.ContentHash || after.EvidenceID != before.EvidenceID {
+	if err != nil || !found || after.ControlStatus == "pending" || after.Key != before.Key || after.EvidenceID != before.EvidenceID {
 		t.Fatalf("S5 recovery lost or replaced the accepted answer: before=%+v after=%+v err=%v", before, after, err)
 	}
 }
@@ -83,7 +83,34 @@ func TestS5ReworkRetiresOriginalWorkersAndPreservesReceivedReplay(t *testing.T) 
 		}
 		manifestPaths[path] = string(data)
 	}
+	// Occupy the S2 stage directory before the real S5 TR-004 handoff. It is
+	// unknown to the S2 issuer and must never be claimed or overwritten.
+	projected := make(map[string]any, len(before.State))
+	for key, value := range before.State {
+		projected[key] = value
+	}
+	currentEntry := before.State["lifecycle"].(map[string]any)["phase_revision"].(float64)
+	projected["lifecycle"] = map[string]any{"state": "planning", "phase": "design", "phase_revision": int(currentEntry) + 1}
+	candidate, err := runtime.CurrentDesignPacket(projected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	occupiedPath := filepath.Join(root, filepath.Dir(candidate.ViewPath))
+	if err := os.MkdirAll(filepath.Dir(occupiedPath), 0700); err != nil {
+		t.Fatal(err)
+	}
+	occupied, err := os.OpenFile(occupiedPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		t.Fatalf("reserve unknown next S2 entry without touching history: %v", err)
+	}
+	if _, err := occupied.WriteString("unknown S2 occupant"); err != nil {
+		t.Fatal(err)
+	}
+	if err := occupied.Close(); err != nil {
+		t.Fatal(err)
+	}
 	answers := map[string]workpacket.Draft{}
+	var reworkReceipt submission.Receipt
 	for i, p := range packets {
 		e := registry.Executions[p.Binding.AssignmentID]
 		paths, err := registry.WorkerSubmissionPaths(e)
@@ -100,6 +127,9 @@ func TestS5ReworkRetiresOriginalWorkersAndPreservesReceivedReplay(t *testing.T) 
 		}
 		answers[p.ID] = draft
 		receipt := saveStageHook(t, root, e.Path, p.Binding.Owner, paths.Answer, draft, binary)
+		if verdict == "fix_required" {
+			reworkReceipt = receipt
+		}
 		t.Logf("S5 original receipt: %+v", receipt)
 		if !receipt.Accepted || !receipt.WorkComplete {
 			t.Fatalf("independent judgment was not received: %+v", receipt)
@@ -116,12 +146,18 @@ func TestS5ReworkRetiresOriginalWorkersAndPreservesReceivedReplay(t *testing.T) 
 	if after.State["lifecycle"].(map[string]any)["state"] != "planning" {
 		t.Fatalf("original finding did not route TR-004: %v", after.State["lifecycle"])
 	}
-	design, err := runtime.CurrentDesignPacket(after.State)
-	if err != nil {
-		t.Fatal(err)
+	design, issued, err := runtime.CurrentIssuedDesignPacket(after.State)
+	if err != nil || !issued {
+		t.Fatalf("S5 save did not prepare the actual new S2 entry: %v", err)
 	}
-	if _, issued, err := runtime.FindDesignPacket(after.State, design.ID); err != nil || !issued {
-		t.Fatalf("S5 save did not prepare the new S2 entry: %v", err)
+	if design.ViewPath == candidate.ViewPath || !strings.Contains(design.ViewPath, "work-packets-alt-") {
+		t.Fatalf("unknown S2 occupant was claimed: %+v", design)
+	}
+	if data, err := os.ReadFile(occupiedPath); err != nil || string(data) != "unknown S2 occupant" {
+		t.Fatalf("S2 unknown occupant changed: %s %v", data, err)
+	}
+	if !strings.Contains(reworkReceipt.NextAction, design.AnswerPath) {
+		t.Fatalf("original S5 receipt did not show actual S2 answer %s: %+v", design.AnswerPath, reworkReceipt)
 	}
 	for _, path := range []string{design.ViewPath, design.AnswerPath} {
 		if _, err := os.Stat(filepath.Join(root, path)); err != nil {

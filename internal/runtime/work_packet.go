@@ -5,7 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"reflect"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/entroforge/go-system-builder/internal/fileview"
@@ -22,7 +23,6 @@ type SubmissionRecord struct {
 	Key               string `json:"submission_key"`
 	PacketID          string `json:"packet_id"`
 	Owner             string `json:"owner"`
-	ContentHash       string `json:"content_sha256"`
 	EvidenceID        string `json:"evidence_id"`
 	FollowupID        string `json:"followup_event_id"`
 	ControlStatus     string `json:"control_status"`
@@ -38,10 +38,10 @@ type SubmissionRequest struct {
 	PacketID   string
 	Owner      string
 	AnswerJSON []byte
-	// ContentHash, when provided by an internal adapter, is checked against
-	// the canonical validated answer. It never supplies the stored digest.
-	ContentHash string
-	Files       fileview.Reader
+	// EvidenceJSON is the original consumer's prepared professional report.
+	// Its actual path is chosen exclusively by the existing Evidence Writer.
+	EvidenceJSON []byte
+	Files        fileview.Reader
 	// Authorize is the trusted adapter's original source/assignment validator.
 	// It runs again inside the domain Writer, against the candidate's actual
 	// state. Platform payloads and authoring JSON cannot supply this capability.
@@ -58,16 +58,16 @@ func RecordWorkPacketContext(ctx context.Context, root, statePath, journalPath s
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("read packet runtime: %w", err)
 	}
-	if err := ValidateWorkPacket(root, snapshot.State, packet, files); err != nil {
-		return Snapshot{}, err
-	}
 	if prior, ok, err := FindWorkPacket(snapshot.State, packet.ID); err != nil {
 		return Snapshot{}, err
 	} else if ok {
-		if !reflect.DeepEqual(prior, packet) {
+		if !sameS5IssuedResponsibility(prior, packet) {
 			return Snapshot{}, fmt.Errorf("packet identity conflict")
 		}
 		return snapshot, nil
+	}
+	if err := ValidateWorkPacket(root, snapshot.State, packet, files); err != nil {
+		return Snapshot{}, err
 	}
 	if packet.Binding.Attempt != 1 {
 		return Snapshot{}, fmt.Errorf("new packet attempt requires a trusted document review revision")
@@ -78,7 +78,16 @@ func RecordWorkPacketContext(ctx context.Context, root, statePath, journalPath s
 	}
 	current := snapshot.State["lifecycle"].(map[string]any)
 	cursor := map[string]any{"state": current["state"], "phase": current["phase"]}
-	result, err := store.UpdateCurrent(Mutation{EventID: fmt.Sprintf("evt-packet-%s-r%d", packet.ID, snapshot.Revision+1), TransitionID: "PACKET-ISSUE", Event: "work_packet_issued", Actor: "orchestrator", IdempotencyKey: "packet:" + packet.ID, RuntimeID: packet.Binding.RuntimeID, BaselineGeneration: packet.Binding.Generation, From: cursor, To: cursor, OccurredAt: time.Now().UTC(), RetainLastTransition: true, Apply: func(state map[string]any) error {
+	// G18: the packet id is the packet's own identity, and the idempotency key
+	// already names it. The event id follows the same shape as the other
+	// packet issuances (`evt-contract-packet-<id>`): no Runtime write count.
+	// The preparation attempt is the questionnaire's own domain index, so a
+	// responsibility that is prepared again keeps its own identity.
+	attempt, err := packetPreparationAttempt(ctx, journalPath, packet.ID)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	result, err := store.UpdateCurrent(Mutation{EventID: fmt.Sprintf("evt-packet-%s-%d", packet.ID, attempt), TransitionID: "PACKET-ISSUE", Event: "work_packet_issued", Actor: "orchestrator", IdempotencyKey: fmt.Sprintf("packet:%s:%d", packet.ID, attempt), RuntimeID: packet.Binding.RuntimeID, BaselineGeneration: packet.Binding.Generation, From: cursor, To: cursor, OccurredAt: time.Now().UTC(), RetainLastTransition: true, Apply: func(state map[string]any) error {
 		if err := ValidateWorkPacket(root, state, packet, files); err != nil {
 			return err
 		}
@@ -101,13 +110,66 @@ func RecordWorkPacketContext(ctx context.Context, root, statePath, journalPath s
 		latest, readErr := store.Snapshot()
 		if readErr == nil {
 			prior, ok, findErr := FindWorkPacket(latest.State, packet.ID)
-			if findErr == nil && ok && reflect.DeepEqual(prior, packet) {
+			if findErr == nil && ok && sameS5IssuedResponsibility(prior, packet) {
 				return latest, nil
 			}
 		}
 		return Snapshot{}, fmt.Errorf("record work packet: %w", err)
 	}
 	return result, nil
+}
+
+// packetPreparationAttempt counts the preparations this responsibility's
+// questionnaire already has inside this responsibility, as the Runtime journal
+// records them.
+//
+// The Runtime state row is only the projection of that fact. A partially
+// issued responsibility can lose its row while the journal keeps the
+// issuance, and the domain then still proves that the questionnaire was
+// prepared before. The new preparation is therefore the next attempt of that
+// domain thing rather than a duplicate of the first one, so it needs its own
+// identity. The attempt number is the questionnaire's own domain index; it is
+// never the Runtime write count, a digest or a wall-clock value.
+//
+// The count is taken from the same journal the store validates the Runtime
+// against, archived segments included, so a rotated journal still counts its
+// preparations. It is taken before the writer takes its lock, so an issuance
+// that was interrupted before it reached the journal is not counted yet; the
+// store's own recovery then reconciles that pending write and the journal's
+// uniqueness check refuses the duplicate, which keeps the domain's outcome
+// instead of a second issuance.
+func packetPreparationAttempt(ctx context.Context, journalPath, packetID string) (int, error) {
+	if journalPath == "" {
+		return 1, nil
+	}
+	inspection, err := inspectJournalContext(ctx, journalPath)
+	if err != nil {
+		return 0, fmt.Errorf("read runtime journal for the packet preparation attempt: %w", err)
+	}
+	prefix := "evt-packet-" + packetID + "-"
+	prepared := 0
+	for _, event := range inspection.Events {
+		if event["transition_id"] != "PACKET-ISSUE" {
+			continue
+		}
+		eventID, _ := event["event_id"].(string)
+		if !strings.HasPrefix(eventID, prefix) {
+			continue
+		}
+		prepared++
+	}
+	return prepared + 1, nil
+}
+
+// Replays use the Writer's recorded paths and original assignment; presentation
+// or an independently prepared candidate path is not another authority test.
+func sameS5IssuedResponsibility(a, b workpacket.Packet) bool {
+	x, y := a.Binding, b.Binding
+	return a.ID == b.ID && a.TemplateID == b.TemplateID &&
+		x.RuntimeID == y.RuntimeID && x.Generation == y.Generation &&
+		x.StageEntry == y.StageEntry && x.Owner == y.Owner &&
+		x.AssignmentID == y.AssignmentID && x.Responsibility == y.Responsibility &&
+		x.Attempt == y.Attempt && x.PreviousSubmissionKey == y.PreviousSubmissionKey
 }
 
 // validateDocumentReviewPacketSlot compares only the original S5 subtype.
@@ -213,7 +275,7 @@ func prepareSubmission(root string, state map[string]any, req EvidenceRequest, e
 	} else if design {
 		return prepareDesignSubmission(root, state, req, envelopeData)
 	}
-	if req.Kind != "document_review" || len(req.ProducedBy) != 1 || req.ProducedBy[0] != s.Owner || req.ReviewRound != nil {
+	if req.Kind != "document_review" || len(req.ProducedBy) != 1 || req.ProducedBy[0] != s.Owner {
 		return SubmissionRecord{}, fmt.Errorf("invalid document submission binding")
 	}
 	p, ok, err := FindWorkPacket(state, s.PacketID)
@@ -227,13 +289,6 @@ func prepareSubmission(root string, state map[string]any, req EvidenceRequest, e
 	if len(issues) > 0 {
 		return SubmissionRecord{}, fmt.Errorf("submission answer %s: %s (%s)", issues[0].Pointer, issues[0].Expected, issues[0].Observed)
 	}
-	contentHash, err := workpacket.AnswerDigest(answer)
-	if err != nil {
-		return SubmissionRecord{}, fmt.Errorf("hash validated answer: %w", err)
-	}
-	if s.ContentHash != "" && s.ContentHash != contentHash {
-		return SubmissionRecord{}, fmt.Errorf("submission content hash does not match validated answer")
-	}
 	prior, accepted, err := FindSubmission(state, s.PacketID)
 	if err != nil {
 		return SubmissionRecord{}, err
@@ -242,25 +297,27 @@ func prepareSubmission(root string, state map[string]any, req EvidenceRequest, e
 		if prior.RevisionPacketID != "" {
 			return prior, ErrSubmissionSuperseded
 		}
-		if prior.ContentHash != contentHash {
-			return prior, ErrSubmissionConflict
-		}
 		if prior.Owner != s.Owner || prior.EvidenceID != req.ID {
-			return prior, fmt.Errorf("submission replay differs from original domain reference")
-		}
-		if err := workpacket.ValidateDocumentReview(p, req.ID, answer, envelopeData); err != nil {
-			return prior, err
+			return prior, ErrSubmissionConflict
 		}
 		items, _ := state["evidence"].([]any)
 		for _, raw := range items {
 			item, _ := raw.(map[string]any)
-			if item["id"] == prior.EvidenceID && item["kind"] == req.Kind && item["path"] == req.Path && item["sha256"] == workpacket.Digest(envelopeData) {
-				return prior, errSubmissionAccepted
+			if item["id"] != prior.EvidenceID || item["kind"] != req.Kind {
+				continue
 			}
+			original, err := ReadRecordedEvidenceReport(root, stringValue(item["path"]))
+			if err != nil {
+				return prior, fmt.Errorf("accepted document review is unavailable: %w", err)
+			}
+			if err := validateS5AcceptedAnswer(p, prior.EvidenceID, answer, original); err != nil {
+				return prior, err
+			}
+			return prior, errSubmissionAccepted
 		}
-		return prior, fmt.Errorf("submission replay differs from original evidence artifact")
+		return prior, fmt.Errorf("accepted document review reference is unavailable")
 	}
-	if err := workpacket.ValidateDocumentReview(p, req.ID, answer, envelopeData); err != nil {
+	if err := validateS5AcceptedAnswer(p, req.ID, answer, envelopeData); err != nil {
 		return SubmissionRecord{}, err
 	}
 	if err := validateRevisionReception(state, p); err != nil {
@@ -275,8 +332,24 @@ func prepareSubmission(root string, state map[string]any, req EvidenceRequest, e
 	if err := s.Authorize(root, state); err != nil {
 		return SubmissionRecord{}, fmt.Errorf("submission authorization: %w", err)
 	}
-	key := workpacket.Digest([]byte("submission:" + p.ID))
-	return SubmissionRecord{Key: key, PacketID: p.ID, Owner: s.Owner, ContentHash: contentHash, EvidenceID: req.ID, FollowupID: workpacket.Digest([]byte(key + ":after-domain")), ControlStatus: "pending", OriginState: "document_verification", OriginPhase: "", OriginEntry: p.Binding.StageEntry}, nil
+	key := "submission:" + p.ID
+	return SubmissionRecord{Key: key, PacketID: p.ID, Owner: s.Owner, EvidenceID: req.ID, FollowupID: key + ":after-domain", ControlStatus: "pending", OriginState: "document_verification", OriginPhase: "", OriginEntry: p.Binding.StageEntry}, nil
+}
+
+// validateS5AcceptedAnswer compares the actual professional result, not
+// historical subject digests, when a live responsibility is observed again.
+func validateS5AcceptedAnswer(p workpacket.Packet, id string, answer workpacket.Answer, data []byte) error {
+	var received workpacket.DocumentReviewEnvelope
+	if err := json.Unmarshal(data, &received); err != nil {
+		return fmt.Errorf("decode document review: %w", err)
+	}
+	if received.EvidenceID != id || received.Kind != "document_review" || received.RuntimeID != p.Binding.RuntimeID || received.ProducerAgentID != p.Binding.Owner || received.ProducerResponsibility != p.Binding.Responsibility {
+		return fmt.Errorf("document review does not belong to the original responsibility")
+	}
+	if answer.Conclusion == nil || received.Conclusion != *answer.Conclusion || !slices.Equal(received.Findings, answer.Findings) {
+		return ErrSubmissionConflict
+	}
+	return nil
 }
 
 func appendSubmission(state map[string]any, record SubmissionRecord) error {

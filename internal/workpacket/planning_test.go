@@ -8,7 +8,7 @@ import (
 )
 
 func TestDesignProjectionFrozenMainAndProfessionalAnswer(t *testing.T) {
-	binding := PlanningBinding{RuntimeID: "loop-design", Generation: 1, StageEntry: 2, Stage: "S2", Owner: "Main", Requirement: Reference{ID: "REQ-001", Path: "docs/requirements/REQ-001.md", Version: "v1.0.0", SHA256: Digest([]byte("frozen requirement"))}}
+	binding := PlanningBinding{RuntimeID: "loop-design", Generation: 1, StageEntry: 2, Stage: "S2", Owner: "Main", Requirement: Reference{ID: "REQ-001", Path: "docs/requirements/REQ-001.md", Version: "v1.0.0"}}
 	p, err := BuildDesign(binding)
 	if err != nil {
 		t.Fatal(err)
@@ -41,13 +41,13 @@ func TestDesignProjectionFrozenMainAndProfessionalAnswer(t *testing.T) {
 	if _, issues := ValidateDesignAnswer(p, []byte(`{"answer":{"conclusion":123,"architecture_path":"docs/architecture/ARCHITECTURE-001.md"}}`)); len(issues) == 0 {
 		t.Fatal("malformed professional field type was accepted")
 	}
-	arch := Reference{ID: "ARCHITECTURE-001", Path: path, Version: "v1.0.0", SHA256: Digest([]byte("actual locked architecture"))}
+	arch := Reference{ID: "ARCHITECTURE-001", Path: path, Version: "v1.0.0"}
 	evidence, err := DesignEvidence(p, "ev-design", arch, answer, time.Now().UTC())
 	if err != nil || evidence["producer_agent_id"] != "Main" || evidence["producer_responsibility"] != "Orchestrator" || evidence["kind"] != "planning_design" {
 		t.Fatal(evidence, err)
 	}
 	subjects := evidence["subject_refs"].([]Subject)
-	if len(subjects) != 2 || subjects[0].SHA256 != binding.Requirement.SHA256 || subjects[1].SHA256 != arch.SHA256 {
+	if len(subjects) != 2 || subjects[0] != (Subject{Path: binding.Requirement.Path, Version: binding.Requirement.Version}) || subjects[1] != (Subject{Path: arch.Path, Version: arch.Version}) {
 		t.Fatal("evidence has guessed subjects", subjects)
 	}
 	arch.Path = "docs/architecture/other.md"

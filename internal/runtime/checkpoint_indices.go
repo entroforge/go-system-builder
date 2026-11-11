@@ -2,270 +2,273 @@ package runtime
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"reflect"
 
 	"github.com/entroforge/go-system-builder/internal/workpacket"
 )
 
-// ValidateCheckpointIndices checks durable relationships, including historical
-// attempts. It never derives reception from authoring files or re-enables PASS.
+// ValidateCheckpointIndices verifies the saved Runtime and journal form a
+// coherent pair. Already received responsibilities remain original facts;
+// recovery does not authenticate their sources or recompute their decisions.
 func ValidateCheckpointIndices(root string, state map[string]any, journalBytes []byte) error {
 	return ValidateCheckpointIndicesContext(context.Background(), root, state, journalBytes)
 }
 
 func ValidateCheckpointIndicesContext(ctx context.Context, root string, state map[string]any, journalBytes []byte) error {
-	ctx = WithReviewResultReadCache(WithPacketBodyRoot(ctx, root))
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := ValidateS6MainStartReceipts(state, journalBytes); err != nil {
+	if err := validateRecoveryPair(state, journalBytes); err != nil {
 		return err
 	}
-	if err := ValidateAssignmentRevisionReceipts(state, journalBytes); err != nil {
-		return err
+	return validateReceptionPairing(state, journalBytes)
+}
+
+// hasDocumentReviewPacket reports whether the state indexes any packet of the
+// document-review family. Only that family records document-review
+// receptions, so without one of its packets the whole reception pairing is
+// vacuous. The check keeps a checkpoint that carries no document-review
+// packet from paying for the pairing work on every save.
+func hasDocumentReviewPacket(state map[string]any) bool {
+	entities, _ := state["entities"].(map[string]any)
+	rows, _ := entities["work_packets"].([]any)
+	for _, raw := range rows {
+		row, _ := raw.(map[string]any)
+		if row["template_id"] == "s5-document-review-v1" {
+			return true
+		}
 	}
-	tasks, err := validateTaskPlanningCheckpointIndices(root, state, journalBytes)
-	if err != nil {
-		return err
-	}
-	state = tasks
-	contracts, err := validateContractCheckpointIndices(root, state, journalBytes)
-	if err != nil {
-		return err
-	}
-	state = contracts
-	filtered, err := validateDesignCheckpointIndices(root, state, journalBytes)
-	if err != nil {
-		return err
-	}
-	state = filtered
-	s9ResultFiltered, err := validateRepairResultCheckpointIndices(root, state, journalBytes, ctx)
-	if err != nil {
-		return err
-	}
-	state = s9ResultFiltered
-	s9Filtered, err := validateRepairPlanReportCheckpointIndices(root, state, journalBytes, ctx)
-	if err != nil {
-		return err
-	}
-	state = s9Filtered
-	s8Filtered, err := validateHypothesisResultCheckpointIndices(root, state, journalBytes)
-	if err != nil {
-		return err
-	}
-	state = s8Filtered
-	s7Filtered, err := validateReviewResultCheckpointIndicesContext(ctx, root, state, journalBytes)
-	if err != nil {
-		return err
-	}
-	state = s7Filtered
-	if err := validateCheckpointToolReceipts(state, journalBytes); err != nil {
-		return err
-	}
-	if err := validateCheckpointContextBindings(root, state, journalBytes); err != nil {
-		return err
-	}
-	if !hasIssuedIndices(state) {
+	return false
+}
+
+// validateReceptionPairing restores the recorded pairing between accepted
+// document-review receptions and the packet index.
+//
+// The blueprint requires both halves in one sentence: "checkpoint 恢复和具名历史
+// 继续按故障模型检查实际保存材料、版本和事务配对;Hook 不对任何阶段计算或认证
+// Git OID、来源、答卷或证据散列" (blueprint/l4-mechanisms/L4-runtime-control-plane.md:72),
+// and "普通观察先读取状态与索引,检查索引结构和身份唯一性" (same file:70).
+//
+// Every fact checked here is a recorded identity or a recorded transaction
+// pairing:
+//
+//   - a reception names one indexed packet (orphan reception),
+//   - one packet and one reception identity are accepted once (duplicate key),
+//   - an advanced reception names the real journal transition that advanced it
+//     from its recorded origin state (forged transition),
+//   - a revised reception names the indexed revision packet bound to it, and
+//     its old review stays invalidated (old review resurrection).
+//
+// No content digest, checksum, file hash or artifact body is recomputed, read
+// or compared here: the submission key is the recorded reception identity
+// ("submission:" + packet ID, internal/runtime/work_packet.go:343), not a
+// digest of the saved bytes, and comparing it with the revision packet's
+// recorded previous_submission_key is a transaction pairing, not a hash gate.
+func validateReceptionPairing(state map[string]any, journalBytes []byte) error {
+	if !hasIssuedIndices(state) || !hasDocumentReviewPacket(state) {
 		return nil
 	}
-	journal, err := inspectJournalData(journalBytes)
+	entities, _ := state["entities"].(map[string]any)
+	rows, _ := entities["submissions"].([]any)
+	if len(rows) == 0 {
+		return nil
+	}
+	packets, err := documentReviewPackets(state)
 	if err != nil {
 		return err
 	}
-	if len(journal.Events) > 0 {
-		after, err := integerField(journal.Events[len(journal.Events)-1], "after_revision")
-		revision, revErr := integerField(state, "revision")
-		if err != nil || revErr != nil || after != revision {
-			return fmt.Errorf("checkpoint revision is not linked to the journal tail")
-		}
+	if len(packets) == 0 {
+		return nil
 	}
-	entities, _ := state["entities"].(map[string]any)
-	packets, _ := entities["work_packets"].([]any)
-	byPacket := map[string]workpacket.Packet{}
-	first := map[string]bool{}
-	for _, raw := range packets {
-		row, _ := raw.(map[string]any)
-		p, ok, err := FindWorkPacket(state, stringValue(row["packet_id"]))
-		if err != nil || !ok {
-			return fmt.Errorf("checkpoint packet cannot be decoded")
-		}
-		if _, duplicate := byPacket[p.ID]; duplicate {
-			return fmt.Errorf("duplicate checkpoint packet")
-		}
-		expected, err := workpacket.RebuildS5(p)
-		if err != nil || !reflect.DeepEqual(expected, p) || p.Binding.RuntimeID != state["runtime_id"] || p.Binding.Generation > baselineGeneration(state) {
-			return fmt.Errorf("checkpoint packet frozen binding differs")
-		}
-		if p.TaskAnalysis != nil {
-			if _, err := workpacket.ReadTaskAnalysis(root, p); err != nil {
-				return fmt.Errorf("checkpoint frozen task analysis: %w", err)
-			}
-		}
-		if p.Binding.Attempt == 1 {
-			key := fmt.Sprintf("%s/%d/%d/%s/%s", p.Binding.RuntimeID, p.Binding.Generation, p.Binding.StageEntry, p.Binding.Owner, p.Binding.Responsibility)
-			if first[key] {
-				return fmt.Errorf("duplicate initial checkpoint responsibility")
-			}
-			first[key] = true
-		}
-		byPacket[p.ID] = p
-		issued := false
-		issuanceKey := "packet:" + p.ID
-		if p.Binding.Attempt > 1 {
-			issuanceKey = "document-review-revision:" + p.Binding.PreviousSubmissionKey
-		}
-		for _, event := range journal.Events {
-			if event["idempotency_key"] == issuanceKey && (event["transition_id"] == "PACKET-ISSUE" || event["transition_id"] == "DOCUMENT-REVIEW-REVISION") {
-				issued = true
-			}
-		}
-		if !issued {
-			return fmt.Errorf("checkpoint packet has no original issuance commit")
-		}
-	}
-	evidence := map[string]map[string]any{}
-	rows, _ := state["evidence"].([]any)
-	for _, raw := range rows {
-		row, _ := raw.(map[string]any)
-		id := stringValue(row["id"])
-		if evidence[id] != nil {
-			return fmt.Errorf("duplicate checkpoint evidence")
-		}
-		evidence[id] = row
-	}
+	// The journal is needed by exactly one of the four pairings: the forged
+	// transition. The recovery pair above already inspected the same bytes,
+	// so this parses them a second time only when an advanced reception
+	// actually appears. A checkpoint without one pays no extra journal read.
+	var journal journalInspection
+	journalInspected := false
+	evidence := checkpointEvidenceRows(state)
 	received := map[string]SubmissionRecord{}
-	keys := map[string]bool{}
-	rows, _ = entities["submissions"].([]any)
+	keys := map[string]string{}
 	for _, raw := range rows {
-		row, _ := raw.(map[string]any)
-		r, ok, err := FindSubmission(state, stringValue(row["packet_id"]))
-		if err != nil || !ok {
-			return fmt.Errorf("checkpoint reception cannot be decoded")
+		row, ok := raw.(map[string]any)
+		if !ok {
+			return fmt.Errorf("checkpoint reception row is unreadable")
 		}
-		p, exists := byPacket[r.PacketID]
-		if !exists || received[r.PacketID].Key != "" || keys[r.Key] {
-			return fmt.Errorf("duplicate or orphan checkpoint reception")
-		}
-		key := workpacket.Digest([]byte("submission:" + p.ID))
-		if r.Key != key || r.FollowupID != workpacket.Digest([]byte(key+":after-domain")) || r.Owner != p.Binding.Owner || r.OriginState != "document_verification" || r.OriginPhase != "" || r.OriginEntry != p.Binding.StageEntry {
-			return fmt.Errorf("checkpoint reception identity differs")
-		}
-		e := evidence[r.EvidenceID]
-		producers, _ := e["produced_by"].([]any)
-		generation, generationErr := integerField(e, "baseline_generation")
-		if e == nil || e["kind"] != "document_review" || e["responsibility_id"] != p.Binding.Responsibility || len(producers) != 1 || producers[0] != p.Binding.Owner || generationErr != nil || generation != p.Binding.Generation {
-			return fmt.Errorf("checkpoint reception has no matching domain evidence")
-		}
-		data, err := workpacket.ReadFile(root, stringValue(e["path"]), 1<<20)
-		if err != nil || workpacket.Digest(data) != e["sha256"] {
-			return fmt.Errorf("checkpoint reception artifact is unverifiable: %s", r.EvidenceID)
-		}
-		var envelope workpacket.DocumentReviewEnvelope
-		if err := json.Unmarshal(data, &envelope); err != nil {
-			return err
-		}
-		answer := workpacket.Answer{Conclusion: &envelope.Conclusion, Findings: envelope.Findings}
-		draft := p.Draft
-		draft.Answer = answer
-		authoring, err := json.Marshal(draft)
+		record, err := decodeSubmissionRow(row)
 		if err != nil {
 			return err
 		}
-		if _, issues := workpacket.ValidateAnswer(p, authoring); len(issues) > 0 {
-			return fmt.Errorf("checkpoint answer is incomplete")
+		if !isDocumentReviewReception(packets, record) {
+			continue
 		}
-		if err := workpacket.ValidateDocumentReview(p, r.EvidenceID, answer, data); err != nil {
-			return err
+		if _, exists := packets[record.PacketID]; !exists {
+			return fmt.Errorf("orphan checkpoint reception %q has no indexed packet", record.PacketID)
 		}
-		digest, err := workpacket.AnswerDigest(answer)
-		if err != nil || digest != r.ContentHash {
-			return fmt.Errorf("checkpoint answer digest differs")
+		if previous, duplicate := received[record.PacketID]; duplicate {
+			return fmt.Errorf("duplicate checkpoint reception for packet %q (%q and %q)", record.PacketID, previous.Key, record.Key)
 		}
-		receptionFound := false
-		for _, event := range journal.Events {
-			if event["transition_id"] != "EVIDENCE-RECORD" {
-				continue
-			}
-			ids, _ := event["evidence_ids"].([]any)
-			for _, id := range ids {
-				if id == r.EvidenceID {
-					receptionFound = true
+		if owner, duplicate := keys[record.Key]; duplicate {
+			return fmt.Errorf("duplicate checkpoint reception identity %q (%q and %q)", record.Key, owner, record.PacketID)
+		}
+		if record.ControlStatus == "advanced" {
+			if !journalInspected {
+				inspected, err := inspectJournalData(journalBytes)
+				if err != nil {
+					return err
 				}
+				journal = inspected
+				journalInspected = true
+			}
+			if err := checkAdvancedReception(journal, record); err != nil {
+				return err
 			}
 		}
-		if !receptionFound {
-			return fmt.Errorf("checkpoint reception has no original journal commit")
-		}
-		if r.ControlStatus == "no_transition" {
-			index, ok := journal.EventIndex["evt-submission-control-"+r.FollowupID]
-			if !ok || journal.Events[index]["transition_id"] != "SUBMISSION-EVALUATE" {
-				return fmt.Errorf("checkpoint evaluated followup has no original control commit")
-			}
-		}
-		if r.ControlStatus == "advanced" {
-			index, ok := journal.EventIndex[r.TransitionEventID]
-			if !ok {
-				return fmt.Errorf("advanced checkpoint reception has no actual transition event")
-			}
-			event := journal.Events[index]
-			from, _ := event["from"].(map[string]any)
-			if (event["transition_id"] != "TR-003" && event["transition_id"] != "TR-004") || from["state"] != r.OriginState {
-				return fmt.Errorf("checkpoint followup transition binding differs")
-			}
-		} else if r.TransitionEventID != "" {
-			return fmt.Errorf("unadvanced checkpoint reception has a transition event")
-		}
-		keys[r.Key] = true
-		received[r.PacketID] = r
+		keys[record.Key] = record.PacketID
+		received[record.PacketID] = record
 	}
-	for _, p := range byPacket {
-		if p.Binding.Attempt == 1 {
+	for _, record := range received {
+		if record.RevisionPacketID == "" {
 			continue
 		}
-		prior, ok, err := FindSubmissionKey(state, p.Binding.PreviousSubmissionKey)
-		old, exists := byPacket[prior.PacketID]
-		if err != nil || !ok || !exists || prior.RevisionPacketID != p.ID {
-			return fmt.Errorf("checkpoint revision has no original previous reception")
+		next, exists := packets[record.RevisionPacketID]
+		if !exists {
+			return fmt.Errorf("checkpoint revision %q has no indexed packet for the original reception %q", record.RevisionPacketID, record.Key)
 		}
-		b := old.Binding
-		b.Attempt++
-		b.PreviousSubmissionKey = prior.Key
-		b.RevisionReason = p.Binding.RevisionReason
-		b.ExecutionRequired = p.Binding.ExecutionRequired
-		expected, err := workpacket.RebuildS5ForBinding(b, old)
-		if err != nil || !reflect.DeepEqual(expected, p) {
-			return fmt.Errorf("checkpoint revision frozen chain differs")
+		if next.Binding.PreviousSubmissionKey != record.Key {
+			return fmt.Errorf("checkpoint revision %q is not bound to the original reception %q", next.ID, record.Key)
 		}
-	}
-	for _, r := range received {
-		if r.RevisionPacketID == "" {
-			if r.SupersededBy != "" {
-				return fmt.Errorf("checkpoint supersession has no issued revision")
-			}
-			continue
+		row, exists := evidence[record.EvidenceID]
+		if !exists {
+			return fmt.Errorf("checkpoint reception %q has no recorded evidence %q", record.Key, record.EvidenceID)
 		}
-		next, exists := byPacket[r.RevisionPacketID]
-		if !exists || next.Binding.PreviousSubmissionKey != r.Key || evidence[r.EvidenceID]["status"] != "invalid" {
-			return fmt.Errorf("checkpoint revision resurrects an old review")
-		}
-		successor, accepted := received[next.ID]
-		expectedBy := "evt-document-revision-" + r.Key
-		expectedRule := "document_review_revision_pending"
-		if accepted {
-			expectedBy = successor.EvidenceID
-			expectedRule = "document_review_revision_superseded"
-			if r.SupersededBy != successor.Key {
-				return fmt.Errorf("checkpoint replacement is incomplete")
-			}
-		} else if r.SupersededBy != "" {
-			return fmt.Errorf("unreceived checkpoint revision claims replacement")
-		}
-		e := evidence[r.EvidenceID]
-		if e["invalidated_by"] != expectedBy || e["invalidation_rule"] != expectedRule {
-			return fmt.Errorf("checkpoint old review invalidation differs")
+		if row["status"] != "invalid" {
+			return fmt.Errorf("checkpoint revision resurrects the old review %q", record.EvidenceID)
 		}
 	}
 	return nil
+}
+
+// documentReviewPackets indexes the document-review packets of this Runtime.
+// Other packet families keep their own typed lookups; this index only carries
+// the S5 document-review packets whose receptions are checked here.
+func documentReviewPackets(state map[string]any) (map[string]workpacket.Packet, error) {
+	entities, _ := state["entities"].(map[string]any)
+	rows, _ := entities["work_packets"].([]any)
+	packets := map[string]workpacket.Packet{}
+	for _, raw := range rows {
+		row, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		if row["template_id"] != "s5-document-review-v1" {
+			continue
+		}
+		id := stringValue(row["packet_id"])
+		if id == "" {
+			continue
+		}
+		packet, found, err := FindWorkPacket(state, id)
+		if err != nil {
+			return nil, err
+		}
+		if !found {
+			continue
+		}
+		packets[id] = packet
+	}
+	return packets, nil
+}
+
+// isDocumentReviewReception reports whether the recorded reception belongs to
+// the document-review family. The family is recognised by the indexed packet
+// type, and by the origin state that only this family records.
+func isDocumentReviewReception(packets map[string]workpacket.Packet, record SubmissionRecord) bool {
+	if _, ours := packets[record.PacketID]; ours {
+		return true
+	}
+	return record.OriginState == "document_verification"
+}
+
+// checkAdvancedReception requires an advanced reception to name the real
+// journal transition that advanced it, and to name the state that transition
+// started from. A forged transition event id, or a real event that belongs to
+// another transition, cannot satisfy this pairing.
+func checkAdvancedReception(journal journalInspection, record SubmissionRecord) error {
+	if record.TransitionEventID == "" {
+		return fmt.Errorf("advanced checkpoint reception %q names no transition event", record.Key)
+	}
+	index, ok := journal.EventIndex[record.TransitionEventID]
+	if !ok {
+		return fmt.Errorf("advanced checkpoint reception %q has no actual transition event %q", record.Key, record.TransitionEventID)
+	}
+	event := journal.Events[index]
+	from, _ := event["from"].(map[string]any)
+	if record.OriginState != "" && from["state"] != record.OriginState {
+		return fmt.Errorf("advanced checkpoint reception %q is not bound to its recorded origin state %q", record.Key, record.OriginState)
+	}
+	return nil
+}
+
+// checkpointEvidenceRows indexes the recorded evidence rows by their identity.
+func checkpointEvidenceRows(state map[string]any) map[string]map[string]any {
+	rows, _ := state["evidence"].([]any)
+	evidence := map[string]map[string]any{}
+	for _, raw := range rows {
+		row, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		id := stringValue(row["id"])
+		if id == "" {
+			continue
+		}
+		evidence[id] = row
+	}
+	return evidence
+}
+
+// decodeSubmissionRow decodes one recorded reception row with the same shape
+// the production typed lookup uses.
+//
+// The row is read directly instead of through a JSON round trip. The row
+// comes from the saved state, so re-encoding it only to decode it again
+// costs a full marshal per reception on every checkpoint validation. A field
+// that is present with the wrong type is still an error, and an unknown
+// field is still ignored, exactly as the typed decode reports it.
+func decodeSubmissionRow(row map[string]any) (SubmissionRecord, error) {
+	var record SubmissionRecord
+	for _, field := range []struct {
+		key   string
+		value *string
+	}{
+		{"submission_key", &record.Key},
+		{"packet_id", &record.PacketID},
+		{"owner", &record.Owner},
+		{"evidence_id", &record.EvidenceID},
+		{"followup_event_id", &record.FollowupID},
+		{"control_status", &record.ControlStatus},
+		{"origin_state", &record.OriginState},
+		{"origin_phase", &record.OriginPhase},
+		{"transition_event_id", &record.TransitionEventID},
+		{"revision_packet_id", &record.RevisionPacketID},
+		{"superseded_by", &record.SupersededBy},
+	} {
+		raw, exists := row[field.key]
+		if !exists || raw == nil {
+			continue
+		}
+		value, ok := raw.(string)
+		if !ok {
+			return SubmissionRecord{}, fmt.Errorf("checkpoint reception row field %s is not a string", field.key)
+		}
+		*field.value = value
+	}
+	if raw, exists := row["origin_entry"]; exists && raw != nil {
+		entry, err := integerField(row, "origin_entry")
+		if err != nil {
+			return SubmissionRecord{}, fmt.Errorf("checkpoint reception row field origin_entry is not a number: %w", err)
+		}
+		record.OriginEntry = entry
+	}
+	return record, nil
 }

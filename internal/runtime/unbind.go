@@ -163,15 +163,11 @@ func (s *Store) archiveAndResetWithBoundary(stateData, journalData []byte, runti
 	if err := writeDurableFile(filepath.Join(archiveDir, "loop-events.jsonl"), journalData); err != nil {
 		return RolloverRecord{}, fmt.Errorf("archive runtime journal: %w", err)
 	}
-	stateHash := sha256Hex(stateData)
-	journalHash := sha256Hex(journalData)
 	manifest := map[string]any{
 		"runtime_id":           runtimeID,
 		"revision":             revision,
 		"approved_by":          approval.ApprovedBy,
 		"approval_evidence_id": approval.EvidenceID,
-		"state_sha256":         stateHash,
-		"journal_sha256":       journalHash,
 		"occurred_at":          occurredAt.UTC().Format(time.RFC3339Nano),
 	}
 	for key, value := range manifestExtras {
@@ -185,14 +181,11 @@ func (s *Store) archiveAndResetWithBoundary(stateData, journalData []byte, runti
 		FreshState:    freshState,
 		Record: RolloverRecord{
 			ArchiveDir: archiveDir, RuntimeID: runtimeID, Revision: revision,
-			ArchiveStateSHA: stateHash, ArchiveJournalSHA: journalHash,
 		},
 		Approval:              approval,
 		BoundaryKind:          boundaryKind,
 		Disposition:           disposition,
 		OccurredAt:            occurredAt.UTC().Format(time.RFC3339Nano),
-		SourceStateSHA256:     stateHash,
-		SourceJournalSHA256:   journalHash,
 		SourceRuntimeID:       runtimeID,
 		SourceRevision:        intPointer(revision),
 		SourceJournalSegments: segments,

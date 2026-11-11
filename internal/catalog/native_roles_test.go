@@ -50,7 +50,6 @@ func TestNativeRoleCatalogChecksProfessionalOutputsWithoutLegacyActivation(t *te
 		{"document-verifier", "SubagentStop"},
 		{"document-verifier", "questionnaire"},
 		{"qa", "independent"},
-		{"qa", "frozen"},
 	} {
 		t.Run(tc.role+" missing "+tc.remove, func(t *testing.T) {
 			path := filepath.Join(root, "agents", tc.role+".md")

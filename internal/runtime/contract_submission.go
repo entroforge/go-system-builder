@@ -12,21 +12,7 @@ import (
 )
 
 func ValidateIssuedContractPacket(root string, state map[string]any, p workpacket.ContractPacket, files fileview.Reader) error {
-	if err := ValidateContractPacket(root, state, p, files); err != nil {
-		return err
-	}
-	inputs, err := ResolveContractInputs(root, state, files)
-	if err != nil {
-		return err
-	}
-	expected, err := workpacket.BuildContracts(p.Binding, inputs)
-	if err != nil {
-		return err
-	}
-	if !reflect.DeepEqual(expected, p) && !contractPacketHasLegacySharedModelInputs(p, inputs) {
-		return fmt.Errorf("S3 complete original source closure differs from issuance")
-	}
-	return nil
+	return ValidateContractPacket(root, state, p, files)
 }
 
 // contractPacketHasLegacySharedModelInputs preserves packets issued before
@@ -80,41 +66,42 @@ func prepareContractSubmission(root string, state map[string]any, req EvidenceRe
 	if len(issues) > 0 {
 		return SubmissionRecord{}, fmt.Errorf("contract answer %s: %s", issues[0].Pointer, issues[0].Expected)
 	}
-	digest, err := workpacket.ContractAnswerDigest(answer)
-	if err != nil {
-		return SubmissionRecord{}, err
-	}
-	if s.ContentHash != "" && s.ContentHash != digest {
-		return SubmissionRecord{}, fmt.Errorf("S3 content digest differs")
-	}
 	prior, accepted, err := FindSubmission(state, p.ID)
 	if err != nil {
 		return SubmissionRecord{}, err
 	}
 	if accepted {
-		if prior.ContentHash != digest {
-			return prior, ErrSubmissionConflict
-		}
 		if prior.Owner != "Main" || prior.EvidenceID != req.ID {
 			return prior, fmt.Errorf("S3 replay original domain differs")
-		}
-		if err := ValidateContractEnvelope(p, req.ID, answer, data); err != nil {
-			return prior, err
 		}
 		rows, _ := state["evidence"].([]any)
 		for _, raw := range rows {
 			row, _ := raw.(map[string]any)
-			if row["id"] == req.ID && row["kind"] == req.Kind && row["path"] == req.Path && row["sha256"] == workpacket.Digest(data) {
-				return prior, errSubmissionAccepted
+			if row["id"] != prior.EvidenceID || row["kind"] != req.Kind {
+				continue
 			}
+			// Only the registered winner's professional answer can distinguish
+			// a same-answer replay from an actual new authoring expression.
+			original, err := workpacket.ReadFile(root, stringValue(row["path"]), workpacket.ContractEvidenceReadLimit(p))
+			if err != nil {
+				return prior, fmt.Errorf("read original S3 professional answer: %w", err)
+			}
+			previous, err := ContractAnswerFromEvidence(original)
+			if err != nil {
+				return prior, err
+			}
+			if !reflect.DeepEqual(answer, previous) {
+				return prior, ErrSubmissionConflict
+			}
+			return prior, errSubmissionAccepted
 		}
-		return prior, fmt.Errorf("S3 replay original evidence differs")
+		return prior, fmt.Errorf("S3 replay original evidence is unavailable")
 	}
 	current, _, err := CurrentContractBinding(state)
 	if err != nil {
 		return SubmissionRecord{}, err
 	}
-	if current != p.Binding {
+	if !samePlanningResponsibility(current, p.Binding) {
 		return SubmissionRecord{}, fmt.Errorf("S3 submission does not describe the current planning responsibility")
 	}
 	if s.Authorize == nil {
@@ -123,108 +110,39 @@ func prepareContractSubmission(root string, state map[string]any, req EvidenceRe
 	if err := s.Authorize(root, state); err != nil {
 		return SubmissionRecord{}, err
 	}
-	if err := ValidateContractEnvelope(p, req.ID, answer, data); err != nil {
-		return SubmissionRecord{}, err
+	if s.EvidenceJSON == nil {
+		// An existing external report still has to contain the professional
+		// answer being received. The ordinary original consumer supplies its
+		// own prepared report directly to the Writer.
+		previous, err := ContractAnswerFromEvidence(data)
+		if err != nil || !reflect.DeepEqual(answer, previous) {
+			return SubmissionRecord{}, fmt.Errorf("S3 report does not contain the original professional answer")
+		}
 	}
-	key := workpacket.Digest([]byte("submission:" + p.ID))
-	return SubmissionRecord{Key: key, PacketID: p.ID, Owner: "Main", ContentHash: digest, EvidenceID: req.ID, FollowupID: workpacket.Digest([]byte(key + ":after-domain")), ControlStatus: "pending", OriginState: "planning", OriginPhase: "contracts", OriginEntry: p.Binding.StageEntry}, nil
+	key := "submission:" + p.ID
+	return SubmissionRecord{Key: key, PacketID: p.ID, Owner: "Main", EvidenceID: req.ID, FollowupID: "followup:" + p.ID, ControlStatus: "pending", OriginState: "planning", OriginPhase: "contracts", OriginEntry: p.Binding.StageEntry}, nil
 }
 
-// ValidateContractEnvelope verifies historical professional facts without
-// reinterpreting them against a later project cursor or changing authoring file.
-func ValidateContractEnvelope(p workpacket.ContractPacket, id string, answer workpacket.ContractAnswer, data []byte) error {
+// ContractAnswerFromEvidence reads only the professional answer needed by an
+// actual successor or by comparison with a newly saved answer. Other machine
+// fields and unknown professional extensions remain untouched and unqualified.
+func ContractAnswerFromEvidence(data []byte) (workpacket.ContractAnswer, error) {
 	if err := workpacket.ValidateUniqueJSON(data); err != nil {
-		return err
+		return workpacket.ContractAnswer{}, err
 	}
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return err
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		return workpacket.ContractAnswer{}, err
 	}
-	for _, key := range []string{"schema_version", "evidence_id", "kind", "runtime_id", "baseline_generation", "producer_agent_id", "producer_responsibility", "subject_refs", "conclusion", "created_at", "contract_answer"} {
-		if _, ok := raw[key]; !ok {
-			return fmt.Errorf("S3 planning envelope missing %s", key)
-		}
+	raw, ok := envelope["contract_answer"]
+	if !ok || string(raw) == "null" {
+		return workpacket.ContractAnswer{}, fmt.Errorf("original S3 professional answer is unavailable")
 	}
-	if len(raw) != 11 {
-		return fmt.Errorf("S3 planning envelope has unsupported fields")
+	var answer workpacket.ContractAnswer
+	if err := json.Unmarshal(raw, &answer); err != nil {
+		return workpacket.ContractAnswer{}, fmt.Errorf("original S3 professional answer is malformed: %w", err)
 	}
-	var historical workpacket.ContractAnswer
-	if err := json.Unmarshal(raw["contract_answer"], &historical); err != nil {
-		return err
-	}
-	draft := p.Draft
-	draft.Answer = historical
-	encoded, _ := json.Marshal(draft)
-	historical, issues := workpacket.ValidateContractAnswer(p, encoded)
-	if len(issues) > 0 {
-		return fmt.Errorf("S3 historical answer invalid")
-	}
-	a, err := workpacket.ContractAnswerDigest(answer)
-	if err != nil {
-		return err
-	}
-	h, err := workpacket.ContractAnswerDigest(historical)
-	if err != nil || a != h {
-		return fmt.Errorf("S3 evidence differs from professional answer")
-	}
-	var subjects []workpacket.Subject
-	if err := json.Unmarshal(raw["subject_refs"], &subjects); err != nil {
-		return err
-	}
-	byPath := map[string]workpacket.Subject{}
-	for _, ref := range subjects {
-		if _, duplicate := byPath[ref.Path]; duplicate {
-			return fmt.Errorf("S3 evidence duplicate subjects")
-		}
-		byPath[ref.Path] = ref
-	}
-	contractPaths := map[string]bool{*answer.IndexPath: true}
-	for _, path := range answer.ContractPaths {
-		contractPaths[path] = true
-	}
-	frozenPaths := map[string]bool{p.Binding.Requirement.Path: true}
-	for _, ref := range p.Inputs.Designs {
-		frozenPaths[ref.Path] = true
-	}
-	for _, ref := range p.Inputs.Sources {
-		frozenPaths[ref.Path] = true
-	}
-	artifacts := []workpacket.Reference{}
-	contractRefs := map[string]workpacket.Subject{}
-	sharedModelRefs := []workpacket.Reference{}
-	for _, ref := range subjects {
-		if frozenPaths[ref.Path] {
-			continue
-		}
-		if contractPaths[ref.Path] {
-			contractRefs[ref.Path] = ref
-			continue
-		}
-		sharedModelRefs = append(sharedModelRefs, workpacket.Reference{Path: ref.Path, Version: ref.Version, SHA256: ref.SHA256})
-	}
-	for path := range contractPaths {
-		ref, ok := contractRefs[path]
-		if !ok {
-			return fmt.Errorf("S3 evidence missing delivered contract")
-		}
-		artifacts = append(artifacts, workpacket.Reference{Path: path, Version: ref.Version, SHA256: ref.SHA256})
-	}
-	artifacts = append(artifacts, sharedModelRefs...)
-	var value map[string]any
-	json.Unmarshal(data, &value)
-	at, err := time.Parse(time.RFC3339Nano, stringValue(value["created_at"]))
-	if err != nil {
-		return err
-	}
-	expected, err := workpacket.ContractEvidence(p, id, artifacts, answer, at)
-	if err != nil {
-		return err
-	}
-	expected["created_at"] = value["created_at"]
-	if progressCanonicalJSON(value) != progressCanonicalJSON(expected) {
-		return fmt.Errorf("S3 envelope differs from frozen original subjects and professional answer")
-	}
-	return nil
+	return answer, nil
 }
 
 func FindContractPacket(state map[string]any, id string) (workpacket.ContractPacket, bool, error) {

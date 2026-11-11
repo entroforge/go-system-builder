@@ -34,8 +34,9 @@ func TestS7MainManifestHintUsesExistingWorkgroupDirectoryWithoutOverwrite(t *tes
 	for _, scenario := range []string{"missing-directory", "prepare", "existing-manifest"} {
 		t.Run(scenario, func(t *testing.T) {
 			root := t.TempDir()
-			directory := filepath.Join(root, ".claude/workgroups")
-			manifest := filepath.Join(directory, "manifest-g3-r2-assignment-qa-static.json")
+			directory := s7ManifestIdentityDir(filepath.Join(root, ".claude/workgroups/plans"), "review-plan-current")
+			directory = s7ManifestIdentityDir(filepath.Join(directory, "assignments"), "assignment-qa-static")
+			manifest := filepath.Join(directory, "manifest.json")
 			if scenario != "missing-directory" {
 				if err := os.MkdirAll(directory, 0700); err != nil {
 					t.Fatal(err)
@@ -59,7 +60,7 @@ func TestS7MainManifestHintUsesExistingWorkgroupDirectoryWithoutOverwrite(t *tes
 					t.Fatalf("missing exact file-output command: %s", output)
 				}
 			case "existing-manifest":
-				if !strings.Contains(output, manifest) || !strings.Contains(output, "preserve existing manifest") || !strings.Contains(output, "restore its original source") || strings.Contains(output, "--out") {
+				if !strings.Contains(output, filepath.Join(directory, "manifest-2.json")) || !strings.Contains(output, "--out") {
 					t.Fatalf("existing manifest was not preserved: %s", output)
 				}
 				data, err := os.ReadFile(manifest)
@@ -82,8 +83,8 @@ func TestS7MainPreparationSelectsOneMissingOwnerAndPreservesReadyQuestionnaire(t
 	root := t.TempDir()
 	binding := workpacket.ReviewResultBinding{
 		RuntimeID: "loop-REQ-041", BaselineGeneration: 1, ReviewPlanID: "review-plan-current",
-		ReviewPlanRef: ".claude/review/plan.json", ReviewPlanSHA256: strings.Repeat("a", 64), ReviewPlanRevision: 1, ReviewRound: 1,
-		AssignmentID: "assignment-qa-ready", AssignmentSHA256: strings.Repeat("b", 64), OwnerAgentID: "reviewer-ready", ClaimIDs: []string{"claim-ready"}, SubjectDigest: strings.Repeat("c", 64),
+		ReviewPlanRef: ".claude/review/plan.json", ReviewPlanRevision: 1,
+		AssignmentID: "assignment-qa-ready", OwnerAgentID: "reviewer-ready", ClaimIDs: []string{"claim-ready"},
 	}
 	packet, err := workpacket.BuildReviewResult(binding, workpacket.ReviewResultInputs{
 		Claims:         json.RawMessage(`[{"claim_id":"claim-ready","lens":"qa","target":"service","assertion":"errors propagate","oracle":"error response","method":"inspection","applicability":"required","source_refs":["REQ-041"]}]`),
@@ -112,7 +113,7 @@ func TestS7MainPreparationSelectsOneMissingOwnerAndPreservesReadyQuestionnaire(t
 		"configuration": map[string]any{"optimization": map[string]any{"packet": true}},
 		"entities":      map[string]any{"work_packets": []any{packetRow}},
 		"review": map[string]any{
-			"round": 1, "plan": map[string]any{"plan_id": binding.ReviewPlanID, "path": binding.ReviewPlanRef, "sha256": binding.ReviewPlanSHA256, "revision": 1, "review_round": 1},
+			"round": 1, "plan": map[string]any{"plan_id": binding.ReviewPlanID, "path": binding.ReviewPlanRef, "revision": 1},
 			"assignments": map[string]any{
 				binding.AssignmentID:   map[string]any{"status": "dispatched", "agent_id": binding.OwnerAgentID, "claim_ids": []any{"claim-ready"}},
 				"assignment-missing-a": map[string]any{"status": "dispatched", "agent_id": "reviewer-missing-a"},

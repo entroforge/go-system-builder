@@ -65,33 +65,33 @@ func TestEnabledProfileRequiresClosedOriginalWorkerCheck(t *testing.T) {
 		}
 	}
 }
-func TestProfileObservesContentRunnerEnvironmentWithoutReuse(t *testing.T) {
+func TestProfileObservesDeclaredEnvironmentWithoutDigestOrReuse(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "fixture.txt")
 	os.WriteFile(path, []byte("fixture"), 0600)
 	p := testProfile()
-	p.Fixtures = []FileRef{{Path: "fixture.txt", SHA256: Hash([]byte("fixture"))}}
+	p.Fixtures = []FileRef{{Path: "fixture.txt"}}
 	first, err := ObserveProfile(context.Background(), root, p)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.ReuseEligible || first.SubjectDigest == "" || first.EnvironmentDigest == "" || first.RunnerDigest == "" || first.ProfileDigest != p.Digest() {
+	if first.ReuseEligible || first.ProfileID != p.ID || first.ProfileVersion != p.Version {
 		t.Fatal("observation guessed reuse", first)
 	}
 	os.MkdirAll(filepath.Join(root, ".git"), 0700)
 	os.WriteFile(filepath.Join(root, ".git/unrelated"), []byte("head movement"), 0600)
 	same, err := ObserveProfile(context.Background(), root, p)
-	if err != nil || same.SubjectDigest != first.SubjectDigest {
+	if err != nil || same.ProfileID != first.ProfileID {
 		t.Fatal("irrelevant Git metadata became tested content")
 	}
 	os.WriteFile(filepath.Join(root, "owned.txt"), []byte("new content"), 0600)
 	changed, err := ObserveProfile(context.Background(), root, p)
-	if err != nil || changed.SubjectDigest == first.SubjectDigest {
-		t.Fatal("tested content drift ignored")
+	if err != nil || changed.ReuseEligible {
+		t.Fatal("observation authenticated or reused changed content", changed, err)
 	}
 	os.WriteFile(path, []byte("changed fixture"), 0600)
-	if _, err := ObserveProfile(context.Background(), root, p); err == nil {
-		t.Fatal("fixture version drift ignored")
+	if observed, err := ObserveProfile(context.Background(), root, p); err != nil || observed.ReuseEligible {
+		t.Fatal("observation authenticated or reused changed fixture", observed, err)
 	}
 }
 func TestProfileUnsetAndDeclaredOnlyEnvAreDistinct(t *testing.T) {

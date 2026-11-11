@@ -3,7 +3,7 @@
   "$id": "https://vibe-coding.local/schemas/team-manifest.schema.json",
   "title": "Loop Team Workgroup Manifest",
   "type": "object",
-  "additionalProperties": false,
+  "additionalProperties": true,
   "required": [
     "schema_version",
     "manifest_id",
@@ -11,7 +11,6 @@
     "runtime_id",
     "req_id",
     "baseline_generation",
-    "review_round",
     "platform_team_id",
     "workgroup_id",
     "workgroup_kind",
@@ -48,13 +47,6 @@
     },
     "baseline_generation": {
       "type": "integer",
-      "minimum": 1
-    },
-    "review_round": {
-      "type": [
-        "integer",
-        "null"
-      ],
       "minimum": 1
     },
     "platform_team_id": {
@@ -142,18 +134,20 @@
       "description": "Timestamp of the workgroup dispatch (register-workgroup). Serves as the dispatch-time fact for recovery and audit; the angle machinery that consumed it is retired (L3-S7). Null until dispatch fires."
     },
     "assignment_record_contract": {
-      "enum": ["s6-v1.2", "s6-native-v1"]
+      "enum": [
+        "s6-v1.2",
+        "s6-native-v1"
+      ]
     }
   },
   "$defs": {
     "reference": {
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "id",
         "path",
-        "version",
-        "sha256"
+        "version"
       ],
       "properties": {
         "id": {
@@ -167,11 +161,6 @@
         "version": {
           "type": "string",
           "minLength": 1
-        },
-        "sha256": {
-          "type": "string",
-          "pattern": "^[a-f0-9]{64}$",
-          "description": "系统从原已接受来源准备的内容摘要；作者不计算或转写。接收和后续校验核对同一来源，漂移时恢复原字节或正式修订，不能自动刷新摘要。"
         }
       }
     },
@@ -582,19 +571,14 @@
     },
     "check_profile_file_ref": {
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
-        "path",
-        "sha256"
+        "path"
       ],
       "properties": {
         "path": {
           "type": "string",
           "minLength": 1
-        },
-        "sha256": {
-          "type": "string",
-          "pattern": "^[a-f0-9]{64}$"
         }
       }
     },
@@ -794,7 +778,10 @@
         ],
         "properties": {
           "assignment_record_contract": {
-            "enum": ["s6-v1.2", "s6-native-v1"]
+            "enum": [
+              "s6-v1.2",
+              "s6-native-v1"
+            ]
           },
           "workgroup_kind": {
             "const": "builder"

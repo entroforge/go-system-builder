@@ -1,26 +1,19 @@
 package assignment
 
 import (
-	"bytes"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
-	"reflect"
 	"regexp"
 	"sort"
-	"strings"
 	"time"
 
-	"github.com/entroforge/go-system-builder/internal/assignmentinputs"
 	"github.com/entroforge/go-system-builder/internal/assignmentrecord"
 	"github.com/entroforge/go-system-builder/internal/dispatch"
 	"github.com/entroforge/go-system-builder/internal/identity"
 	loopruntime "github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/semantic"
-	"github.com/entroforge/go-system-builder/internal/team"
 	"github.com/entroforge/go-system-builder/internal/transition"
-	"github.com/entroforge/go-system-builder/internal/workpacket"
 	"github.com/entroforge/go-system-builder/internal/workspace"
 	"github.com/entroforge/go-system-builder/internal/workstate"
 )
@@ -30,10 +23,9 @@ var revisionIntentKeyRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/-]*$`)
 // RevisionRequest identifies an explicit request to issue the next immutable
 // revision of one Assignment. The Writer chooses the next revision number.
 type RevisionRequest struct {
-	AssignmentID         string
-	ExpectedRecord       assignmentrecord.RecordReference
-	ExpectedRecordSHA256 string
-	IntentKey            string
+	AssignmentID   string
+	ExpectedRecord assignmentrecord.RecordReference
+	IntentKey      string
 }
 
 func validateRevisionRequest(request RevisionRequest) error {
@@ -43,138 +35,11 @@ func validateRevisionRequest(request RevisionRequest) error {
 	if request.AssignmentID == "" {
 		return fmt.Errorf("Assignment revision requires an Assignment id")
 	}
-	if zeroRecordReference(request.ExpectedRecord) != (request.ExpectedRecordSHA256 == "") {
-		return fmt.Errorf("expected Assignment Record reference and SHA-256 must be supplied together")
-	}
-	if request.ExpectedRecordSHA256 != "" && !validRevisionSHA(request.ExpectedRecordSHA256) {
-		return fmt.Errorf("expected Assignment Record SHA-256 is invalid")
-	}
 	return nil
 }
 
 func zeroRecordReference(ref assignmentrecord.RecordReference) bool {
 	return ref.RuntimeID == "" && ref.BaselineGeneration == 0 && ref.AssignmentID == "" && ref.Revision == 0
-}
-
-type assignmentRevisionRequestIdentity struct {
-	Contract       string                           `json:"contract"`
-	RuntimeID      string                           `json:"runtime_id"`
-	Generation     int                              `json:"baseline_generation"`
-	AssignmentID   string                           `json:"assignment_id"`
-	IntentKey      string                           `json:"intent_key"`
-	Previous       assignmentrecord.RecordReference `json:"previous_record"`
-	PreviousSHA256 string                           `json:"previous_record_sha256"`
-	ManifestRef    string                           `json:"manifest_ref"`
-	ManifestSHA256 string                           `json:"manifest_sha256"`
-	TaskID         string                           `json:"task_id"`
-	TaskRef        string                           `json:"task_ref"`
-	TaskSHA256     string                           `json:"task_sha256"`
-	ContextSources []assignmentrecord.ContextSource `json:"context_sources"`
-}
-
-func revisionContextSources(root string, state map[string]any, manifestBytes []byte, manifestRef, taskRef, taskID string, taskBytes []byte) ([]assignmentrecord.ContextSource, error) {
-	files, err := dispatch.View(root, state)
-	if err != nil {
-		return nil, fmt.Errorf("open current Assignment revision source view: %w", err)
-	}
-	actualManifest, err := readRecordRegistrationSource(root, files, manifestRef)
-	if err != nil || !bytes.Equal(actualManifest, manifestBytes) {
-		return nil, fmt.Errorf("revision manifest bytes differ from the original source view and checkout")
-	}
-	actualTask, err := readRecordRegistrationSource(root, files, taskRef)
-	if err != nil || !bytes.Equal(actualTask, taskBytes) {
-		return nil, fmt.Errorf("revision TASK bytes differ from the original source view and checkout")
-	}
-	var source recordRegistrationManifest
-	if err := json.Unmarshal(manifestBytes, &source); err != nil {
-		return nil, fmt.Errorf("decode revision manifest sources: %w", err)
-	}
-	if source.WorkgroupKind != "builder" || source.ManifestID == "" || source.Version == "" || len(source.Assignments) != 1 || source.Assignments[0].AssignmentID == "" {
-		return nil, fmt.Errorf("revision manifest source identity is incomplete")
-	}
-	var manifestTask *team.DocumentReference
-	for i := range source.Documents {
-		if source.Documents[i].ID == taskID {
-			if manifestTask != nil {
-				return nil, fmt.Errorf("revision manifest duplicates TASK source %s", taskID)
-			}
-			manifestTask = &source.Documents[i]
-		}
-	}
-	if manifestTask == nil || manifestTask.Path != taskRef || manifestTask.SHA256 != sha256Of(taskBytes) || manifestTask.Version != recordRegistrationLockedTaskVersion(state, taskID) {
-		return nil, fmt.Errorf("revision manifest TASK source differs from the current locked TASK")
-	}
-	common, err := recordRegistrationSources(root, files, source)
-	if err != nil {
-		return nil, fmt.Errorf("resolve revision manifest sources: %w", err)
-	}
-	assignmentSources, err := recordRegistrationAssignmentSources(root, files, source.Assignments[0])
-	if err != nil {
-		return nil, fmt.Errorf("resolve revision Assignment sources: %w", err)
-	}
-	context := []assignmentrecord.ContextSource{
-		{Kind: "manifest", Ref: manifestRef, ID: source.ManifestID, Version: source.Version, SHA256: sha256Of(manifestBytes)},
-		{Kind: "task", Ref: taskRef, ID: taskID, Version: manifestTask.Version, SHA256: manifestTask.SHA256},
-	}
-	for _, doc := range source.Documents {
-		context = append(context, assignmentrecord.ContextSource{Kind: "manifest_document", Ref: doc.Path, ID: doc.ID, Version: doc.Version, SHA256: doc.SHA256})
-	}
-	context = append(context, common...)
-	context = append(context, assignmentSources...)
-	item := source.Assignments[0]
-	for _, profile := range item.CheckProfiles {
-		context = append(context, assignmentrecord.ContextSource{Kind: "check_profile", Ref: manifestRef + "#assignments/" + item.AssignmentID + "/check_profiles/" + profile.ID, ID: profile.ID, Version: profile.Version, SHA256: profile.Digest()})
-		for _, dependency := range profile.Dependencies {
-			context = append(context, assignmentrecord.ContextSource{Kind: "check_profile_dependency", Ref: dependency.Path, SHA256: dependency.SHA256})
-		}
-		for _, fixture := range profile.Fixtures {
-			context = append(context, assignmentrecord.ContextSource{Kind: "check_profile_fixture", Ref: fixture.Path, SHA256: fixture.SHA256})
-		}
-	}
-	if item.ClosingContract != nil {
-		for _, check := range item.ClosingContract.WorkerChecks {
-			for _, dependency := range check.Profile.Dependencies {
-				context = append(context, assignmentrecord.ContextSource{Kind: "worker_check_profile_dependency", Ref: dependency.Path, ID: check.Profile.ID, SHA256: dependency.SHA256})
-			}
-			for _, fixture := range check.Profile.Fixtures {
-				context = append(context, assignmentrecord.ContextSource{Kind: "worker_check_profile_fixture", Ref: fixture.Path, ID: check.Profile.ID, SHA256: fixture.SHA256})
-			}
-		}
-	}
-	sort.Slice(context, func(i, j int) bool {
-		if context[i].Kind != context[j].Kind {
-			return context[i].Kind < context[j].Kind
-		}
-		if context[i].Ref != context[j].Ref {
-			return context[i].Ref < context[j].Ref
-		}
-		return context[i].ID < context[j].ID
-	})
-	for i := 1; i < len(context); i++ {
-		if context[i-1].Kind == context[i].Kind && context[i-1].Ref == context[i].Ref && context[i-1].ID == context[i].ID {
-			return nil, fmt.Errorf("revision source closure duplicates %s", context[i].Ref)
-		}
-	}
-	if err := files.Verify(); err != nil {
-		return nil, fmt.Errorf("revision source view changed during closure: %w", err)
-	}
-	return context, nil
-}
-
-func assignmentRevisionRequestDigest(runtimeID string, generation int, request RevisionRequest, manifestRef string, manifestBytes []byte, taskID, taskRef string, taskBytes []byte, contextSources []assignmentrecord.ContextSource) (string, error) {
-	identity := assignmentRevisionRequestIdentity{
-		Contract: "s6-assignment-revision-request-v1", RuntimeID: runtimeID,
-		Generation: generation, AssignmentID: request.AssignmentID,
-		IntentKey: request.IntentKey, Previous: request.ExpectedRecord,
-		PreviousSHA256: request.ExpectedRecordSHA256, ManifestRef: manifestRef,
-		ManifestSHA256: sha256Of(manifestBytes), TaskID: taskID,
-		TaskRef: taskRef, TaskSHA256: sha256Of(taskBytes), ContextSources: contextSources,
-	}
-	data, err := json.Marshal(identity)
-	if err != nil {
-		return "", err
-	}
-	return sha256Of(data), nil
 }
 
 func generationFromState(state map[string]any) int {
@@ -214,7 +79,48 @@ func readRevisionJournal(path string) ([]byte, error) {
 	return append(out, active...), nil
 }
 
-func findRevisionReplay(root string, state map[string]any, request RevisionRequest, manifestRef, taskID, taskRef string, manifestBytes, taskBytes []byte, contextSources []assignmentrecord.ContextSource) (loopruntime.Snapshot, bool, error) {
+func resolveRevisionRequest(state map[string]any, request *RevisionRequest, manifestRef string, value manifest) error {
+	records, err := assignmentrecord.RecordsFromState(state)
+	if err != nil {
+		return err
+	}
+	runtimeID, generation, _, err := assignmentrecord.CurrentRuntimeBinding(state)
+	if err != nil {
+		return err
+	}
+	if len(value.Assignments) != 1 {
+		return fmt.Errorf("revision requires one actual assignment")
+	}
+	for _, record := range records {
+		if record.RuntimeID != runtimeID || record.BaselineGeneration != generation || record.AssignmentID != request.AssignmentID || record.RevisionIssuance == nil || record.Manifest.Ref != manifestRef || record.OwnerAgentID != value.Assignments[0].AgentID || record.TeamID != value.WorkgroupID {
+			continue
+		}
+		previous := record.RevisionIssuance.PreviousRecord
+		if !zeroRecordReference(request.ExpectedRecord) && request.ExpectedRecord != previous {
+			continue
+		}
+		derived := fmt.Sprintf("s6-rework-r%d", previous.Revision)
+		if request.IntentKey != "" && request.IntentKey != derived && request.IntentKey != record.RevisionIssuance.IntentKey {
+			continue
+		}
+		request.ExpectedRecord = previous
+		request.IntentKey = record.RevisionIssuance.IntentKey
+		return nil
+	}
+	if zeroRecordReference(request.ExpectedRecord) {
+		previous, found, err := assignmentrecord.FindRecord(records, runtimeID, generation, request.AssignmentID)
+		if err != nil || !found {
+			return fmt.Errorf("Assignment revision requires a current canonical Record: %v", err)
+		}
+		request.ExpectedRecord = previous.Reference()
+	}
+	if request.IntentKey == "" {
+		request.IntentKey = fmt.Sprintf("s6-rework-r%d", request.ExpectedRecord.Revision)
+	}
+	return nil
+}
+
+func findRevisionReplay(root string, state map[string]any, request RevisionRequest, manifestRef, taskID, taskRef string, owner, teamID string) (loopruntime.Snapshot, bool, error) {
 	entities, _ := state["entities"].(map[string]any)
 	rows, _ := entities["assignment_revision_receipts"].([]any)
 	runtimeID, generation, _, err := assignmentrecord.CurrentRuntimeBinding(state)
@@ -233,15 +139,8 @@ func findRevisionReplay(root string, state map[string]any, request RevisionReque
 		if receipt.IntentKey != request.IntentKey || receipt.AssignmentRecord.RuntimeID != runtimeID || receipt.AssignmentRecord.BaselineGeneration != generation || receipt.AssignmentRecord.AssignmentID != request.AssignmentID {
 			continue
 		}
-		if !zeroRecordReference(request.ExpectedRecord) && (request.ExpectedRecord != receipt.PreviousRecord || request.ExpectedRecordSHA256 != receipt.PreviousRecordSHA256) {
+		if !zeroRecordReference(request.ExpectedRecord) && request.ExpectedRecord != receipt.PreviousRecord {
 			return loopruntime.Snapshot{}, false, fmt.Errorf("Assignment revision intent key was already issued from a different expected Record")
-		}
-		digest, err := assignmentRevisionRequestDigest(runtimeID, generation, RevisionRequest{AssignmentID: request.AssignmentID, IntentKey: request.IntentKey, ExpectedRecord: receipt.PreviousRecord, ExpectedRecordSHA256: receipt.PreviousRecordSHA256}, manifestRef, manifestBytes, taskID, taskRef, taskBytes, contextSources)
-		if err != nil {
-			return loopruntime.Snapshot{}, false, err
-		}
-		if digest != receipt.RequestDigest {
-			return loopruntime.Snapshot{}, false, fmt.Errorf("Assignment revision intent key %q was already issued for different input bytes", request.IntentKey)
 		}
 		records, err := assignmentrecord.RecordsFromState(state)
 		if err != nil {
@@ -251,8 +150,7 @@ func findRevisionReplay(root string, state map[string]any, request RevisionReque
 		if err != nil || !found {
 			return loopruntime.Snapshot{}, false, fmt.Errorf("replayed Assignment revision Record is missing: %v", err)
 		}
-		recordSHA, err := record.Digest()
-		if err != nil || recordSHA != receipt.AssignmentRecordSHA256 || record.Manifest.Ref != manifestRef || record.Task.ID != taskID || record.Task.Ref != taskRef || record.Task.SHA256 != sha256Of(taskBytes) {
+		if record.Manifest.Ref != manifestRef || record.Task.ID != taskID || record.Task.Ref != taskRef || record.OwnerAgentID != owner || record.TeamID != teamID {
 			return loopruntime.Snapshot{}, false, fmt.Errorf("replayed Assignment revision no longer matches its immutable Record")
 		}
 		return loopruntime.Snapshot{Revision: dispatch.Number(state["revision"]), State: state}, true, nil
@@ -282,8 +180,7 @@ func revisionAcceptanceReceipt(snapshot loopruntime.Snapshot, request RevisionRe
 			row.AssignmentRecord.BaselineGeneration != generation || row.AssignmentRecord.AssignmentID != request.AssignmentID {
 			continue
 		}
-		if !zeroRecordReference(request.ExpectedRecord) &&
-			(row.PreviousRecord != request.ExpectedRecord || row.PreviousRecordSHA256 != request.ExpectedRecordSHA256) {
+		if !zeroRecordReference(request.ExpectedRecord) && row.PreviousRecord != request.ExpectedRecord {
 			continue
 		}
 		if matched != nil {
@@ -304,11 +201,7 @@ func revisionAcceptanceReceipt(snapshot loopruntime.Snapshot, request RevisionRe
 		return nil, err
 	}
 	if found && currentRecord.Reference() == matched.AssignmentRecord {
-		currentSHA, digestErr := currentRecord.Digest()
-		if digestErr != nil {
-			return nil, digestErr
-		}
-		current = currentSHA == matched.AssignmentRecordSHA256
+		current = true
 	}
 	return &RevisionAcceptanceReceipt{
 		AssignmentRevisionReceipt: *matched,
@@ -318,14 +211,20 @@ func revisionAcceptanceReceipt(snapshot loopruntime.Snapshot, request RevisionRe
 	}, nil
 }
 
-func checkRevisionDispatchRegistration(root string, state map[string]any, taskID string) error {
+func checkRevisionDispatchRegistration(root string, state map[string]any, taskID string, selected ...*dispatch.Board) error {
 	lifecycle, _ := state["lifecycle"].(map[string]any)
 	if lifecycle == nil || lifecycle["state"] != "building" {
 		return fmt.Errorf("Assignment revision requires the current building stage")
 	}
-	board, err := dispatch.Load(root, state, 1<<20)
-	if err != nil {
-		return err
+	var board dispatch.Board
+	if len(selected) > 0 && selected[0] != nil {
+		board = *selected[0]
+	} else {
+		var err error
+		board, err = dispatch.Load(root, state, 1<<20)
+		if err != nil {
+			return err
+		}
 	}
 	if board.Legacy || board.Plan == nil || len(board.Plan.Problems) > 0 {
 		return fmt.Errorf("Assignment revision requires the original registered dispatch plan")
@@ -360,7 +259,16 @@ func checkRevisionDispatchRegistration(root string, state map[string]any, taskID
 	return nil
 }
 
-func applyAssignmentRevision(root string, state map[string]any, value manifest, manifestBytes []byte, manifestRef, taskRef, taskID string, taskBytes []byte, request RevisionRequest, expectedDigest string, expectedSources []assignmentrecord.ContextSource, eventID string, occurredAt time.Time, staged *[]loopruntime.ArtifactCleanupRequest) (Record, error) {
+// applyAssignmentRevision issues the next immutable Assignment Record
+// revision. G18 §3.2: this issuance path asserts no Runtime write count. A
+// legitimate revision must not be refused because the Runtime moved for an
+// unrelated reason, so the Runtime revision is an audit coordinate only
+// (L4-revision-usage.md:141). The issuance is protected by the received row
+// (the revision receipt index and findRevisionReplay), the journal-level dedup
+// (the domain idempotency key of this revision intent) and the Assignment
+// Record's own revision (ExpectedRecord against the current Record, checked
+// here again inside Apply).
+func applyAssignmentRevision(root string, state map[string]any, value manifest, manifestBytes []byte, manifestRef, taskRef, taskID string, taskBytes []byte, request RevisionRequest, selected *dispatch.Board, eventID string, occurredAt time.Time, staged *[]loopruntime.ArtifactCleanupRequest) (Record, error) {
 	if !workstate.SupportsAssignments(state["schema_version"]) || value.WorkgroupKind != "builder" || len(value.Assignments) != 1 {
 		return Record{}, fmt.Errorf("Assignment revision requires one canonical S6 Builder Assignment")
 	}
@@ -368,7 +276,7 @@ func applyAssignmentRevision(root string, state map[string]any, value manifest, 
 	if err != nil {
 		return Record{}, err
 	}
-	if err := checkRevisionDispatchRegistration(root, state, taskID); err != nil {
+	if err := checkRevisionDispatchRegistration(root, state, taskID, selected); err != nil {
 		return Record{}, err
 	}
 	records, err := assignmentrecord.RecordsFromState(state)
@@ -379,14 +287,10 @@ func applyAssignmentRevision(root string, state map[string]any, value manifest, 
 	if err != nil || !found {
 		return Record{}, fmt.Errorf("Assignment revision requires one current prior Record: %v", err)
 	}
-	previousSHA, err := previous.Digest()
-	if err != nil {
-		return Record{}, err
-	}
-	if request.ExpectedRecord != previous.Reference() || request.ExpectedRecordSHA256 != previousSHA {
+	if request.ExpectedRecord != previous.Reference() {
 		return Record{}, fmt.Errorf("stale Assignment revision: current Record changed before Writer apply")
 	}
-	if taskID != previous.Task.ID || taskRef != previous.Task.Ref || sha256Of(taskBytes) != previous.Task.SHA256 {
+	if taskID != previous.Task.ID || taskRef != previous.Task.Ref {
 		return Record{}, fmt.Errorf("Assignment revision must retain the exact current locked TASK source %s (%s). Main must route formal TASK changes through original planning/document review; do not refresh fingerprints or repeat this revision to replace the specification", previous.Task.ID, previous.Task.Ref)
 	}
 	if value.WorkgroupID == previous.TeamID || containsEntity(entityRows(state, "teams"), value.WorkgroupID) {
@@ -427,17 +331,7 @@ func applyAssignmentRevision(root string, state map[string]any, value manifest, 
 	if err != nil {
 		return Record{}, err
 	}
-	previousSnapshots, previousSnapshotArtifacts, err := capturePreviousRecordSources(root, state, previous)
-	if err != nil {
-		return Record{}, err
-	}
-	if err := stageRevisionArtifacts(root, state, previousSnapshotArtifacts, staged); err != nil {
-		return Record{}, err
-	}
-	requestDigest, err := assignmentRevisionRequestDigest(runtimeID, generation, request, manifestRef, manifestBytes, taskID, taskRef, taskBytes, expectedSources)
-	if err != nil {
-		return Record{}, err
-	}
+	previousSnapshots := append([]assignmentrecord.SourceSnapshot(nil), previous.SourceSnapshots...)
 	newRef := assignmentrecord.RecordReference{RuntimeID: runtimeID, BaselineGeneration: generation, AssignmentID: request.AssignmentID, Revision: previous.Revision + 1}
 	if eventID != loopruntime.AssignmentRevisionEventID(previous.Reference(), request.IntentKey) {
 		return Record{}, fmt.Errorf("Assignment revision event id differs from its bound prior Record and intent")
@@ -449,7 +343,7 @@ func applyAssignmentRevision(root string, state map[string]any, value manifest, 
 	}
 	if registry != nil {
 		if current, exists := registry.Executions[request.AssignmentID]; exists {
-			if current.RuntimeID != runtimeID || current.BaselineGeneration != generation || current.AssignmentID != request.AssignmentID || current.AgentID != previous.OwnerAgentID || current.AssignmentRecord == nil || *current.AssignmentRecord != previous.Reference() || current.AssignmentRecordSHA256 != previousSHA {
+			if current.RuntimeID != runtimeID || current.BaselineGeneration != generation || current.AssignmentID != request.AssignmentID || current.AgentID != previous.OwnerAgentID || current.AssignmentRecord == nil || *current.AssignmentRecord != previous.Reference() {
 				return Record{}, fmt.Errorf("current workspace execution does not bind the prior Assignment revision")
 			}
 			current.Status = "retired"
@@ -482,7 +376,6 @@ func applyAssignmentRevision(root string, state map[string]any, value manifest, 
 		"id": value.WorkgroupID, "platform_team_id": value.PlatformTeamID,
 		"kind": value.WorkgroupKind, "status": "planned", "manifest_ref": manifestRef,
 		"responsibility_ids": assignedResponsibilities(value), "agent_ids": []string{item.AgentID},
-		"review_round": value.ReviewRound,
 	}
 	entities["teams"] = append(teams, teamRow)
 
@@ -515,7 +408,7 @@ func applyAssignmentRevision(root string, state map[string]any, value manifest, 
 		return Record{}, err
 	}
 
-	newRecords, err := buildRegisteredAssignmentRecords(root, state, manifestBytes, manifestRef, taskRef, taskID, taskBytes)
+	newRecords, err := buildRegisteredAssignmentRecords(root, state, manifestBytes, manifestRef, taskRef, taskID, taskBytes, selected)
 	if err != nil {
 		return Record{}, fmt.Errorf("build revised Assignment Record: %w", err)
 	}
@@ -523,20 +416,9 @@ func applyAssignmentRevision(root string, state map[string]any, value manifest, 
 		return Record{}, fmt.Errorf("Assignment revision must construct exactly one new Record")
 	}
 	record := newRecords[0]
-	if !reflect.DeepEqual(record.ContextSources, expectedSources) {
-		return Record{}, fmt.Errorf("Assignment revision context sources changed between preflight and the original Writer")
-	}
 	record.Revision = newRef.Revision
-	requestDigest, err = assignmentRevisionRequestDigest(runtimeID, generation, request, manifestRef, manifestBytes, taskID, taskRef, taskBytes, record.ContextSources)
-	if err != nil {
-		return Record{}, err
-	}
-	if requestDigest != expectedDigest {
-		return Record{}, fmt.Errorf("Assignment revision request source identity changed before Writer apply")
-	}
 	record.RevisionIssuance = &assignmentrecord.RevisionIssuance{
-		IntentKey: request.IntentKey, RequestDigest: requestDigest,
-		PreviousRecord: previous.Reference(), PreviousRecordSHA256: previousSHA,
+		IntentKey: request.IntentKey, PreviousRecord: previous.Reference(),
 	}
 	if err := assignmentrecord.ValidateRecord(record); err != nil {
 		return Record{}, fmt.Errorf("validate revised Assignment Record: %w", err)
@@ -568,18 +450,13 @@ func applyAssignmentRevision(root string, state map[string]any, value manifest, 
 	if err := preStageRevisionActivation(root, state, value, taskID, item, record, newAgent, occurredAt, staged); err != nil {
 		return Record{}, err
 	}
-	newSHA, err := record.Digest()
-	if err != nil {
-		return Record{}, err
-	}
 	commitRevision, err := commitRevision(-1, state)
 	if err != nil {
 		return Record{}, err
 	}
 	receipt := loopruntime.AssignmentRevisionReceipt{
-		IntentKey: request.IntentKey, RequestDigest: requestDigest,
-		AssignmentRecord: record.Reference(), AssignmentRecordSHA256: newSHA,
-		PreviousRecord: previous.Reference(), PreviousRecordSHA256: previousSHA,
+		IntentKey: request.IntentKey, AssignmentRecord: record.Reference(),
+		PreviousRecord: previous.Reference(),
 		RuntimeEventID: eventID, RuntimeCommitRevision: commitRevision + 1,
 		PreviousSourceSnapshots: previousSnapshots,
 	}
@@ -651,7 +528,7 @@ func verifyRevisionTaskEntity(state map[string]any, previous Record) error {
 		if row["id"] != previous.Task.ID {
 			continue
 		}
-		if row["path"] != previous.Task.Ref || row["sha256"] != previous.Task.SHA256 {
+		if row["path"] != previous.Task.Ref {
 			return fmt.Errorf("Assignment revision TASK entity differs from its immutable locked source")
 		}
 		projection, err := workstate.TaskProjection(row, version)
@@ -821,76 +698,12 @@ func retirePreviousTeamIfUnused(state map[string]any, records []Record, oldTeam 
 	return nil
 }
 
-func capturePreviousRecordSources(root string, state map[string]any, previous Record) ([]assignmentrecord.SourceSnapshot, map[string][]byte, error) {
-	if len(previous.SourceSnapshots) > 0 {
-		if err := assignmentrecord.ValidateRecord(previous); err != nil {
-			return nil, nil, err
-		}
-		for _, row := range previous.SourceSnapshots {
-			data, err := workpacket.ReadFile(root, row.Path, 16<<20)
-			if err != nil || sha256Of(data) != row.SHA256 {
-				return nil, nil, fmt.Errorf("previous Assignment source snapshot is unverifiable: %s", row.Path)
-			}
-		}
-		return append([]assignmentrecord.SourceSnapshot(nil), previous.SourceSnapshots...), map[string][]byte{}, nil
-	}
-	files, err := dispatch.View(root, state)
-	if err != nil {
-		return nil, nil, fmt.Errorf("open previous Assignment source view: %w", err)
-	}
-	captured, artifacts, err := assignmentrecord.CaptureSourceSnapshots(previous, func(ref string) ([]byte, error) {
-		if strings.HasPrefix(ref, "gsb-embedded/") {
-			return assignmentinputs.Read(root, ref)
-		}
-		return readRecordRegistrationSource(root, files, ref)
-	})
-	if err != nil {
-		return nil, nil, fmt.Errorf("capture previous Assignment source audit: %w", err)
-	}
-	if err := files.Verify(); err != nil {
-		return nil, nil, fmt.Errorf("previous Assignment source view changed during audit: %w", err)
-	}
-	return captured.SourceSnapshots, artifacts, nil
-}
-
-func stageRevisionArtifacts(root string, state map[string]any, artifacts map[string][]byte, staged *[]loopruntime.ArtifactCleanupRequest) error {
-	revision, err := commitRevision(-1, state)
-	if err != nil {
-		return err
-	}
-	paths := make([]string, 0, len(artifacts))
-	for path := range artifacts {
-		paths = append(paths, path)
-	}
-	sort.Strings(paths)
-	referenced := stateArtifactPaths(state)
-	for _, path := range paths {
-		body := artifacts[path]
-		// Publish may have linked final bytes before a sync/readback error.
-		// Track the cleanup intent first; the original Writer cleanup still
-		// checks the actual digest and every live reference before removing it.
-		*staged = append(*staged, loopruntime.ArtifactCleanupRequest{ExpectedRevision: revision, ArtifactPath: path, ArtifactSHA256: sha256Of(body), ReferencedPaths: referenced})
-		published, err := workpacket.PublishBounded(root, path, body, 16<<20)
-		if err != nil {
-			return fmt.Errorf("publish prior Assignment source audit: %w", err)
-		}
-		if !bytes.Equal(body, published) {
-			return fmt.Errorf("prior Assignment source snapshot conflicts with its immutable bytes")
-		}
-	}
-	return nil
-}
-
 func preStageRevisionActivation(root string, state map[string]any, value manifest, taskID string, item assignment, record Record, agent map[string]any, occurredAt time.Time, staged *[]loopruntime.ArtifactCleanupRequest) error {
 	if record.Contract == assignmentrecord.NativeDeliveryContract {
 		return nil
 	}
 	ref := record.Reference()
-	sha, err := record.Digest()
-	if err != nil {
-		return err
-	}
-	source := ActivationSourceEntry{AgentID: item.AgentID, AgentDefinitionRef: item.AgentDefinitionRef, SkillRefs: item.SkillRefs, WritePaths: append([]string(nil), record.EffectiveWritePaths...), AssignmentRecord: &ref, AssignmentRecordSHA256: sha}
+	source := ActivationSourceEntry{AgentID: item.AgentID, AgentDefinitionRef: item.AgentDefinitionRef, SkillRefs: item.SkillRefs, WritePaths: append([]string(nil), record.EffectiveWritePaths...), AssignmentRecord: &ref}
 	activationRef, err := PreStageActivationEnvelope(root, value.WorkgroupID, taskID, item.AgentID, "plan_checkpoint", source)
 	if err != nil {
 		return err
@@ -898,12 +711,8 @@ func preStageRevisionActivation(root string, state map[string]any, value manifes
 	if activationRef == "" {
 		return nil
 	}
-	envelope := buildActivationEnvelope(item.AgentID, source)
-	activationBytes, err := json.MarshalIndent(envelope, "", "  ")
-	if err != nil {
-		return err
-	}
-	*staged = append(*staged, loopruntime.ArtifactCleanupRequest{ExpectedRevision: dispatch.Number(state["revision"]), ArtifactPath: activationRef, ArtifactSHA256: sha256Of(append(activationBytes, '\n')), ReferencedPaths: stateArtifactPaths(state)})
+	// Keep a failed publication as an unregistered candidate. Matching bytes
+	// cannot prove that a later occupant is still the object we created.
 	agent["activation_ref"] = activationRef
 	_ = occurredAt
 	return nil
@@ -938,12 +747,4 @@ func containsStringValue(values []string, target string) bool {
 		}
 	}
 	return false
-}
-
-func validRevisionSHA(value string) bool {
-	if len(value) != 64 || strings.ToLower(value) != value {
-		return false
-	}
-	_, err := hex.DecodeString(value)
-	return err == nil
 }

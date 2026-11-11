@@ -59,7 +59,7 @@ func TestAcceptanceS9MainReturnDoesNotReadBodyAfterCancellation(t *testing.T) {
 	cached := &nativeRoutingRead{root: root, snap: snap}
 	cached.once.Do(func() {})
 	ctx := context.WithValue(boundary, nativeRoutingKey{}, cached)
-	brief, _, _ := nativeS9Paths(packet)
+	brief := nativeS9BriefPath(packet)
 	input := policy.Input{Context: ctx, Event: "PostToolUse", CWD: root, ToolName: "Agent", ToolInput: map[string]any{"prompt": filepath.Join(root, brief)}}
 	var out bytes.Buffer
 	handled, code := nativeMainReturnHook(root, input, &out)

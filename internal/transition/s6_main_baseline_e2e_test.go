@@ -48,9 +48,9 @@ func applyS6TR003(t *testing.T, root string, view *fileview.View) runtime.Snapsh
 	next, err := transition.Apply(root, statePath, journalPath, transition.Request{
 		Files: view, TransitionID: "TR-003", ExpectedRevision: -1,
 		ExpectedRuntimeID: "loop-req039-ct", Actor: "orchestrator",
-		Evidence:         map[string]string{"document_review_record": "ev-dv-spec"},
-		GateEvidenceRefs: []string{"ev-dv-spec", "ev-dv-task"},
-		GateID:           "GATE-DOCUMENT-PASS", GateFingerprint: "sha256:s6-main-start-test",
+		Evidence:               map[string]string{"document_review_record": "ev-dv-spec"},
+		GateEvidenceRefs:       []string{"ev-dv-spec", "ev-dv-task"},
+		GateID:                 "GATE-DOCUMENT-PASS",
 		ProducerResponsibility: "document_verifier",
 	})
 	if err != nil {
@@ -59,10 +59,9 @@ func applyS6TR003(t *testing.T, root string, view *fileview.View) runtime.Snapsh
 	return next
 }
 
-func TestTR003CapturesPinnedMainStartAndOriginalJournalReceipt(t *testing.T) {
+func TestTR003CapturesOriginalResponsibilityWithoutDigestOrGitOID(t *testing.T) {
 	root := prepareS6StartRuntime(t)
 	view := s6StartView(t, root)
-	wantCommit := view.Commit
 	next := applyS6TR003(t, root, view)
 
 	journal, err := runtime.ReadJournalForState(root, next.State)
@@ -73,8 +72,9 @@ func TestTR003CapturesPinnedMainStartAndOriginalJournalReceipt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if start.StartCommit != wantCommit {
-		t.Fatalf("captured start commit=%s, pinned TR-003 View commit=%s", start.StartCommit, wantCommit)
+	encoded, _ := json.Marshal(start)
+	if strings.Contains(string(encoded), "sha256") || strings.Contains(string(encoded), "start_commit") {
+		t.Fatalf("new TR-003 responsibility recorded digest/OID: %s", encoded)
 	}
 	if start.ProjectRoot != root || start.DevelopmentBranch != "test-development" {
 		t.Fatalf("captured root/branch=%s/%s", start.ProjectRoot, start.DevelopmentBranch)
@@ -101,7 +101,7 @@ func TestTR003CapturesPinnedMainStartAndOriginalJournalReceipt(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, _ := json.Marshal(after)
-	if !reflect.DeepEqual(got, before) || !strings.Contains(result.Detail, start.ReceiptSHA256) {
+	if !reflect.DeepEqual(got, before) || strings.Contains(result.Detail, "sha256") {
 		t.Fatalf("same-generation retry changed the start: before=%s after=%s detail=%q", before, got, result.Detail)
 	}
 
@@ -109,12 +109,20 @@ func TestTR003CapturesPinnedMainStartAndOriginalJournalReceipt(t *testing.T) {
 	// loss, not permission to infer a replacement from today's branch.
 	missing := cloneState(t, next.State)
 	delete(missing["baseline"].(map[string]any), "s6_main_starts")
-	if _, err := callRegisterExecutionBatch(root, missing, relocked); err == nil || !strings.Contains(err.Error(), "refusing to infer") {
-		t.Fatalf("missing historical start was backfilled: %v", err)
+	missingResult, err := callRegisterExecutionBatch(root, missing, relocked)
+	if err != nil {
+		t.Fatalf("missing historical start blocked the new transition: %v", err)
+	}
+	if !strings.Contains(missingResult.Detail, "earlier S6 start is unknown") {
+		t.Fatalf("missing historical start was not reported: %s", missingResult.Detail)
+	}
+	starts, err := productbaseline.ReadS6MainStarts(missing)
+	if err != nil || len(starts) != 0 {
+		t.Fatalf("missing historical start was fabricated: %+v (%v)", starts, err)
 	}
 }
 
-func TestTR003RejectsPinnedViewAfterMainHeadDrifts(t *testing.T) {
+func TestTR003DoesNotGateOnChangedGitHead(t *testing.T) {
 	root := prepareS6StartRuntime(t)
 	stale := s6StartView(t, root)
 	tracked := filepath.Join(root, "docs", "requirements", "REQ-039-loop-control-plane.md")
@@ -122,20 +130,20 @@ func TestTR003RejectsPinnedViewAfterMainHeadDrifts(t *testing.T) {
 		t.Fatal(err)
 	}
 	fixtures.CommitCurrentFixture(t, root)
-	if _, err := applyS6Transition(root, stale); err == nil || !strings.Contains(err.Error(), "file source moved") {
-		t.Fatalf("stale pinned TR-003 View accepted: %v", err)
+	if _, err := applyS6Transition(root, stale); err != nil {
+		t.Fatalf("TR-003 rejected on Git HEAD movement: %v", err)
 	}
 	statePath := filepath.Join(root, ".claude", "loop-state.json")
 	journalPath := filepath.Join(root, ".claude", "loop-events.jsonl")
-	unchanged, err := runtime.NewStore(statePath, journalPath).Snapshot()
+	current, err := runtime.NewStore(statePath, journalPath).Snapshot()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if unchanged.Revision != 18 {
-		t.Fatalf("stale-view rejection changed Runtime revision to %d", unchanged.Revision)
+	if lifecycle, _ := current.State["lifecycle"].(map[string]any); lifecycle["state"] != "building" {
+		t.Fatalf("TR-003 did not enter building: %v", lifecycle)
 	}
-	if starts, err := productbaseline.ReadS6MainStarts(unchanged.State); err != nil || len(starts) != 0 {
-		t.Fatalf("stale-view rejection left baseline starts=%+v err=%v", starts, err)
+	if starts, err := productbaseline.ReadS6MainStarts(current.State); err != nil || len(starts) != 1 {
+		t.Fatalf("TR-003 start did not preserve responsibility without OID: %+v (%v)", starts, err)
 	}
 }
 
@@ -145,9 +153,9 @@ func applyS6Transition(root string, view *fileview.View) (runtime.Snapshot, erro
 	return transition.Apply(root, statePath, journalPath, transition.Request{
 		Files: view, TransitionID: "TR-003", ExpectedRevision: -1,
 		ExpectedRuntimeID: "loop-req039-ct", Actor: "orchestrator",
-		Evidence:         map[string]string{"document_review_record": "ev-dv-spec"},
-		GateEvidenceRefs: []string{"ev-dv-spec", "ev-dv-task"},
-		GateID:           "GATE-DOCUMENT-PASS", GateFingerprint: "sha256:s6-main-start-test",
+		Evidence:               map[string]string{"document_review_record": "ev-dv-spec"},
+		GateEvidenceRefs:       []string{"ev-dv-spec", "ev-dv-task"},
+		GateID:                 "GATE-DOCUMENT-PASS",
 		ProducerResponsibility: "document_verifier",
 	})
 }

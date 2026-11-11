@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -31,7 +30,9 @@ func TestNativeS6StartRequiresExactResponsibility(t *testing.T) {
 		body, _ := json.Marshal(map[string]any{"hook_event_name": "SubagentStart", "agent_id": scenario.actor, "agent_type": scenario.role, "cwd": source, "last_assistant_message": scenario.task})
 		var out, diagnostic bytes.Buffer
 		code := cli.Run([]string{"hook", "--root", root, "--event", "SubagentStart"}, bytes.NewReader(body), &out, &diagnostic)
-		if code != 0 || strings.Contains(out.String(), "commit and save Result") != scenario.want {
+		// The responsible actor receives the original S6 responsibility context;
+		// an unrelated or unbound actor does not.
+		if code != 0 || strings.Contains(out.String(), "save Result in your own worktree") != scenario.want {
 			t.Fatalf("%s Start: %d %s %s", scenario.actor, code, &out, &diagnostic)
 		}
 	}
@@ -102,29 +103,79 @@ func TestNativeS6MainDistinguishesPendingBlockerAndReceptionFailure(t *testing.T
 	}
 }
 
+// The fixed-source alignment is retired: the native preparation registers no
+// source proof, the brief pins no Git OID, and the Builder works on the actual
+// platform commit. What still has to hold is the ordinary Git preservation
+// around that: the delivery's read set is not rewritten, Main's own HEAD is not
+// moved, the platform source branch keeps the actual platform commit, and a
+// repeated preparation neither overwrites that branch nor discards the
+// Builder's personal commit or unfinished work.
+//
+// L4-worktree-governance.md:140 — "不计算、登记或匹配 source／target／merge／tested
+// 的 Git OID"; L4-workflow-convergence.md:312 — "旧入口、旧 schema、旧 Hook／CLI、
+// 旧消费者及兼容适配连同仅为它们存在的测试一并删除"; L3-S6-build.md:316 — "删除
+// frozen execution 的观察、接收与恢复分支".
 func TestNativeS6FixedSourceAlignmentAfterMainAdvances(t *testing.T) {
 	root, _, r := nativeDeliveryFixture(t)
 	brief, _, _ := assignmentrecord.NativePaths(r)
 	sourceRef := filepath.Join(root, ".claude/assignments/native", r.AssignmentID, "r1/source.json")
-	pinned, _ := os.ReadFile(sourceRef)
-	var source struct {
-		Base string `json:"base_commit"`
+	// The retired source proof is not registered.
+	if _, err := os.Stat(sourceRef); !os.IsNotExist(err) {
+		t.Fatalf("native preparation registered the retired source proof: %v", err)
 	}
-	if err := json.Unmarshal(pinned, &source); err != nil {
+	// The brief pins no Git OID and names the actual inputs instead. This is
+	// stronger than the retired assertion: no OID pinning of any shape may
+	// exist, not only one pinned base.
+	body, err := os.ReadFile(filepath.Join(root, brief))
+	if err != nil {
 		t.Fatal(err)
 	}
+	text := string(body)
+	for _, retired := range []string{
+		"align using this exact ordinary Git command",
+		"git switch -c",
+		"git rev-parse HEAD",
+		"First start, before any responsibility work:",
+		"even when HEAD no longer equals",
+		"Unknown or mixed source:",
+	} {
+		if strings.Contains(text, retired) {
+			t.Fatalf("retired fixed-source pinning %q reappeared in the brief: %s", retired, text)
+		}
+	}
+	for _, want := range []string{
+		"Read the actual TASK at worktree-relative path",
+		"Read TASK, specifications and product sources in your actual worktree",
+		"Preserve existing work; report missing inputs to Main",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("current brief missing %q: %s", want, text)
+		}
+	}
+	// Main advances after the native preparation: the delivery's read set moves
+	// on with Main. The marker stays valid for each file type so the Builder's
+	// own real checks can still run in the worktree.
+	marker := func(path string) []byte {
+		switch {
+		case strings.HasSuffix(path, ".go"), filepath.Base(path) == "go.mod":
+			return []byte("\n// Later Main source change\n")
+		default:
+			return []byte("\nLater Main source change\n")
+		}
+	}
 	paths := append([]string{r.Task.Ref, "src/pkg/input_test.go", "go.mod"}, r.ReadPaths...)
-	fixed := map[string][]byte{}
+	current := map[string][]byte{}
 	for _, path := range paths {
-		if _, exists := fixed[path]; exists {
+		if _, exists := current[path]; exists {
 			continue
 		}
 		body, err := os.ReadFile(filepath.Join(root, path))
 		if err != nil {
 			t.Fatal(err)
 		}
-		fixed[path] = body
-		if err := os.WriteFile(filepath.Join(root, path), append(body, []byte("\nLater Main source change\n")...), 0600); err != nil {
+		advanced := append(body, marker(path)...)
+		current[path] = advanced
+		if err := os.WriteFile(filepath.Join(root, path), advanced, 0600); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -142,58 +193,63 @@ func TestNativeS6FixedSourceAlignmentAfterMainAdvances(t *testing.T) {
 	if _, err := workspace.Git(t.Context(), root, "worktree", "add", "-b", "native/late-head", worker, "HEAD"); err != nil {
 		t.Fatal(err)
 	}
-	body, err := os.ReadFile(filepath.Join(root, brief))
-	if err != nil {
-		t.Fatal(err)
+	// The Builder works on the actual platform commit; no retired base is
+	// pinned for it.
+	if head, _ := workspace.Git(t.Context(), worker, "rev-parse", "HEAD"); head != later {
+		t.Fatalf("native source is not on the actual platform commit %s: %s", later, head)
 	}
-	_, command, ok := strings.Cut(string(body), "align using this exact ordinary Git command: `")
-	if !ok {
-		t.Fatal("no executable alignment in actual brief")
-	}
-	command, _, ok = strings.Cut(command, "`")
-	if !ok {
-		t.Fatal("unterminated alignment command")
-	}
-	run := exec.CommandContext(t.Context(), "sh", "-c", command)
-	run.Dir = worker
-	if output, err := run.CombinedOutput(); err != nil {
-		t.Fatalf("brief alignment: %v %s", err, output)
-	}
-	if head, _ := workspace.Git(t.Context(), worker, "rev-parse", "HEAD"); head != source.Base {
-		t.Fatalf("alignment used %s instead of %s", head, source.Base)
-	}
-	for path, want := range fixed {
+	// The actual read set is not rewritten: the worker reads exactly the
+	// delivery's current read set, not a stale pinned copy.
+	for path, want := range current {
 		got, err := os.ReadFile(filepath.Join(worker, path))
 		if err != nil || !bytes.Equal(got, want) {
-			t.Fatalf("actual fixed read set changed at %s: %v", path, err)
+			t.Fatalf("actual read set changed at %s: %v", path, err)
 		}
 	}
+	// Main's own HEAD is not moved by the native work.
 	if head, _ := workspace.Git(t.Context(), root, "rev-parse", "HEAD"); head != later {
-		t.Fatal("alignment changed Main")
+		t.Fatal("native preparation changed Main")
 	}
+	// The platform source branch still points at the actual platform commit.
 	if head, _ := workspace.Git(t.Context(), worker, "rev-parse", "native/late-head"); head != later {
-		t.Fatal("alignment discarded platform source branch")
+		t.Fatal("native preparation discarded platform source branch")
 	}
-	if got, _ := os.ReadFile(sourceRef); !bytes.Equal(got, pinned) {
-		t.Fatal("alignment repinned original source")
+	// The retired source proof is still not registered after Main advanced.
+	if _, err := os.Stat(sourceRef); !os.IsNotExist(err) {
+		t.Fatalf("Main advance republished the retired source proof: %v", err)
 	}
-	// Retrying cannot overwrite either an existing branch or personal work.
+	// Repeating the preparation cannot overwrite an existing branch or personal
+	// work.
 	nativeCommit(t, worker)
 	personal, _ := workspace.Git(t.Context(), worker, "rev-parse", "HEAD")
 	dirty := filepath.Join(worker, "src/pkg/unfinished.txt")
 	if err := os.WriteFile(dirty, []byte("preserve ongoing work"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	run = exec.CommandContext(t.Context(), "sh", "-c", command)
-	run.Dir = worker
-	if output, err := run.CombinedOutput(); err == nil {
-		t.Fatalf("existing fixed-source branch overwritten: %s", output)
+	// The repeated preparation really runs again and hands the original
+	// responsibility back, so the preservation facts below are observed after a
+	// real second preparation and not after a skipped one.
+	if code, output := nativeEvent(t, root, worker, "SubagentStart", filepath.Join(root, brief), false); code != 0 || !strings.Contains(output, "Native S6") {
+		t.Fatalf("repeated preparation did not deliver the original responsibility: %d %s", code, output)
 	}
 	if head, _ := workspace.Git(t.Context(), worker, "rev-parse", "HEAD"); head != personal {
-		t.Fatal("alignment retry discarded personal commits")
+		t.Fatal("repeated preparation discarded personal commits")
 	}
 	if data, err := os.ReadFile(dirty); err != nil || string(data) != "preserve ongoing work" {
-		t.Fatal("alignment retry lost unfinished work")
+		t.Fatal("repeated preparation lost unfinished work")
+	}
+	// The existing branch is not overwritten by the repeated preparation: it
+	// still carries the Builder's own commit instead of being reset to the
+	// platform commit or moved elsewhere.
+	if head, _ := workspace.Git(t.Context(), worker, "rev-parse", "native/late-head"); head != personal {
+		t.Fatalf("repeated preparation overwrote the existing branch: %s", head)
+	}
+	if head, _ := workspace.Git(t.Context(), worker, "rev-parse", "native/late-head"); head == later {
+		t.Fatal("repeated preparation reset the existing branch to the platform commit")
+	}
+	// The retired source proof is still not registered after the repeat.
+	if _, err := os.Stat(sourceRef); !os.IsNotExist(err) {
+		t.Fatalf("repeated preparation republished the retired source proof: %v", err)
 	}
 }
 

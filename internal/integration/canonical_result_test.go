@@ -18,19 +18,11 @@ func TestCanonicalizeGitPathOutputPreservesWhitespaceAndSorts(t *testing.T) {
 	if !reflect.DeepEqual(paths, want) {
 		t.Fatalf("paths = %#v, want %#v", paths, want)
 	}
-	digest, err := changedPathsDigest(paths)
-	if err != nil {
-		t.Fatal(err)
-	}
-	reorderedDigest, err := changedPathsDigest([]string{want[3], want[1], want[0], want[2]})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if digest != reorderedDigest {
-		t.Fatalf("pathset digest depends on input ordering: %s != %s", digest, reorderedDigest)
-	}
 	if !samePathSet(paths, []string{want[3], want[1], want[0], want[2]}) {
 		t.Fatal("samePathSet() rejected the same paths in a different order")
+	}
+	if samePathSet(paths, []string{want[3], want[1], want[0], "different.go"}) {
+		t.Fatal("samePathSet() accepted different actual paths")
 	}
 }
 
@@ -62,7 +54,7 @@ func TestCanonicalGitChangedPathsUsesExactGitRange(t *testing.T) {
 	restore := withRunner(runner)
 	defer restore()
 
-	paths, digest, err := canonicalGitChangedPaths(context.Background(), "main", "base-sha", "source-sha")
+	paths, err := canonicalGitChangedPaths(context.Background(), "main", "base-sha", "source-sha")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,10 +65,6 @@ func TestCanonicalGitChangedPathsUsesExactGitRange(t *testing.T) {
 	wantPaths := []string{" docs/answer.json", "src/a.go", "src/z.go"}
 	if !reflect.DeepEqual(paths, wantPaths) {
 		t.Fatalf("paths = %#v, want %#v", paths, wantPaths)
-	}
-	wantDigest, err := changedPathsDigest(wantPaths)
-	if err != nil || digest != wantDigest {
-		t.Fatalf("digest = %q, want %q (err %v)", digest, wantDigest, err)
 	}
 }
 

@@ -2,7 +2,6 @@ package transition
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,19 +10,19 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
-	"github.com/entroforge/go-system-builder/internal/builderbatch"
 	"github.com/entroforge/go-system-builder/internal/buildsurface"
+	"github.com/entroforge/go-system-builder/internal/controlproof"
 	"github.com/entroforge/go-system-builder/internal/evidence"
 	"github.com/entroforge/go-system-builder/internal/impact"
 	"github.com/entroforge/go-system-builder/internal/metrics"
 	"github.com/entroforge/go-system-builder/internal/repairpolicy"
-	"github.com/entroforge/go-system-builder/internal/review"
+	"github.com/entroforge/go-system-builder/internal/reviewmeta"
 	loopruntime "github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/semantic"
-	"github.com/entroforge/go-system-builder/internal/verification"
 )
 
 // ResumeSentinel is the Loop Definition TR-019 sentinel that resolves to the
@@ -32,15 +31,13 @@ import (
 const ResumeSentinel = "RESUME_FROM_PAUSE"
 
 type LockedREQ struct {
-	Workspace          *workspace.Binding
-	RepairPolicyPath   string
-	RepairPolicySHA256 string
-	ID                 string
-	Path               string
-	Version            string
-	SHA256             string
-	ApprovedBy         string
-	ApprovedAt         string
+	Workspace        *workspace.Binding
+	RepairPolicyPath string
+	ID               string
+	Path             string
+	Version          string
+	ApprovedBy       string
+	ApprovedAt       string
 }
 
 type Request struct {
@@ -66,8 +63,8 @@ type Request struct {
 	GateID             string
 	// GateEvidenceRefs preserves the complete S5 gate proof, including both
 	// reviewers when RequiredEvidence has only one document_review slot.
-	GateEvidenceRefs       []string
-	GateFingerprint        string
+	GateEvidenceRefs []string
+
 	ProducerResponsibility string
 	// RecoveryWriter is an explicit capability for recovery-plan replay over
 	// a temporary Runtime pair. A zero capability selects the strict active
@@ -138,9 +135,10 @@ func Apply(root, statePath, journalPath string, request Request) (loopruntime.Sn
 			return loopruntime.Snapshot{}, fmt.Errorf("%w: expected %q, current %q", loopruntime.ErrStaleRuntimeIdentity, expectedRuntimeID, currentRuntimeID)
 		}
 	}
-	commitRevision := snapshot.Revision
-	if request.ExpectedRevision >= 0 {
-		commitRevision = request.ExpectedRevision
+	// A committed S7 entry is already the result of this original request.
+	// Resolve it before source-state checks, which now see the destination cursor.
+	if replayS7Entry(current, request, journalPath) {
+		return snapshot, nil
 	}
 	catalog, err := LoadCatalog(root)
 	if err != nil {
@@ -164,16 +162,6 @@ func Apply(root, statePath, journalPath string, request Request) (loopruntime.Sn
 	}
 	if request.Files == nil && resolved.Spec.AutoTrigger != nil && request.TransitionID != "PTR-PLAN-01" {
 		_, err := fileview.DevelopmentRef(current)
-		return loopruntime.Snapshot{}, err
-	}
-	// RC-06 (S10-2): forbidden_events were decoded into the catalog but never
-	// consumed by Apply — the "strong_block" table was documentation. The two
-	// acceptance/release-audit strong blocks are now a hard pre-Apply barrier:
-	// no clean round, no ACC, no release audit — regardless of what evidence
-	// refs the caller supplies. `clean_round_still_valid` re-checks this inside
-	// the mutation, but the catalog declaration itself must gate Apply
-	// fail-closed (create_acc_without_clean_round / run_release_audit_without_acc).
-	if err := enforceForbiddenEvents(catalog, resolved.Spec, current); err != nil {
 		return loopruntime.Snapshot{}, err
 	}
 	endPreflight := metrics.Span(request.Context, "transition/preflight_validation")
@@ -214,13 +202,26 @@ func Apply(root, statePath, journalPath string, request Request) (loopruntime.Sn
 	if request.BaselineGeneration > 0 {
 		baselineGen = request.BaselineGeneration
 	}
-	eventID := mutationEventID(request.TransitionID, commitRevision)
+	// The committed transition is named by the responsibility that owns it and
+	// by the intent it carries, never by the Runtime write count (G18 §1.1,
+	// §1.3): the same intent always produces the same event id and the same
+	// idempotency key, and two responsibilities never share one. The occurrence
+	// anchor separates a legitimate repeat inside one responsibility from the
+	// first occurrence (G18 §1.2).
+	eventID, idempotencyKey := mutationEventIdentity(
+		request.TransitionID,
+		runtimeID,
+		baselineGen,
+		fromCursor,
+		integer(currentLifecycle["phase_revision"]),
+		responsibilityOccurrenceAnchor(current),
+	)
 	mutation := loopruntime.Mutation{
 		EventID:                eventID,
 		TransitionID:           resolved.Spec.ID,
 		Event:                  resolved.Spec.Event,
 		Actor:                  request.Actor,
-		IdempotencyKey:         fmt.Sprintf("runtime:%s:%d", request.TransitionID, commitRevision),
+		IdempotencyKey:         idempotencyKey,
 		EvidenceIDs:            evidenceIDs,
 		GuardResults:           guardResults,
 		ActionResults:          actionResults,
@@ -232,7 +233,6 @@ func Apply(root, statePath, journalPath string, request Request) (loopruntime.Sn
 		RequestID:              request.RequestID,
 		BaselineGeneration:     baselineGen,
 		GateID:                 request.GateID,
-		GateFingerprint:        request.GateFingerprint,
 		ProducerResponsibility: request.ProducerResponsibility,
 		BoundaryReset:          resolved.Spec.ID == "TR-001",
 		Apply: func(state map[string]any) error {
@@ -412,7 +412,7 @@ func Apply(root, statePath, journalPath string, request Request) (loopruntime.Sn
 			}
 			state["updated_at"] = occurredAt.UTC().Format(time.RFC3339Nano)
 			if request.SubmissionFollowupID != "" {
-				if err := loopruntime.StampSubmissionTransition(state, request.SubmissionFollowupID, mutationEventID(request.TransitionID, commitRevision)); err != nil {
+				if err := loopruntime.StampSubmissionTransition(state, request.SubmissionFollowupID, eventID); err != nil {
 					return err
 				}
 			}
@@ -441,47 +441,140 @@ func Apply(root, statePath, journalPath string, request Request) (loopruntime.Sn
 	return next, err
 }
 
-func mutationEventID(transitionID string, revision int) string {
-	return fmt.Sprintf("evt-%s-r%d", strings.ToLower(transitionID), revision+1)
+// replayS7Entry recognizes only the saved relation for the original CAS
+// request. The saved S7 entry identity is compared with the plan identity of
+// the committed journal event, and that event is read exactly as it was
+// saved: a historical event id keeps working and no identity is recomputed
+// from a newer shape (G18 §1.4). ExpectedRevision=-1 selects a current-state
+// action, not an identified replay.
+func replayS7Entry(state map[string]any, request Request, journalPath string) bool {
+	switch request.TransitionID {
+	case "TR-006", "TR-012", "TR-016", "TR-022", "TR-031":
+	default:
+		return false
+	}
+	if request.ExpectedRevision < 0 {
+		return false
+	}
+	runtimeID, _ := state["runtime_id"].(string)
+	rev, _ := state["review"].(map[string]any)
+	entry, _ := rev["round_entry"].(map[string]any)
+	if entry["transition_id"] != request.TransitionID {
+		return false
+	}
+	savedPlanID := reviewmeta.FromRoundEntry(rev).PlanID
+	if savedPlanID == "" || runtimeID == "" {
+		return false
+	}
+	savedEventID, ok := committedTransitionEventID(journalPath, state, request.TransitionID, request.ExpectedRevision)
+	if !ok {
+		return false
+	}
+	return savedPlanID == reviewmeta.NewPlanID(runtimeID, savedEventID)
 }
 
-// enforceForbiddenEvents is the Apply-time consumer of the Loop Definition's
-// strong_block forbidden_events table (RC-06, S10-2). Before this barrier the
-// table was only read by conformance tests; a caller with a hand-built
-// evidence map could fire TR-015/TR-017 with an empty or stale clean round and
-// the runtime would record the ACC anyway.
+// committedTransitionEventID reads the saved journal event that committed the
+// given transition at the caller's CAS revision. The event id is returned as
+// it was written; the current identity shape is never recomputed over it.
+func committedTransitionEventID(journalPath string, state map[string]any, transitionID string, expectedRevision int) (string, bool) {
+	if journalPath == "" {
+		return "", false
+	}
+	ctx := context.Background()
+	data, err := controlproof.ReadJournalForStateAtContext(ctx, journalPath, state)
+	if err != nil {
+		return "", false
+	}
+	inspection, err := controlproof.InspectJournalSegmentDataFromContext(ctx, data, 1)
+	if err != nil {
+		return "", false
+	}
+	for _, event := range inspection.Events {
+		if event["transition_id"] != transitionID {
+			continue
+		}
+		if event["event"] != "transition_committed" || event["outcome"] != "committed" {
+			continue
+		}
+		if integer(event["before_revision"]) != expectedRevision {
+			continue
+		}
+		eventID, _ := event["event_id"].(string)
+		if eventID == "" {
+			continue
+		}
+		return eventID, true
+	}
+	return "", false
+}
+
+// occurrenceAnchorNone names the occurrence of a responsibility that has not
+// committed a transition yet.
+const occurrenceAnchorNone = "none"
+
+// mutationEventIdentity names one committed transition by the responsibility
+// that owns it and by the intent it carries. The Runtime write count is never
+// part of the identity (G18 §1.1, §1.3).
 //
-// Event → predicate mapping:
-//   - create_acc_without_clean_round (TR-015 acceptance→release_audit): the
-//     machine CleanRound must evaluate PASS over the current runtime.
-//   - run_release_audit_without_acc (TR-017 release_audit→awaiting_human_release):
-//     identical predicate — the audit's own release_audit_record evidence does
-//     not substitute for the ACC precondition.
+// The intent key is the cursor this transition moves from, the lifecycle stage
+// it starts at (G18 §1.1 stage coordinate) and the responsibility's own
+// occurrence anchor (G18 §1.2). A transition legitimately occurs more than
+// once inside one responsibility — every S7 round enters verification again,
+// and a planning rework re-enters the very same exit — so the stage entry and
+// the anchor, both domain facts about the cursor and about the
+// responsibility's own committed history, separate those occurrences.
 //
-// The barrier is evaluated pre-Apply against the current snapshot (fail-closed
-// on an unreadable review section) so no journal row is written for a refused
-// mutation.
-func enforceForbiddenEvents(catalog *Catalog, spec TransitionSpec, state map[string]any) error {
-	fe, declared := catalog.ForbiddenEvents["create_acc_without_clean_round"]
-	if !declared {
-		// Fail closed: a definition that drops the declaration loses its
-		// acceptance barrier and must refuse to run rather than degrade.
-		return fmt.Errorf("loop definition no longer declares forbidden event create_acc_without_clean_round; refusal to evaluate TR-015/TR-017 without it")
+// The anchor names the transition that last committed inside this
+// responsibility. A rework therefore keeps its own identity: the repeated
+// design exit follows the repair trigger that sent the responsibility back,
+// the first one follows the bind. A replay of the same request sees the same
+// committed history and therefore keeps one identity, so the journal still
+// deduplicates the replay (G18 §1.3).
+//
+// The anchor is optional so that a caller which knows no committed history yet
+// still writes the first occurrence with the same shape.
+func mutationEventIdentity(transitionID, runtimeID string, generation int, from map[string]any, stageEntry int, occurrence ...string) (string, string) {
+	domain := strings.ToLower(transitionID)
+	anchor := occurrenceAnchorNone
+	if len(occurrence) > 0 && strings.TrimSpace(occurrence[0]) != "" {
+		anchor = occurrence[0]
 	}
-	switch spec.ID {
-	case "TR-015", "TR-017":
-	default:
-		_ = fe
-		return nil
+	intent := semanticIdentityKey(
+		strconv.Itoa(generation),
+		stringValue(from["state"]),
+		stringValue(from["phase"]),
+		strconv.Itoa(stageEntry),
+		anchor,
+	)
+	// The idempotency key names the responsibility coordinate (runtime and
+	// baseline generation) together with the intent key (G18 §1.3).
+	responsibility := semanticIdentityKey(runtimeID, strconv.Itoa(generation))
+	return "evt-" + domain + "-" + intent, "runtime:" + domain + ":" + responsibility + ":" + intent
+}
+
+// responsibilityOccurrenceAnchor names the transition that last committed
+// inside this responsibility. It is a domain fact about the responsibility's
+// own committed history, never the Runtime write count: the same transition
+// at the same cursor is a different domain thing when the responsibility
+// committed something else in between (a rework follows its own trigger), and
+// the same domain thing when it did not (a replay).
+func responsibilityOccurrenceAnchor(state map[string]any) string {
+	transition, _ := state["last_transition"].(map[string]any)
+	transitionID, _ := transition["transition_id"].(string)
+	if strings.TrimSpace(transitionID) == "" {
+		return occurrenceAnchorNone
 	}
-	result := verification.EvaluateCleanRound(state)
-	if !result.Passed {
-		return fmt.Errorf(
-			"forbidden event %s: transition %s rejected — no valid clean round for review round %d: %v",
-			fe.Event, spec.ID, result.ReviewRound, result.Reasons,
-		)
+	return transitionID
+}
+
+// semanticIdentityKey encodes its parts injectively, so two different
+// responsibilities or intents can never produce the same key.
+func semanticIdentityKey(parts ...string) string {
+	var key strings.Builder
+	for _, part := range parts {
+		fmt.Fprintf(&key, "%d:%s", len(part), part)
 	}
-	return nil
+	return key.String()
 }
 
 func resolveCatalog(catalog *Catalog, id, currentState string, currentPhase any) (resolvedTransition, error) {
@@ -534,43 +627,15 @@ func validateRequest(root string, state map[string]any, spec TransitionSpec, req
 	if normalHumanReleaseRequest(request) {
 		return validateNormalHumanRelease(request)
 	}
-	// Apply's preflight retains all other request checks. The original gate
-	// and Writer/CAS validate the complete TR-006 batch; direct callers and
-	// the locked Apply call retain the full proof by default.
-	if spec.ID == "TR-006" && !(len(deferTR006BatchProof) > 0 && deferTR006BatchProof[0]) {
-		// The original Writer must prove the canonical batch regardless of
-		// which compatible report kind the caller binds to the evidence slot.
-		// A legacy aggregate cannot substitute for missing current Main facts.
-		canonical, err := buildsurface.SelectCanonicalContext(request.Context, root, state)
-		if err != nil {
-			return fmt.Errorf("transition TR-006 current batch source: %w", err)
-		}
-		if canonical {
-			if _, err := buildsurface.ReadContext(request.Context, root, state); err != nil {
-				return fmt.Errorf("transition TR-006 current canonical Main batch: %w", err)
-			}
-		} else {
-			batch := builderbatch.EvaluateLegacy(root, state, request.Files)
-			if len(batch.Conflicts) > 0 {
-				return fmt.Errorf("transition TR-006 current Builder batch conflicts: %s", strings.Join(batch.Conflicts, ", "))
-			}
-			if !batch.Ready {
-				return fmt.Errorf("transition TR-006 current Builder batch is incomplete: %s", strings.Join(batch.Missing, ", "))
-			}
+	// The locked Writer rechecks the same original S6 Result and Main facts
+	// as the current batch gate. No alternate legacy projection is selected.
+	deferredBatch := len(deferTR006BatchProof) > 0 && deferTR006BatchProof[0]
+	if spec.ID == "TR-006" && !deferredBatch {
+		if _, err := buildsurface.ReadContext(request.Context, root, state); err != nil {
+			return fmt.Errorf("transition TR-006 current Main batch: %w", err)
 		}
 	}
-	if spec.ID == "TR-009" {
-		if err := review.VerifyCurrentProductBaseline(root, state, request.Context); err != nil {
-			return fmt.Errorf("transition %s current product baseline: %w", spec.ID, err)
-		}
-	}
-	if spec.ID == "TR-009" && review.HasPacketBoundE2EReceipts(state) {
-		reviewState, _ := state["review"].(map[string]any)
-		assignments, _ := reviewState["assignments"].(map[string]any)
-		if err := review.VerifySealedArtifactDigests(root, state, review.PlanPointerFromState(state), assignments, request.Context); err != nil {
-			return fmt.Errorf("transition TR-009 typed E2E execution artifact: %w", err)
-		}
-	}
+
 	if request.Actor == "" {
 		return fmt.Errorf("transition actor is required")
 	}
@@ -606,7 +671,6 @@ func validateRequest(root string, state map[string]any, spec TransitionSpec, req
 			// completion is handled by the original guards, not a source hash.
 			items, _ := state["evidence"].([]any)
 			baseline, _ := state["baseline"].(map[string]any)
-			review, _ := state["review"].(map[string]any)
 			matched := false
 			for _, raw := range items {
 				item, _ := raw.(map[string]any)
@@ -615,8 +679,7 @@ func validateRequest(root string, state map[string]any, spec TransitionSpec, req
 				}
 				actualKind, _ := item["kind"].(string)
 				matched = item["status"] == "valid" && catalog.Accepts(kind, actualKind) &&
-					integer(item["baseline_generation"]) == integer(baseline["generation"]) &&
-					integer(item["review_round"]) == integer(review["round"])
+					integer(item["baseline_generation"]) == integer(baseline["generation"])
 				break
 			}
 			if !matched {
@@ -629,7 +692,13 @@ func validateRequest(root string, state map[string]any, spec TransitionSpec, req
 				return fmt.Errorf("transition %s evidence %s: %w", spec.ID, kind, err)
 			}
 		} else if !(spec.ID == "TR-001" || (spec.ID == "TR-020" && kind == "req_lock_record")) {
-			if err := validateCurrentEvidenceWithFiles(root, state, kind, ref, request.Files, request.Context); err != nil {
+			// The locked TR-006 Writer checks the current Main batch above.
+			skipCanonicalSource := spec.ID == "TR-006" && deferredBatch
+			// The original S3 followup has already received its machine report;
+			// retain the evidence row checks without reading that Runtime artifact
+			// as a product Git blob for the same PTR-PLAN-02 event.
+			skipReceivedSource := spec.ID == "PTR-PLAN-02" && kind == "planning_contract_record" && acceptedContractFollowupEvidence(state, request.SubmissionFollowupID, ref)
+			if err := validateCurrentEvidenceWithSource(root, state, kind, ref, request.Files, skipCanonicalSource, skipReceivedSource, request.Context); err != nil {
 				return fmt.Errorf("transition %s evidence %s: %w", spec.ID, kind, err)
 			}
 		}
@@ -671,10 +740,35 @@ func generatedEvidenceReferenceMatches(ref, canonical string) bool {
 	return ref == canonical
 }
 
+// acceptedContractFollowupEvidence recognizes only the original pending S3
+// reception already connected to this transition and the selected evidence.
+// An unrelated or absent followup leaves the normal evidence read unchanged.
+func acceptedContractFollowupEvidence(state map[string]any, followupID, ref string) bool {
+	if followupID == "" {
+		return false
+	}
+	record, err := loopruntime.SubmissionFollowup(state, followupID)
+	if err != nil || record.OriginState != "planning" || record.OriginPhase != "contracts" || record.EvidenceID == "" {
+		return false
+	}
+	items, _ := state["evidence"].([]any)
+	for _, raw := range items {
+		item, _ := raw.(map[string]any)
+		if item["id"] == record.EvidenceID && (item["id"] == ref || item["path"] == ref) {
+			return true
+		}
+	}
+	return false
+}
+
 func validateCurrentEvidence(root string, state map[string]any, requiredKind, ref string, contexts ...context.Context) error {
 	return validateCurrentEvidenceWithFiles(root, state, requiredKind, ref, nil, contexts...)
 }
 func validateCurrentEvidenceWithFiles(root string, state map[string]any, requiredKind, ref string, files fileview.Reader, contexts ...context.Context) error {
+	return validateCurrentEvidenceWithSource(root, state, requiredKind, ref, files, false, false, contexts...)
+}
+
+func validateCurrentEvidenceWithSource(root string, state map[string]any, requiredKind, ref string, files fileview.Reader, skipCanonicalSource, skipReceivedSource bool, contexts ...context.Context) error {
 	ctx := context.Background()
 	if len(contexts) > 0 && contexts[0] != nil {
 		ctx = contexts[0]
@@ -712,32 +806,30 @@ func validateCurrentEvidenceWithFiles(root string, state map[string]any, require
 	if integer(evidenceItem["baseline_generation"]) != integer(baseline["generation"]) {
 		return fmt.Errorf("reference %q belongs to baseline generation %d, current is %d", ref, integer(evidenceItem["baseline_generation"]), integer(baseline["generation"]))
 	}
-	if evidenceRound := integer(evidenceItem["review_round"]); evidenceRound > 0 {
-		review, _ := state["review"].(map[string]any)
-		if evidenceRound != integer(review["round"]) {
-			return fmt.Errorf("reference %q belongs to review round %d, current is %d", ref, evidenceRound, integer(review["round"]))
-		}
-	}
 	rel, _ := evidenceItem["path"].(string)
 	clean := filepath.Clean(rel)
 	if rel == "" || filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
 		return fmt.Errorf("reference %q has unsafe path %q", ref, rel)
 	}
+	if skipReceivedSource {
+		return nil
+	}
 	if files == nil {
 		files = fileview.Disk{Root: root}
 	}
-	data, err := files.ReadFile(clean)
+	var err error
+	if path, found := loopruntime.RecordedDocumentReviewReportPath(state, stringValue(evidenceItem["id"])); found && path == rel {
+		_, err = loopruntime.ReadRecordedEvidenceReport(root, path)
+	} else {
+		_, err = files.ReadFile(clean)
+	}
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
 	if err != nil {
 		return fmt.Errorf("read reference %q: %w", ref, err)
 	}
-	want, _ := evidenceItem["sha256"].(string)
-	if actual := SHA256(data); want == "" || actual != want {
-		return fmt.Errorf("reference %q fingerprint mismatch", ref)
-	}
-	if requiredKind == "builder_report_record" && actualKind == "completion_report" {
+	if requiredKind == "builder_report_record" && actualKind == "completion_report" && !skipCanonicalSource {
 		snapshot, err := buildsurface.ReadContext(ctx, root, state)
 		if err != nil {
 			return fmt.Errorf("canonical builder report source: %w", err)
@@ -987,7 +1079,7 @@ func guardAllTargetedReverificationPassed(state map[string]any) error {
 
 func bindREQ(root string, state map[string]any, request Request, occurredAt time.Time) error {
 	req := request.REQ
-	if req.ID == "" || req.Path == "" || req.Version == "" || req.SHA256 == "" ||
+	if req.ID == "" || req.Path == "" || req.Version == "" ||
 		req.ApprovedBy == "" || req.ApprovedAt == "" {
 		return fmt.Errorf("locked REQ metadata is incomplete")
 	}
@@ -998,9 +1090,6 @@ func bindREQ(root string, state map[string]any, request Request, occurredAt time
 	data, err := files.ReadFile(req.Path)
 	if err != nil {
 		return fmt.Errorf("read locked REQ: %w", err)
-	}
-	if REQSHA256(data) != req.SHA256 {
-		return fmt.Errorf("locked REQ fingerprint mismatch")
 	}
 	status := ParseMarkdownField(string(data), "状态", "Status")
 	if !strings.EqualFold(status, "locked") {
@@ -1020,7 +1109,6 @@ func bindREQ(root string, state map[string]any, request Request, occurredAt time
 	state["bound_req"] = map[string]any{
 		"path":        req.Path,
 		"version":     req.Version,
-		"sha256":      req.SHA256,
 		"id":          req.ID,
 		"status":      "locked",
 		"approved_by": req.ApprovedBy,
@@ -1036,8 +1124,8 @@ func bindREQ(root string, state map[string]any, request Request, occurredAt time
 	}
 	baseline["generation"] = max(1, integer(baseline["generation"])+1)
 	baseline["captured_at"] = occurredAt.UTC().Format(time.RFC3339Nano)
-	if req.RepairPolicyPath != "" || req.RepairPolicySHA256 != "" {
-		if _, err := repairpolicy.Read(root, req.RepairPolicyPath, req.RepairPolicySHA256, req.ApprovedBy); err != nil {
+	if req.RepairPolicyPath != "" {
+		if _, err := repairpolicy.Read(root, req.RepairPolicyPath, req.ApprovedBy); err != nil {
 			return err
 		}
 		config, _ := state["configuration"].(map[string]any)
@@ -1050,7 +1138,7 @@ func bindREQ(root string, state map[string]any, request Request, occurredAt time
 			repairConfig = map[string]any{}
 			config["repair"] = repairConfig
 		}
-		repairConfig["bound_policy"] = map[string]any{"path": req.RepairPolicyPath, "sha256": req.RepairPolicySHA256, "approved_by": req.ApprovedBy, "req_sha256": req.SHA256, "runtime_id": state["runtime_id"], "baseline_generation": baseline["generation"]}
+		repairConfig["bound_policy"] = map[string]any{"path": req.RepairPolicyPath, "approved_by": req.ApprovedBy, "runtime_id": state["runtime_id"], "baseline_generation": baseline["generation"]}
 	}
 
 	state["documents"] = appendDocument(state["documents"], map[string]any{
@@ -1058,7 +1146,6 @@ func bindREQ(root string, state map[string]any, request Request, occurredAt time
 		"kind":       "req",
 		"path":       req.Path,
 		"version":    req.Version,
-		"sha256":     req.SHA256,
 		"status":     "locked",
 		"generation": baseline["generation"],
 	})
@@ -1072,7 +1159,7 @@ func bindREQ(root string, state map[string]any, request Request, occurredAt time
 // increment_baseline_generation, which already bumped the generation.
 func updateBoundREQ(root string, state map[string]any, request Request, occurredAt time.Time) error {
 	req := request.REQ
-	if req.ID == "" || req.Path == "" || req.Version == "" || req.SHA256 == "" ||
+	if req.ID == "" || req.Path == "" || req.Version == "" ||
 		req.ApprovedBy == "" || req.ApprovedAt == "" {
 		return fmt.Errorf("amended REQ metadata is incomplete")
 	}
@@ -1083,9 +1170,6 @@ func updateBoundREQ(root string, state map[string]any, request Request, occurred
 	data, err := files.ReadFile(req.Path)
 	if err != nil {
 		return fmt.Errorf("read amended REQ: %w", err)
-	}
-	if REQSHA256(data) != req.SHA256 {
-		return fmt.Errorf("amended REQ fingerprint mismatch")
 	}
 	status := ParseMarkdownField(string(data), "状态", "Status")
 	if !strings.EqualFold(status, "locked") {
@@ -1114,7 +1198,6 @@ func updateBoundREQ(root string, state map[string]any, request Request, occurred
 	state["bound_req"] = map[string]any{
 		"path":        req.Path,
 		"version":     req.Version,
-		"sha256":      req.SHA256,
 		"id":          req.ID,
 		"status":      "locked",
 		"approved_by": req.ApprovedBy,
@@ -1133,7 +1216,6 @@ func updateBoundREQ(root string, state map[string]any, request Request, occurred
 		"kind":       "req",
 		"path":       req.Path,
 		"version":    req.Version,
-		"sha256":     req.SHA256,
 		"status":     "locked",
 		"generation": integer(baseline["generation"]),
 	})
@@ -1405,80 +1487,8 @@ func contains(values []string, target string) bool {
 	return false
 }
 
-func SHA256(data []byte) string {
-	return fmt.Sprintf("%x", sha256.Sum256(data))
-}
-
-// REQSHA256 preserves the raw-byte identity used by existing bound REQs.
-// Checkout normalization is an explicit migration, never an implicit hash change.
-func REQSHA256(data []byte) string {
-	return SHA256(data)
-}
-
-// capturePauseCheckpoint snapshots the runtime into state["pause"] before the
-// transition moves the loop into the paused state. The checkpoint lets TR-019
-// (resume) validate that no baseline drifted while paused.
-//
-// This must be called BEFORE the lifecycle cursor is moved, so from_state and
-// from_phase reflect the source state. We read resolved.Spec.From directly to
-// avoid depending on the current (pre-move) lifecycle values.
-func capturePauseCheckpoint(state map[string]any, resolved resolvedTransition, occurredAt time.Time) error {
-	lifecycle, _ := state["lifecycle"].(map[string]any)
-	if lifecycle == nil {
-		return fmt.Errorf("capture_pause_checkpoint: lifecycle missing")
-	}
-	// SINGLE call site invariant (BUG-001 §4b.2(f)). Reject a second capture
-	// within the same transition so the engine cannot write two pause
-	// checkpoints for one pause event. The runtime's state schema allows
-	// `pause: null` (no active checkpoint) or a map (active checkpoint); a
-	// nil-value presence is the "no checkpoint" case.
-	if existing, ok := state["pause"]; ok && existing != nil {
-		return fmt.Errorf("capture_pause_checkpoint: pause checkpoint already exists; would overwrite")
-	}
-	// Use the transition spec's From for the state; phase comes from the
-	// pre-move lifecycle (this function runs before the cursor changes).
-	// For GTRs (global transitions) the spec's From is empty — we fall
-	// back to the lifecycle's current state so the pause checkpoint
-	// captures where the loop is actually paused from.
-	fromState := resolved.Spec.From
-	if fromState == "" && resolved.Global {
-		fromState, _ = lifecycle["state"].(string)
-	}
-	fromPhase := lifecycle["phase"]
-	phaseRevision := integer(lifecycle["phase_revision"])
-
-	baseline, _ := state["baseline"].(map[string]any)
-	baselineGeneration := 0
-	if baseline != nil {
-		baselineGeneration = integer(baseline["generation"])
-	}
-
-	review, _ := state["review"].(map[string]any)
-	reviewRound := 0
-	if review != nil {
-		reviewRound = integer(review["round"])
-	}
-
-	documents := documentFingerprints(state)
-
-	state["pause"] = map[string]any{
-		"from_state":            fromState,
-		"from_phase":            fromPhase,
-		"phase_revision":        phaseRevision,
-		"baseline_generation":   baselineGeneration,
-		"review_round":          reviewRound,
-		"reason":                resolved.Spec.Description,
-		"required_human_action": pauseRequiredAction(fromState),
-		"document_fingerprints": documents,
-		"paused_at":             occurredAt.UTC().Format(time.RFC3339Nano),
-	}
-	return nil
-}
-
-// restoreFromPause clears state["pause"] when TR-019 (resume) commits. It
-// re-hashes every document referenced in the pause checkpoint's
-// document_fingerprints and rejects the resume if any file has drifted,
-// enforcing the baselines_unchanged guard.
+// restoreFromPause clears state["pause"] when TR-019 (resume) commits.
+// Historical digest fields are not revalidated or copied into new facts.
 func restoreFromPause(root string, state map[string]any) error {
 	return restoreFromPauseAction(root, state)
 }
@@ -1490,31 +1500,8 @@ func restoreFromPauseAction(root string, state map[string]any) error {
 	if !ok {
 		return fmt.Errorf("restore_state_phase_and_entities: no pause checkpoint to restore from")
 	}
-	fingerprints, ok := pause["document_fingerprints"].([]any)
-	if !ok {
-		return fmt.Errorf("restore_state_phase_and_entities: checkpoint missing document_fingerprints")
-	}
-	for _, raw := range fingerprints {
-		doc, ok := raw.(map[string]any)
-		if !ok {
-			continue
-		}
-		path, _ := doc["path"].(string)
-		expectedSHA, _ := doc["sha256"].(string)
-		if path == "" || expectedSHA == "" {
-			continue
-		}
-		data, err := os.ReadFile(filepath.Join(root, path))
-		if err != nil {
-			return fmt.Errorf("%w: cannot read %s: %w", ErrBaselineDrift, path, err)
-		}
-		actualSHA := fmt.Sprintf("%x", sha256.Sum256(data))
-		if actualSHA != expectedSHA {
-			return fmt.Errorf(
-				"%w: %s fingerprint drifted (pause recorded %s, actual %s)",
-				ErrBaselineDrift, path, expectedSHA[:12], actualSHA[:12])
-		}
-	}
+	_ = root // The original checkpoint and responsibility, not old digests, select the continuation.
+	_ = pause
 	state["pause"] = nil
 	return nil
 }
@@ -1611,32 +1598,6 @@ func invalidateAllDownstreamAction(state map[string]any, source string) int {
 	}
 	invalidated := impact.InvalidateEvidence(state, impacts, source)
 	return len(invalidated)
-}
-
-func documentFingerprints(state map[string]any) []any {
-	documents, ok := state["documents"].([]any)
-	if !ok {
-		return []any{}
-	}
-	out := make([]any, 0, len(documents))
-	for _, raw := range documents {
-		doc, ok := raw.(map[string]any)
-		if !ok {
-			continue
-		}
-		path, _ := doc["path"].(string)
-		version, _ := doc["version"].(string)
-		sha, _ := doc["sha256"].(string)
-		if path == "" {
-			continue
-		}
-		out = append(out, map[string]any{
-			"path":    path,
-			"version": version,
-			"sha256":  sha,
-		})
-	}
-	return out
 }
 
 func pauseRequiredAction(fromState string) string {

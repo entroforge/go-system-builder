@@ -30,11 +30,11 @@ import (
 // prevents accidental coupling between the controller wiring and the
 // integration package's internal types.
 type IntegrationCheckpointEnvelope struct {
-	AssignmentID       string   `json:"assignment_id"`
-	SourceBranch       string   `json:"source_branch,omitempty"`
-	SourceHead         string   `json:"source_head,omitempty"`
-	TargetBranch       string   `json:"target_branch,omitempty"`
-	MergeCommit        string   `json:"merge_commit,omitempty"`
+	AssignmentID string `json:"assignment_id"`
+	SourceBranch string `json:"source_branch,omitempty"`
+
+	TargetBranch string `json:"target_branch,omitempty"`
+
 	BaselineGeneration int      `json:"baseline_generation,omitempty"`
 	State              string   `json:"state"`
 	IdempotencyKey     string   `json:"idempotency_key,omitempty"`

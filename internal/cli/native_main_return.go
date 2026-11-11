@@ -12,6 +12,7 @@ import (
 	"github.com/entroforge/go-system-builder/internal/assignmentrecord"
 	"github.com/entroforge/go-system-builder/internal/policy"
 	"github.com/entroforge/go-system-builder/internal/repair"
+	"github.com/entroforge/go-system-builder/internal/review"
 	"github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/submission"
 	"github.com/entroforge/go-system-builder/internal/workpacket"
@@ -27,6 +28,7 @@ type nativeReturnSubject struct {
 	kind, id, ref string
 	record        *assignmentrecord.Record
 	targeted      *repairTargetedSelection
+	conflict      bool
 }
 
 func nativeMainReturnHook(root string, in policy.Input, out io.Writer) (bool, int) {
@@ -43,8 +45,9 @@ func nativeMainReturnHook(root string, in policy.Input, out io.Writer) (bool, in
 	if err != nil {
 		return false, 0
 	}
-	selectSubjects := func(text string) []nativeReturnSubject {
+	selectSubjects := func(text string, s9PromptAliases bool) ([]nativeReturnSubject, bool) {
 		var selected []nativeReturnSubject
+		var reviewCandidates []nativeReviewCandidate
 		for _, row := range objectSliceAny(mapFieldCLI(snap.State, "entities")["work_packets"]) {
 			kind := stringValue(row["template_id"])
 			switch kind {
@@ -54,13 +57,42 @@ func nativeMainReturnHook(root string, in policy.Input, out io.Writer) (bool, in
 			}
 			id, view, answer := stringValue(row["packet_id"]), stringValue(row["view_path"]), stringValue(row["answer_path"])
 			refs := []string{view, answer}
+			binding, _ := row["binding"].(map[string]any)
+			if (kind == "s7-review-result-v1" || kind == "s8-hypothesis-result-v1") && s9PromptAliases {
+				stage := "S7"
+				if kind == "s8-hypothesis-result-v1" {
+					stage = "S8"
+				}
+				paths := []string{view, answer, filepath.Join(root, view), filepath.Join(root, answer)}
+				reception := mapFieldCLI(row, "review_result_reception")
+				source := stringValue(reception["execution_root"])
+				if source == "" {
+					source = stringValue(mapFieldCLI(reception, "receipt")["execution_root"])
+				}
+				if source != "" {
+					paths = append(paths, filepath.Join(source, view), filepath.Join(source, answer))
+				}
+				reviewCandidates = append(reviewCandidates, nativeReviewCandidate{stage: stage, packet: id, owner: stringValue(binding["owner_agent_id"]), hypothesis: stringValue(binding["hypothesis_id"]), assignment: stringValue(binding["assignment_id"]), claims: stringSliceAny(binding["claim_ids"]), answer: filepath.Join(root, answer), refs: paths})
+				continue
+			}
+			conflict := false
+			var s9Brief string
 			if kind == "s9-plan-report-v1" {
-				brief, _, _ := nativeS9Paths(workpacket.RepairPlanReportPacket{ID: id, ViewPath: view})
-				refs = append(refs, brief)
+				s9Brief = stringValue(row["brief_path"])
+				if s9Brief != "" {
+					refs = append(refs, s9Brief)
+				}
 			}
 			for _, ref := range refs {
-				if ref != "" && nativeS6ExactReference(text, filepath.Join(root, ref)) {
-					selected = append(selected, nativeReturnSubject{kind: kind, id: id, ref: filepath.Join(root, ref)})
+				matches := ref != "" && nativeS6ExactReference(text, filepath.Join(root, ref))
+				if kind == "s8-hypothesis-result-v1" {
+					matches = nativeS8TaskPath(text, root, filepath.Join(root, ref))
+				}
+				if s9PromptAliases && s9Brief != "" && ref == s9Brief {
+					matches = nativeS9ResponsibilityMatch(text, root, ref)
+				}
+				if matches {
+					selected = append(selected, nativeReturnSubject{kind: kind, id: id, ref: filepath.Join(root, ref), conflict: conflict})
 					break
 				}
 			}
@@ -83,19 +115,35 @@ func nativeMainReturnHook(root string, in policy.Input, out io.Writer) (bool, in
 			if selections, err := repairTargetedSelections(root, snap.State); err == nil {
 				for _, selection := range selections {
 					ref, err := repairTargetedQuestionnairePath(root, snap.State, selection.performingAssignmentID)
-					if err == nil && nativeS6ExactReference(text, ref) {
+					matches := err == nil && nativeS6ExactReference(text, ref)
+					if err == nil && s9PromptAliases {
+						matches = nativeS9RegisteredResponsibilityMatch(text, root, ref)
+					}
+					if matches {
 						selection := selection
 						selected = append(selected, nativeReturnSubject{kind: "Targeted", id: selection.performingAssignmentID, ref: ref, targeted: &selection})
 					}
 				}
 			}
 		}
-		return selected
+		unknown := false
+		if s9PromptAliases {
+			var chosen []nativeReviewCandidate
+			chosen, unknown = nativeReviewSelect(nativeReviewFacts(text), text, root, reviewCandidates)
+			for _, c := range chosen {
+				kind := "s7-review-result-v1"
+				if c.stage == "S8" {
+					kind = "s8-hypothesis-result-v1"
+				}
+				selected = append(selected, nativeReturnSubject{kind: kind, id: c.packet, ref: c.answer})
+			}
+		}
+		return selected, unknown
 	}
 	prompt, _ := in.ToolInput["prompt"].(string)
-	selected := selectSubjects(prompt)
-	issuedSelection := len(selected) == 1
-	if len(selected) == 0 {
+	selected, unknown := selectSubjects(prompt, true)
+	issuedSelection := len(selected) > 0
+	if len(selected) == 0 && !unknown {
 		text, _ := in.ToolResponse["text"].(string)
 		switch content := in.ToolResponse["content"].(type) {
 		case string:
@@ -109,25 +157,51 @@ func nativeMainReturnHook(root string, in policy.Input, out io.Writer) (bool, in
 				}
 			}
 		}
-		selected = selectSubjects(text)
+		selected, _ = selectSubjects(text, false)
+		// A Worker's returned text can quote another professional's path; it
+		// does not create a new S7/S8 platform dispatch or transfer ownership.
+		filtered := selected[:0]
+		for _, subject := range selected {
+			if subject.kind != "s7-review-result-v1" && subject.kind != "s8-hypothesis-result-v1" {
+				filtered = append(filtered, subject)
+			}
+		}
+		selected = filtered
 	}
-	if len(selected) == 0 {
+	if len(selected) == 0 && !unknown {
 		return false, 0
 	}
-	message := "Native return has multiple exact responsibility references; Main must resolve the handoff. No answer was received by this observation."
-	if len(selected) == 1 {
-		subject := selected[0]
+	// Multiple exact original responsibilities are an ambiguity of the return
+	// itself, not an unknown original. Keep the two facts apart: nothing is
+	// selected by path order, and no responsibility is guessed.
+	ambiguous := false
+	if len(selected) > 1 {
+		for _, subject := range selected {
+			if subject.kind != "s7-review-result-v1" && subject.kind != "s8-hypothesis-result-v1" {
+				selected, ambiguous = nil, true
+				break
+			}
+		}
+	}
+	var messages []string
+	for _, subject := range selected {
 		execution := nativeExecutionFromResponse(in.ToolResponse)
 		ctx := context.WithValue(contextForHook(in), nativeExecutionReturnKey{}, execution)
 		continuation := ""
 		if issuedSelection {
 			var attempted bool
 			var continueErr error
-			snap, attempted, continueErr = continueNativeS9MainReturn(ctx, root, in, snap, subject)
+			if subject.kind == "s7-review-result-v1" || subject.kind == "s8-hypothesis-result-v1" {
+				snap, attempted, continueErr = continueNativeReviewMainReturn(ctx, root, in, snap, subject)
+			} else if subject.targeted != nil {
+				snap, attempted, continueErr = continueNativeTargetedMainReturn(ctx, root, in, snap, subject)
+			} else {
+				snap, attempted, continueErr = continueNativeOriginalS9MainReturn(ctx, root, in, snap, subject)
+			}
 			if attempted {
-				continuation = "System continued the original S9 consumer. "
+				continuation = "System continued the original professional consumer. "
 				if continueErr != nil {
-					continuation = "Original S9 consumer continuation remains unconfirmed: " + continueErr.Error() + ". Preserve original professional input; no additional author save or Stop is requested. "
+					continuation = "Original professional consumer continuation remains unconfirmed: " + continueErr.Error() + ". Preserve original professional input; no additional author save or Stop is requested. "
 				}
 			}
 		}
@@ -140,12 +214,109 @@ func nativeMainReturnHook(root string, in policy.Input, out io.Writer) (bool, in
 			observation = "Native execution observation for "
 			summary = nativeExecutionPendingAction(execution) + " Original reception facts: " + summary
 		}
-		message = observation + subject.ref + ". " + continuation + summary + " This reception summary does not establish product acceptance. Do not re-dispatch received work merely because Main or the next stage still has work."
+		messages = append(messages, observation+subject.ref+". "+continuation+summary+" This reception summary does not establish product acceptance. Do not re-dispatch received work merely because Main or the next stage still has work.")
 	}
-	if err := json.NewEncoder(out).Encode(map[string]any{"hookSpecificOutput": map[string]any{"hookEventName": "PostToolUse", "additionalContext": message}}); err != nil {
+	if ambiguous {
+		messages = append(messages, "The original return names multiple exact original responsibilities; the system does not select one by path order. Main inspects the original dispatch and names the exact responsibility to continue.")
+	}
+	if unknown {
+		messages = append(messages, "Some original responsibilities remain unknown; Main inspects the original dispatch and preserves any accepted results.")
+	}
+	if err := json.NewEncoder(out).Encode(map[string]any{"hookSpecificOutput": map[string]any{"hookEventName": "PostToolUse", "additionalContext": strings.Join(messages, "\n")}}); err != nil {
 		return true, 1
 	}
 	return true, 0
+}
+
+func continueNativeTargetedMainReturn(ctx context.Context, root string, in policy.Input, snap runtime.Snapshot, subject nativeReturnSubject) (runtime.Snapshot, bool, error) {
+	if ctx.Err() != nil || subject.targeted == nil || nativeExecutionFromResponse(in.ToolResponse) != nativeExecutionCompleted || in.Error != "" || in.ToolResponse["is_error"] == true {
+		return snap, false, nil
+	}
+	if err := receiveNativeS9Targeted(ctx, root, snap, subject.ref, io.Discard); err != nil {
+		return snap, true, err
+	}
+	if cached, ok := ctx.Value(nativeRoutingKey{}).(*nativeRoutingRead); ok {
+		*cached = nativeRoutingRead{root: root}
+	}
+	current, err := nativeRoutingSnapshot(root, in)
+	return current, true, err
+}
+
+// A real completed Main return may observe the same issued S7/S8 original
+// answer if the Worker's own natural events have not yet received it. The
+// prompt selected the exact issued packet; no platform actor or extra author
+// return reference is needed, and asynchronous launch is never a delivery.
+func continueNativeReviewMainReturn(ctx context.Context, root string, in policy.Input, snap runtime.Snapshot, subject nativeReturnSubject) (runtime.Snapshot, bool, error) {
+	if ctx.Err() != nil || nativeExecutionFromResponse(in.ToolResponse) != nativeExecutionCompleted || in.Error != "" || in.ToolResponse["is_error"] == true {
+		return snap, false, nil
+	}
+	service, err := submission.NewContext(ctx, root, true)
+	if err != nil {
+		return snap, true, err
+	}
+	switch subject.kind {
+	case "s7-review-result-v1":
+		packet, found, err := runtime.FindReviewResultPacketContext(runtime.WithPacketBodyRoot(ctx, root), snap.State, subject.id)
+		if err != nil || !found {
+			if err == nil {
+				err = fmt.Errorf("original S7 packet %s is unavailable", subject.id)
+			}
+			return snap, true, err
+		}
+		receipt, err := service.ReviewResultReceipt(packet.Binding.OwnerAgentID, packet.ID)
+		if err != nil {
+			return snap, true, err
+		}
+		if !receipt.Accepted || !receipt.WorkComplete {
+			source, err := review.IssuedResultSourceRoot(root, snap.State, packet)
+			if err != nil {
+				return snap, true, err
+			}
+			if _, err := service.SaveReviewResultFrom(ctx, packet.Binding.OwnerAgentID, filepath.Join(source, packet.AnswerPath), source, nil); err != nil {
+				return snap, true, err
+			}
+		}
+	case "s8-hypothesis-result-v1":
+		packet, found, err := runtime.FindHypothesisResultPacket(snap.State, subject.id)
+		if err != nil || !found {
+			if err == nil {
+				err = fmt.Errorf("original S8 packet %s is unavailable", subject.id)
+			}
+			return snap, true, err
+		}
+		receipt, err := service.HypothesisResultReceipt(packet.Binding.OwnerAgentID, packet.ID)
+		if err != nil {
+			return snap, true, err
+		}
+		if !receipt.Accepted || !receipt.WorkComplete {
+			source, err := questionnaireSourceRoot(root, snap.State, packet.Binding.AssignmentID, packet.Binding.OwnerAgentID, packet.Binding.RuntimeID, packet.Binding.BaselineGeneration)
+			if err != nil {
+				return snap, true, err
+			}
+			if _, err := service.ObserveHypothesisResultFrom(ctx, packet.Binding.OwnerAgentID, filepath.Join(source, packet.AnswerPath), source, nil, true); err != nil {
+				return snap, true, err
+			}
+		}
+	default:
+		return snap, false, nil
+	}
+	if cached, ok := ctx.Value(nativeRoutingKey{}).(*nativeRoutingRead); ok {
+		*cached = nativeRoutingRead{root: root}
+	}
+	current, err := nativeRoutingSnapshot(root, in)
+	if err != nil {
+		return snap, true, err
+	}
+	if subject.kind == "s7-review-result-v1" && s7SuccessorPending(root, current.State) {
+		applies, compareErr := reviewPacketAppliesToCurrent(root, current.State, subject.id, ctx)
+		if compareErr != nil {
+			return current, true, fmt.Errorf("original S7 answer is retained; its relationship to the current responsibility is unknown: %w", compareErr)
+		}
+		if applies {
+			current, _, err = continueS7AcceptanceResult(ctx, root, filepath.Join(root, ".claude/loop-state.json"), filepath.Join(root, ".claude/loop-events.jsonl"), current)
+		}
+	}
+	return current, true, err
 }
 
 func nativeReturnSummary(root string, snap runtime.Snapshot, subject nativeReturnSubject) (string, error) {
@@ -182,14 +353,15 @@ func nativeReturnSummaryContext(ctx context.Context, root string, snap runtime.S
 	}
 	if subject.targeted != nil {
 		var records []string
-		for _, ref := range repairArtifactRefs(repairPointerCLI(snap.State), "targeted_reverification_artifacts", "", "") {
-			var value repair.TargetedReverification
-			if err := repairLeadIndexedSource(root, ref, &value); err != nil {
-				return "", err
-			}
-			if value.ImpactID == subject.targeted.impact.ImpactID && value.OriginalAssignmentID == subject.targeted.originalAssignmentID && value.PerformingAssignmentID == subject.id {
-				records = append(records, filepath.Join(root, ref.Path)+" result="+value.Result)
-			}
+		facts, err := repair.LoadTargetedReceiptFacts(ctx, root, repairPointerCLI(snap.State), subject.id, false)
+		if err != nil {
+			return "", err
+		}
+		for _, fact := range facts.Rows {
+			records = append(records, filepath.Join(root, fact.Ref.Path)+" result="+fact.Result)
+		}
+		if len(records) == 0 && len(facts.Unknown) > 0 {
+			return "Accepted historical Targeted references exist, but the unavailable original report leaves their responsibility and conclusion unknown. The current responsibility " + subject.ref + " is not established as either received or unreceived. Main preserves those facts and handles the actual uncertainty; no additional author save or Stop is requested.", nil
 		}
 		if len(records) == 0 {
 			diagnostic, _ := nativeS9ReturnDiagnosticRecordContext(ctx, root, snap, subject.ref)
@@ -213,7 +385,11 @@ func nativeReturnSummaryContext(ctx context.Context, root string, snap runtime.S
 		if found && diagnostic.Attempt != nil && diagnostic.Attempt.Stage == "targeted_received" {
 			completion = diagnostic.historicalMessage()
 		}
-		return completion + " Original Targeted records: " + strings.Join(records, "; ") + ". " + repairHandoffProjectionContext(root, snap.State), nil
+		message := completion + " Original Targeted records: " + strings.Join(records, "; ") + ". These record their original conclusions and do not by themselves establish coverage of later changes. "
+		if len(facts.Unknown) > 0 {
+			message += "Other accepted historical references have an unknown association or conclusion; Main preserves them and handles the uncertainty. "
+		}
+		return message + repairHandoffProjectionContext(root, snap.State), nil
 	}
 	s7Diagnostic := ""
 	if subject.kind == "s7-review-result-v1" {
@@ -258,7 +434,7 @@ func nativeReturnSummaryContext(ctx context.Context, root string, snap runtime.S
 			receipt.NextAction += nativeS7AcceptedOutletForRequest(ctx, root, snap, p)
 		}
 		if err == nil && !receipt.Accepted {
-			current, currentErr := runtime.ProjectCurrentReviewResultPacketIndex(snap.State, p.Binding.OwnerAgentID)
+			current, currentErr := runtime.ProjectIssuedReviewResultPacketIndex(snap.State, p.Binding.OwnerAgentID)
 			if currentErr != nil {
 				return prefix + " The original receipt query did not establish acceptance, but current responsibility membership could not be verified: " + currentErr.Error() + ". Main restores the original responsibility index; this does not establish that the exact questionnaire is historical or replaced.", nil
 			}
@@ -285,9 +461,14 @@ func nativeReturnSummaryContext(ctx context.Context, root string, snap runtime.S
 			return "", e
 		}
 		receipt, err = s.HypothesisResultReceipt(p.Binding.OwnerAgentID, p.ID)
+		if err == nil && receipt.Accepted && len(p.LateResults) != 0 {
+			receipt.NextAction += " 原 Investigator 晚到结果已收；本次接收未自动改变原 Case、既有批准或当前阶段。Main 查阅本人原结果并判断其影响，无需作者复送。"
+		}
 		if err == nil && !receipt.Accepted {
 			if diagnostic := submission.PlanningDiagnostic(root, snap.State, "S8 native Stop "+p.ID); diagnostic != "" {
 				prefix = diagnostic + ". This describes the last attempted reception, not a new validation or an accepted result. "
+			} else if nativeExecutionInContext(ctx) == nativeExecutionCompleted {
+				prefix = nativeS8CurrentAnswerDiagnostic(ctx, root, snap.State, p)
 			}
 		}
 	}
@@ -313,6 +494,30 @@ func nativeReturnSummaryContext(ctx context.Context, root string, snap runtime.S
 	}
 	data, err := json.Marshal(receipt)
 	return prefix + string(data), err
+}
+
+// A returned but unreceived original responsibility may be inspected without
+// invoking its Writer. The result describes the current answer, not a lost
+// historical Stop failure, and never changes the receipt or author work.
+func nativeS8CurrentAnswerDiagnostic(ctx context.Context, root string, state map[string]any, packet workpacket.HypothesisResultPacket) string {
+	if ctx.Err() != nil {
+		return ""
+	}
+	owner := packet.Binding.OwnerAgentID
+	source, err := questionnaireSourceRoot(root, state, packet.Binding.AssignmentID, owner, packet.Binding.RuntimeID, packet.Binding.BaselineGeneration)
+	if err != nil {
+		return fmt.Sprintf("S8 current answer observation for owner %s: original source is unknown: %v. ", owner, err)
+	}
+	answer := filepath.Join(source, packet.AnswerPath)
+	data, err := workpacket.ReadFile(source, packet.AnswerPath, 20<<20)
+	if err != nil {
+		return fmt.Sprintf("S8 current answer observation for owner %s, answer %s: current file is unavailable: %v. This is not a historical Stop diagnosis. ", owner, answer, err)
+	}
+	_, _, issues := workpacket.ParseHypothesisResultAnswer(packet, data)
+	if len(issues) != 0 {
+		return fmt.Sprintf("S8 current answer observation for owner %s, answer %s: %s. This is not a historical Stop diagnosis. ", owner, answer, (&workpacket.AnswerError{Label: "S8 answer", Fields: issues}).Error())
+	}
+	return fmt.Sprintf("S8 current answer observation for owner %s, answer %s: its current fields parse; the cause of the earlier unreceived return is unknown. This is not a historical Stop diagnosis. ", owner, answer)
 }
 
 // This is a read failure, never a submission outcome. Keep any independently

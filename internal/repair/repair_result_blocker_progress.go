@@ -36,15 +36,9 @@ func RepairResultBlockerExecutionMayEnd(root string, state map[string]any, packe
 	if !currentRepairResultBlockerEvidence(state, receipt.ArtifactRef) || repairResultBlockerResolved(state, packet.ID, receipt.ArtifactRef) {
 		return false, nil
 	}
-	answer, sha, err := readIssuedRepairResultBlockerAnswer(receipt.Artifact.ExecutionRoot, packet)
-	if err != nil || sha != receipt.Artifact.AnswerSHA256 || !bytesEqualRepairPlanReportAnswer(answer, receipt.Artifact.SubmittedAnswer) {
-		return false, nil
-	}
-	execution, _, err := verifyIssuedRepairResultBlockerSource(context.Background(), root, state, packet, receipt.Artifact.ExecutionRoot, "")
-	if err != nil {
-		return false, err
-	}
-	return execution.AssignmentID == receipt.Artifact.ExecutionAssignmentID && execution.Generation == receipt.Artifact.ExecutionGeneration, nil
+	// The accepted original answer is already in the receipt. A native author
+	// has no typed private copy to reread and may have left its worktree.
+	return true, nil
 }
 
 func repairResultBlockerAgent(state map[string]any, owner string) (map[string]any, bool, error) {

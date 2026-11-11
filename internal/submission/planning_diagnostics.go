@@ -3,6 +3,7 @@ package submission
 import (
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -20,7 +21,7 @@ func planningDiagnosticPath(state map[string]any, kind string) string {
 	life, _ := state["lifecycle"].(map[string]any)
 	baseline, _ := state["baseline"].(map[string]any)
 	scope, _ := json.Marshal([]any{state["runtime_id"], baseline["generation"], life["state"], life["phase"], life["phase_revision"], kind})
-	return ".claude/diagnostics/planning/" + workpacket.Digest(scope) + ".json"
+	return ".claude/diagnostics/planning/" + base64.RawURLEncoding.EncodeToString(scope) + ".json"
 }
 
 // RecordPlanningDiagnostic is best-effort display storage. Failure cannot turn

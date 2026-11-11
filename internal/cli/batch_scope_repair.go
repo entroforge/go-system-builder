@@ -1,8 +1,6 @@
 package cli
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -20,17 +18,14 @@ import (
 )
 
 type batchScopePlan struct {
-	Runtime       string            `json:"runtime_id"`
-	Revision      int               `json:"revision"`
-	StateHash     string            `json:"state_sha256"`
-	Removed       []string          `json:"removed_document_ids"`
-	RetainedTasks []string          `json:"retained_task_ids"`
-	Invalidated   []string          `json:"invalidated_evidence_ids"`
-	FileHashes    map[string]string `json:"file_hashes"`
-	Target        string            `json:"target"`
+	Runtime       string   `json:"runtime_id"`
+	Revision      int      `json:"revision"`
+	Removed       []string `json:"removed_document_ids"`
+	RetainedTasks []string `json:"retained_task_ids"`
+	Invalidated   []string `json:"invalidated_evidence_ids"`
+	Target        string   `json:"target"`
 }
 
-func scopeHash(b []byte) string { s := sha256.Sum256(b); return hex.EncodeToString(s[:]) }
 func scopeFile(root, rel string) ([]byte, error) {
 	if filepath.IsAbs(rel) || filepath.ToSlash(filepath.Clean(rel)) != rel || strings.HasPrefix(rel, "../") {
 		return nil, fmt.Errorf("unsafe document path %q", rel)
@@ -53,9 +48,7 @@ func scopeFile(root, rel string) ([]byte, error) {
 	return os.ReadFile(path)
 }
 func inspectBatchScope(root string, state map[string]any) (batchScopePlan, error) {
-	p := batchScopePlan{Runtime: stringValue(state["runtime_id"]), Revision: batchInt(state["revision"]), FileHashes: map[string]string{}, Target: "document_verification"}
-	raw, _ := json.Marshal(state)
-	p.StateHash = scopeHash(raw)
+	p := batchScopePlan{Runtime: stringValue(state["runtime_id"]), Revision: batchInt(state["revision"]), Target: "document_verification"}
 	life, _ := state["lifecycle"].(map[string]any)
 	if life["state"] != "building" || state["pause"] != nil {
 		return p, fmt.Errorf("repair requires unpaused building before Builder execution")
@@ -65,23 +58,8 @@ func inspectBatchScope(root string, state map[string]any) (batchScopePlan, error
 	if id == "" || req["status"] != "locked" {
 		return p, fmt.Errorf("locked binding required")
 	}
-	read := func(rel string, want any) ([]byte, error) {
-		b, e := scopeFile(root, rel)
-		if e != nil {
-			return nil, e
-		}
-		h := scopeHash(b)
-		if h != want {
-			return nil, fmt.Errorf("fingerprint drift: %s", rel)
-		}
-		p.FileHashes[rel] = h
-		return b, nil
-	}
-	if _, err := read(stringValue(req["path"]), req["sha256"]); err != nil {
-		return p, err
-	}
 	review, _ := state["review"].(map[string]any)
-	if batchInt(review["round"]) != 0 || review["clean_round"] != nil {
+	if review["clean_round"] != nil {
 		return p, fmt.Errorf("review already started; manual recovery assessment required")
 	}
 	entities, _ := state["entities"].(map[string]any)
@@ -100,9 +78,6 @@ func inspectBatchScope(root string, state map[string]any) (batchScopePlan, error
 			return p, fmt.Errorf("Builder evidence exists; execution-aware recovery required")
 		}
 		if kind == "document_review" && e["status"] == "valid" {
-			if _, err := read(stringValue(e["path"]), e["sha256"]); err != nil {
-				return p, err
-			}
 			p.Invalidated = append(p.Invalidated, stringValue(e["id"]))
 		}
 	}
@@ -124,7 +99,7 @@ func inspectBatchScope(root string, state map[string]any) (batchScopePlan, error
 		if kind != "task" && kind != "contract" && kind != "design" {
 			continue
 		}
-		b, err := read(stringValue(d["path"]), d["sha256"])
+		b, err := scopeFile(root, stringValue(d["path"]))
 		if err != nil {
 			return p, err
 		}
@@ -174,8 +149,13 @@ func runBatchScopeRepair(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "stale or changed repair plan; inspect again")
 		return 1
 	}
-	event := fmt.Sprintf("evt-batch-scope-repaired-r%d", plan.Revision+1)
-	_, err = store.Update(plan.Revision, runtime.Mutation{EventID: event, TransitionID: "BATCH-SCOPE-REPAIR", Actor: "framework-maintainer", Event: "batch_scope_repaired", IdempotencyKey: event, RuntimeID: plan.Runtime, From: map[string]any{"state": "building", "phase": nil}, To: map[string]any{"state": "document_verification", "phase": nil}, BaselineGeneration: batchNestedInt(snapshot.State, "baseline", "generation"), RequestID: "repair-batch-scope", OccurredAt: time.Now().UTC(), Message: fmt.Sprintf("Removed foreign registrations %v; retained tasks %v; invalidated document reviews %v; files preserved; repeat S5", plan.Removed, plan.RetainedTasks, plan.Invalidated), Apply: func(state map[string]any) error {
+	// The responsibility is the Runtime that owns the polluted scope; the
+	// intent is the exact set of foreign registrations this repair removes.
+	// The repaired lifecycle admits no second batch-scope repair, so this
+	// intent key is stable and carries no Runtime write count (G18 §1.3).
+	intent := domainEventToken(strings.Join(plan.Removed, "+"))
+	event := fmt.Sprintf("evt-batch-scope-repaired-%s-%s", plan.Runtime, intent)
+	_, err = store.Update(plan.Revision, runtime.Mutation{EventID: event, TransitionID: "BATCH-SCOPE-REPAIR", Actor: "framework-maintainer", Event: "batch_scope_repaired", IdempotencyKey: fmt.Sprintf("runtime:batch-scope-repair:%s:%s", plan.Runtime, intent), RuntimeID: plan.Runtime, From: map[string]any{"state": "building", "phase": nil}, To: map[string]any{"state": "document_verification", "phase": nil}, BaselineGeneration: batchNestedInt(snapshot.State, "baseline", "generation"), RequestID: "repair-batch-scope", OccurredAt: time.Now().UTC(), Message: fmt.Sprintf("Removed foreign registrations %v; retained tasks %v; invalidated document reviews %v; files preserved; repeat S5", plan.Removed, plan.RetainedTasks, plan.Invalidated), Apply: func(state map[string]any) error {
 		current, err := inspectBatchScope(*root, state)
 		if err != nil {
 			return err

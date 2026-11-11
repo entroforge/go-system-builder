@@ -14,7 +14,7 @@ func taskConventionsSources(a TaskAnalysisArtifact, p Packet) (map[string]string
 		return result, nil
 	}
 	var projections []projectconventions.Projection
-	if err := json.Unmarshal(a.TaskConventions, &projections); err != nil {
+	if err := projectconventions.DecodeProjections(a.TaskConventions, &projections); err != nil {
 		return nil, err
 	}
 	var tasks []struct {
@@ -42,13 +42,10 @@ func taskConventionsSources(a TaskAnalysisArtifact, p Packet) (map[string]string
 			if source.Status != "readable" {
 				continue
 			}
-			if !safeRelative(source.Path) || !digestPattern.MatchString(source.SHA256) {
-				return nil, fmt.Errorf("convention source lacks a safe original digest")
+			if !safeRelative(source.Path) {
+				return nil, fmt.Errorf("convention source lacks a safe original path")
 			}
-			if prior, ok := result[source.Path]; ok && prior != source.SHA256 {
-				return nil, fmt.Errorf("convention source hashes conflict")
-			}
-			result[source.Path] = source.SHA256
+			result[source.Path] = ""
 		}
 	}
 	return result, nil

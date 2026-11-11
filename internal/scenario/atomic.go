@@ -1,6 +1,7 @@
 package scenario
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -21,17 +22,15 @@ const (
 )
 
 type transactionJournal struct {
-	Phase               transactionPhase `json:"phase"`
-	CasesTemp           string           `json:"cases_temp"`
-	CoverageTemp        string           `json:"coverage_temp"`
-	CasesBackup         string           `json:"cases_backup"`
-	CoverageBackup      string           `json:"coverage_backup"`
-	CasesExisted        bool             `json:"cases_existed"`
-	CoverageExisted     bool             `json:"coverage_existed"`
-	CasesInstalled      bool             `json:"cases_installed"`
-	CoverageInstalled   bool             `json:"coverage_installed"`
-	CasesFingerprint    string           `json:"cases_fingerprint"`
-	CoverageFingerprint string           `json:"coverage_fingerprint"`
+	Phase             transactionPhase `json:"phase"`
+	CasesTemp         string           `json:"cases_temp"`
+	CoverageTemp      string           `json:"coverage_temp"`
+	CasesBackup       string           `json:"cases_backup"`
+	CoverageBackup    string           `json:"coverage_backup"`
+	CasesExisted      bool             `json:"cases_existed"`
+	CoverageExisted   bool             `json:"coverage_existed"`
+	CasesInstalled    bool             `json:"cases_installed"`
+	CoverageInstalled bool             `json:"coverage_installed"`
 }
 
 type atomicFaultPoint string
@@ -46,7 +45,7 @@ var atomicFaultHook func(atomicFaultPoint)
 // a small recoverable journal. This is crash-recoverable replacement, not a
 // claim of filesystem-level atomicity across two independent renames.
 func writeOutputsAtomically(directory string, cases, coverage []byte) error {
-	if err := recoverTransaction(directory); err != nil {
+	if _, err := recoverTransaction(directory); err != nil {
 		return fmt.Errorf("recover previous output transaction: %w", err)
 	}
 	if err := ensureWritableTarget(filepath.Join(directory, casesFile)); err != nil {
@@ -67,9 +66,8 @@ func writeOutputsAtomically(directory string, cases, coverage []byte) error {
 		directory: directory,
 		casesPath: filepath.Join(directory, casesFile), coveragePath: filepath.Join(directory, coverageFile),
 		casesTemp: casesTemp, coverageTemp: coverageTemp,
-		casesBackup:      filepath.Join(directory, ".scenario-backup-cases.json-"+filepath.Base(casesTemp)),
-		coverageBackup:   filepath.Join(directory, ".scenario-backup-coverage.json-"+filepath.Base(coverageTemp)),
-		casesFingerprint: fingerprint(cases), coverageFingerprint: fingerprint(coverage),
+		casesBackup:    filepath.Join(directory, ".scenario-backup-cases.json-"+filepath.Base(casesTemp)),
+		coverageBackup: filepath.Join(directory, ".scenario-backup-coverage.json-"+filepath.Base(coverageTemp)),
 	}
 	state.casesExisted, err = targetExists(state.casesPath)
 	if err != nil {
@@ -127,13 +125,12 @@ func writeOutputsAtomically(directory string, cases, coverage []byte) error {
 }
 
 type outputSwapState struct {
-	directory                             string
-	casesPath, coveragePath               string
-	casesTemp, coverageTemp               string
-	casesBackup, coverageBackup           string
-	casesExisted, coverageExisted         bool
-	casesInstalled, coverageInstalled     bool
-	casesFingerprint, coverageFingerprint string
+	directory                         string
+	casesPath, coveragePath           string
+	casesTemp, coverageTemp           string
+	casesBackup, coverageBackup       string
+	casesExisted, coverageExisted     bool
+	casesInstalled, coverageInstalled bool
 }
 
 func (state outputSwapState) journal(phase transactionPhase) transactionJournal {
@@ -142,37 +139,29 @@ func (state outputSwapState) journal(phase transactionPhase) transactionJournal 
 		CasesBackup: filepath.Base(state.casesBackup), CoverageBackup: filepath.Base(state.coverageBackup),
 		CasesExisted: state.casesExisted, CoverageExisted: state.coverageExisted,
 		CasesInstalled: state.casesInstalled, CoverageInstalled: state.coverageInstalled,
-		CasesFingerprint: state.casesFingerprint, CoverageFingerprint: state.coverageFingerprint,
 	}
 }
 
 func (state outputSwapState) fail(primary error) error {
 	rollbackErr := state.restore()
-	journalErr := removeTransactionJournal(state.directory)
-	if rollbackErr != nil || journalErr != nil {
-		return errors.Join(primary, fmt.Errorf("rollback output transaction: %w", errors.Join(rollbackErr, journalErr)))
+	if rollbackErr != nil {
+		// Keep the recorded transaction when recovery itself cannot proceed.
+		return errors.Join(primary, fmt.Errorf("rollback output transaction: %w", rollbackErr))
+	}
+	if journalErr := removeTransactionJournal(state.directory); journalErr != nil {
+		return errors.Join(primary, fmt.Errorf("retire output transaction: %w", journalErr))
 	}
 	return primary
 }
 
 func (state outputSwapState) restore() error {
 	var restoreErr error
-	if err := removeInstalledOutput(state.casesPath, state.casesInstalled, state.casesFingerprint); err != nil {
+	// Existing targets may have been edited since an interruption. Preserve
+	// both them and any backup rather than guessing which bytes are ours.
+	if err := restoreBackupIfTargetMissing(state.casesBackup, state.casesPath); err != nil {
 		restoreErr = errors.Join(restoreErr, err)
 	}
-	if err := removeInstalledOutput(state.coveragePath, state.coverageInstalled, state.coverageFingerprint); err != nil {
-		restoreErr = errors.Join(restoreErr, err)
-	}
-	if err := restoreBackup(state.casesBackup, state.casesPath, state.casesExisted); err != nil {
-		restoreErr = errors.Join(restoreErr, err)
-	}
-	if err := restoreBackup(state.coverageBackup, state.coveragePath, state.coverageExisted); err != nil {
-		restoreErr = errors.Join(restoreErr, err)
-	}
-	if err := removeRegularFile(state.casesTemp); err != nil {
-		restoreErr = errors.Join(restoreErr, err)
-	}
-	if err := removeRegularFile(state.coverageTemp); err != nil {
+	if err := restoreBackupIfTargetMissing(state.coverageBackup, state.coveragePath); err != nil {
 		restoreErr = errors.Join(restoreErr, err)
 	}
 	return restoreErr
@@ -198,51 +187,53 @@ func (state outputSwapState) finish() error {
 	return removeTransactionJournal(state.directory)
 }
 
-func recoverTransaction(directory string) error {
+func recoverTransaction(directory string) ([]string, error) {
 	journalPath := filepath.Join(directory, transactionFile)
 	info, err := os.Lstat(journalPath)
 	if errors.Is(err, os.ErrNotExist) {
-		return cleanupOrphanTransactionArtifacts(directory)
+		// An unreferenced file may contain a user's changes; its name alone
+		// does not authorize the framework to remove it.
+		return nil, nil
 	}
 	if err != nil {
-		return fmt.Errorf("inspect transaction journal: %w", err)
+		return nil, fmt.Errorf("inspect transaction journal: %w", err)
 	}
 	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
-		return fmt.Errorf("transaction journal is not a regular file")
+		return nil, fmt.Errorf("transaction journal is not a regular file")
 	}
 	data, err := readRegularFile(journalPath)
 	if err != nil {
-		return fmt.Errorf("read transaction journal: %w", err)
+		return nil, fmt.Errorf("read transaction journal: %w", err)
 	}
 	var journal transactionJournal
-	if err := decodeStrict(data, &journal); err != nil {
-		return fmt.Errorf("decode transaction journal: %w", err)
+	// Unknown historical transaction properties do not authorize recovery.
+	// Decode the complete JSON while using only the original transaction paths
+	// and steps; json.Unmarshal also rejects trailing or malformed input.
+	if err := json.Unmarshal(data, &journal); err != nil {
+		return nil, fmt.Errorf("decode transaction journal: %w", err)
 	}
 	state, err := stateFromJournal(directory, journal)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if journal.Phase == transactionPhaseOutputsInstalled {
-		casesComplete, casesErr := fileHasFingerprint(state.casesPath, state.casesFingerprint)
-		coverageComplete, coverageErr := fileHasFingerprint(state.coveragePath, state.coverageFingerprint)
-		if casesErr != nil || coverageErr != nil {
-			return errors.Join(casesErr, coverageErr)
+	var notes []string
+	for _, pair := range [][2]string{{state.casesPath, state.casesBackup}, {state.coveragePath, state.coverageBackup}} {
+		target, targetErr := targetExists(pair[0])
+		backup, backupErr := targetExists(pair[1])
+		if targetErr != nil || backupErr != nil {
+			return nil, errors.Join(targetErr, backupErr)
 		}
-		if !casesComplete || !coverageComplete {
-			return fmt.Errorf("installed output transaction is incomplete")
+		if target && backup {
+			notes = append(notes, fmt.Sprintf("Preserved current output %s and prior backup %s; their interrupted transaction history is unknown.", pair[0], pair[1]))
 		}
-		if err := state.finish(); err != nil {
-			return fmt.Errorf("finish recovered output transaction: %w", err)
-		}
-		return nil
 	}
 	if err := state.restore(); err != nil {
-		return fmt.Errorf("rollback recovered output transaction: %w", err)
+		return nil, fmt.Errorf("rollback recovered output transaction: %w", err)
 	}
 	if err := removeTransactionJournal(directory); err != nil {
-		return fmt.Errorf("remove recovered transaction journal: %w", err)
+		return nil, fmt.Errorf("remove recovered transaction journal: %w", err)
 	}
-	return nil
+	return notes, nil
 }
 
 func stateFromJournal(directory string, journal transactionJournal) (outputSwapState, error) {
@@ -270,7 +261,6 @@ func stateFromJournal(directory string, journal transactionJournal) (outputSwapS
 		casesBackup: filepath.Join(directory, journal.CasesBackup), coverageBackup: filepath.Join(directory, journal.CoverageBackup),
 		casesExisted: journal.CasesExisted, coverageExisted: journal.CoverageExisted,
 		casesInstalled: journal.CasesInstalled, coverageInstalled: journal.CoverageInstalled,
-		casesFingerprint: journal.CasesFingerprint, coverageFingerprint: journal.CoverageFingerprint,
 	}
 	if err := ensureWritableTarget(state.casesPath); err != nil {
 		return outputSwapState{}, err
@@ -288,18 +278,6 @@ func stateFromJournal(directory string, journal transactionJournal) (outputSwapS
 	}
 	state.casesExisted = state.casesExisted || backupCases
 	state.coverageExisted = state.coverageExisted || backupCoverage
-	if !state.casesInstalled {
-		state.casesInstalled, err = fileHasFingerprint(state.casesPath, state.casesFingerprint)
-		if err != nil {
-			return outputSwapState{}, err
-		}
-	}
-	if !state.coverageInstalled {
-		state.coverageInstalled, err = fileHasFingerprint(state.coveragePath, state.coverageFingerprint)
-		if err != nil {
-			return outputSwapState{}, err
-		}
-	}
 	return state, nil
 }
 
@@ -410,43 +388,18 @@ func targetExists(path string) (bool, error) {
 	return true, nil
 }
 
-func removeInstalledOutput(path string, installed bool, expectedFingerprint string) error {
-	if !installed {
-		return nil
-	}
-	if expectedFingerprint != "" {
-		matches, err := fileHasFingerprint(path, expectedFingerprint)
-		if err != nil {
-			return err
-		}
-		if !matches {
-			return fmt.Errorf("refuse to remove changed installed output %s", path)
-		}
-	}
-	return removeRegularFile(path)
-}
-
-func restoreBackup(backup, target string, existed bool) error {
+func restoreBackupIfTargetMissing(backup, target string) error {
 	backupExists, err := targetExists(backup)
 	if err != nil {
 		return err
 	}
 	if !backupExists {
-		if existed {
-			targetPresent, targetErr := targetExists(target)
-			if targetErr != nil {
-				return targetErr
-			}
-			if !targetPresent {
-				return fmt.Errorf("missing backup %s and target %s", backup, target)
-			}
-		}
 		return nil
 	}
 	if exists, err := targetExists(target); err != nil {
 		return err
 	} else if exists {
-		return fmt.Errorf("cannot restore backup %s over existing target %s", backup, target)
+		return nil
 	}
 	if err := os.Rename(backup, target); err != nil {
 		return fmt.Errorf("restore backup %s: %w", backup, err)
@@ -482,39 +435,9 @@ func readRegularFile(path string) ([]byte, error) {
 	return os.ReadFile(path)
 }
 
-func fileHasFingerprint(path, expected string) (bool, error) {
-	if expected == "" {
-		return false, nil
-	}
-	data, err := readRegularFile(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	return fingerprint(data) == expected, nil
-}
-
 func validateTransactionArtifactName(name string) error {
 	if name == "" || filepath.Base(name) != name || strings.Contains(name, "/") || strings.Contains(name, `\`) || !strings.HasPrefix(name, ".scenario-") {
 		return fmt.Errorf("invalid transaction artifact name %q", name)
 	}
 	return nil
-}
-
-func cleanupOrphanTransactionArtifacts(directory string) error {
-	patterns := []string{".scenario-cases-*", ".scenario-coverage-*", ".scenario-backup-*", ".scenario-journal-*"}
-	var cleanupErr error
-	for _, pattern := range patterns {
-		matches, err := filepath.Glob(filepath.Join(directory, pattern))
-		if err != nil {
-			cleanupErr = errors.Join(cleanupErr, err)
-			continue
-		}
-		for _, path := range matches {
-			cleanupErr = errors.Join(cleanupErr, removeRegularFile(path))
-		}
-	}
-	return cleanupErr
 }

@@ -12,7 +12,7 @@ import (
 
 func TestNativeMainPendingCancellationPreservesPair(t *testing.T) {
 	root := investigationLeadTestRoot(t)
-	marker := stopFingerprintPending(t, root)
+	marker := stopCommitPending(t, root)
 	prior, err := os.ReadFile(marker)
 	if err != nil {
 		t.Fatal(err)
@@ -37,7 +37,7 @@ func TestNativeMainPendingCancellationPreservesPair(t *testing.T) {
 // that it controls those existing downstream paths.
 func TestNativeMainPendingForeignRootDoesNotRecoverAtNativeBoundary(t *testing.T) {
 	root := investigationLeadTestRoot(t)
-	marker := stopFingerprintPending(t, root)
+	marker := stopCommitPending(t, root)
 	prior, err := os.ReadFile(marker)
 	if err != nil {
 		t.Fatal(err)

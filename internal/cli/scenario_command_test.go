@@ -19,6 +19,9 @@ func TestScenarioCLIJourneyFromGenerationToSpecGate(t *testing.T) {
 		t.Fatalf("scenario generate failed: code=%d stdout=%s stderr=%s", code, stdout, stderr)
 	}
 	assertJSONField(t, stdout, "module", "investor-workbench")
+	if strings.Contains(stdout, "fingerprint") || strings.Contains(stdout, "sha256") {
+		t.Fatalf("generate must not register output digests: %s", stdout)
+	}
 
 	stdout, stderr, code = runCLI(t, root, "scenario", "validate", "--module", "investor-workbench", "--root", root)
 	if code != 0 {
@@ -57,9 +60,53 @@ test("module journey", async ({ page }) => {
 	if err := os.WriteFile(casesPath, append(cases, '\n'), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, stderr, code = runCLI(t, root, "scenario", "validate", "--module", "investor-workbench", "--root", root)
-	if code == 0 || !strings.Contains(stderr, "generated") {
-		t.Fatalf("tampered generated output must fail: code=%d stderr=%s", code, stderr)
+	stdout, stderr, code = runCLI(t, root, "scenario", "validate", "--module", "investor-workbench", "--root", root)
+	if code != 0 {
+		t.Fatalf("formatting-only output change must not block validation: code=%d stderr=%s", code, stderr)
+	}
+	if strings.Contains(stdout, "fingerprint") || strings.Contains(stdout, "sha256") {
+		t.Fatalf("validate must not register output digests: %s", stdout)
+	}
+}
+
+func TestScenarioCLIRecoversOldTransactionWithoutDigestOrOverwritingAuthor(t *testing.T) {
+	root := writeScenarioFixture(t, "investor-workbench")
+	if _, stderr, code := runCLI(t, root, "scenario", "generate", "--module", "investor-workbench", "--root", root); code != 0 {
+		t.Fatalf("scenario generate failed: code=%d stderr=%s", code, stderr)
+	}
+	dir := filepath.Join(root, "docs", "design", "prototypes", "investor-workbench")
+	casesPath := filepath.Join(dir, "cases.json")
+	cases, err := os.ReadFile(casesPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authorCases := append(append([]byte(nil), cases...), '\n')
+	if err := os.WriteFile(casesPath, authorCases, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	backupPath := filepath.Join(dir, ".scenario-backup-cases")
+	if err := os.WriteFile(backupPath, []byte("prior author content\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	oldJournal := `{"phase":"outputs_installed","cases_temp":".scenario-cases-old","coverage_temp":".scenario-coverage-old","cases_backup":".scenario-backup-cases","coverage_backup":".scenario-backup-coverage","cases_existed":true,"coverage_existed":false,"cases_installed":true,"coverage_installed":true,"cases_fingerprint":{"unknown":"legacy"},"coverage_fingerprint":123}`
+	if err := os.WriteFile(filepath.Join(dir, ".scenario-transaction.json"), []byte(oldJournal), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr, code := runCLI(t, root, "scenario", "validate", "--module", "investor-workbench", "--root", root)
+	if code != 0 || !strings.Contains(stdout, "recovery_notes") {
+		t.Fatalf("old transaction must continue with an advisory: code=%d stdout=%s stderr=%s", code, stdout, stderr)
+	}
+	if got, err := os.ReadFile(casesPath); err != nil || !bytes.Equal(got, authorCases) {
+		t.Fatalf("author cases overwritten: %q, %v", got, err)
+	}
+	if got, err := os.ReadFile(backupPath); err != nil || string(got) != "prior author content\n" {
+		t.Fatalf("unknown prior backup removed: %q, %v", got, err)
+	}
+	if _, stderr, code := runCLI(t, root, "scenario", "generate", "--module", "investor-workbench", "--root", root); code != 0 {
+		t.Fatalf("preserved old backup must not block the next generate: code=%d stderr=%s", code, stderr)
+	}
+	if got, err := os.ReadFile(backupPath); err != nil || string(got) != "prior author content\n" {
+		t.Fatalf("next generation removed unknown prior backup: %q, %v", got, err)
 	}
 }
 

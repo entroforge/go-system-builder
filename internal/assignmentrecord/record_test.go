@@ -135,8 +135,6 @@ func TestBuildRecordUsesCurrentRuntimeTaskAndOwnerSources(t *testing.T) {
 			}},
 		},
 	}
-	roleSHA := strings.Repeat("a", 64)
-	skillSHA := strings.Repeat("b", 64)
 	record, err := BuildRecord(
 		manifestBytes,
 		"docs/workgroups/s6/manifest.json",
@@ -146,8 +144,8 @@ func TestBuildRecordUsesCurrentRuntimeTaskAndOwnerSources(t *testing.T) {
 		"assignment-s6-record",
 		[]string{"internal"},
 		[]ContextSource{
-			{Kind: "agent_definition", Ref: ".claude/agents/backend-builder.md", ID: "backend-builder", SHA256: roleSHA},
-			{Kind: "authorized_skill", Ref: ".claude/skills/backend-engineering/SKILL.md", ID: "backend-engineering", Version: "1.0.0", SHA256: skillSHA},
+			{Kind: "agent_definition", Ref: ".claude/agents/backend-builder.md", ID: "backend-builder"},
+			{Kind: "authorized_skill", Ref: ".claude/skills/backend-engineering/SKILL.md", ID: "backend-engineering", Version: "1.0.0"},
 		},
 	)
 	if err != nil {
@@ -156,7 +154,7 @@ func TestBuildRecordUsesCurrentRuntimeTaskAndOwnerSources(t *testing.T) {
 	if record.Revision != 1 || record.RegistrationRevision != 9 {
 		t.Fatalf("Record revisions = assignment %d / Runtime %d, want 1 / 9", record.Revision, record.RegistrationRevision)
 	}
-	if record.Task.ID != "TASK-042-01" || record.Task.Version != "v1.0.0" || record.Task.SHA256 != taskSHA {
+	if record.Task.ID != "TASK-042-01" || record.Task.Version != "v1.0.0" {
 		t.Fatalf("Record TASK source = %+v", record.Task)
 	}
 	if record.OwnerAgentID != "agent-s6-record" || !sameStrings(record.EffectiveWritePaths, []string{"internal/pkg"}) {
@@ -264,11 +262,11 @@ func mustJSON(t *testing.T, value any) []byte {
 	return data
 }
 
-func TestBuildRecordRejectsStaleOrUnboundSources(t *testing.T) {
+func TestBuildRecordUsesActualPathsAndRejectsUnboundOwner(t *testing.T) {
 	taskBytes := []byte("official task bytes")
 	manifestBytes, runtimeState, sources := recordTestSources(t, taskBytes)
-	if _, err := BuildRecord(manifestBytes, "docs/workgroups/s6/manifest.json", runtimeState, []byte("changed task bytes"), "TASK-042-01", "assignment-s6-record", []string{"internal"}, sources); err == nil {
-		t.Fatal("TASK bytes that differ from current Runtime registration must fail")
+	if _, err := BuildRecord(manifestBytes, "docs/workgroups/s6/manifest.json", runtimeState, []byte("changed task bytes"), "TASK-042-01", "assignment-s6-record", []string{"internal"}, sources); err != nil {
+		t.Fatalf("actual TASK source was rejected by byte authentication: %v", err)
 	}
 	manifestBytes, runtimeState, sources = recordTestSources(t, taskBytes)
 	deleteOwner(runtimeState)
@@ -278,18 +276,14 @@ func TestBuildRecordRejectsStaleOrUnboundSources(t *testing.T) {
 	manifestBytes, runtimeState, sources = recordTestSources(t, taskBytes)
 	sources = sources[:1]
 	if _, err := BuildRecord(manifestBytes, "docs/workgroups/s6/manifest.json", runtimeState, taskBytes, "TASK-042-01", "assignment-s6-record", []string{"internal"}, sources); err == nil {
-		t.Fatal("missing actual role/Skill frozen source hashes must fail")
+		t.Fatal("missing actual role/Skill sources must fail")
 	}
 }
 
-func TestRecordFindAndDigestBindExactRevision(t *testing.T) {
+func TestRecordFindBindsExactRevision(t *testing.T) {
 	record := recordTestRecord()
 	if err := ValidateRecord(record); err != nil {
 		t.Fatal(err)
-	}
-	firstDigest, err := record.Digest()
-	if err != nil || !recordSHA256RE.MatchString(firstDigest) {
-		t.Fatalf("Digest() = %q, %v", firstDigest, err)
 	}
 	second := record
 	second.Revision = 2
@@ -356,8 +350,8 @@ func recordTestSources(t *testing.T, taskBytes []byte) ([]byte, map[string]any, 
 		},
 	}
 	sources := []ContextSource{
-		{Kind: "agent_definition", Ref: ".claude/agents/backend-builder.md", ID: "backend-builder", SHA256: strings.Repeat("a", 64)},
-		{Kind: "authorized_skill", Ref: ".claude/skills/backend-engineering/SKILL.md", ID: "backend-engineering", SHA256: strings.Repeat("b", 64)},
+		{Kind: "agent_definition", Ref: ".claude/agents/backend-builder.md", ID: "backend-builder"},
+		{Kind: "authorized_skill", Ref: ".claude/skills/backend-engineering/SKILL.md", ID: "backend-engineering"},
 	}
 	return manifestBytes, state, sources
 }
@@ -369,13 +363,10 @@ func deleteOwner(state map[string]any) {
 }
 
 func recordTestRecord() Record {
-	hashA := strings.Repeat("a", 64)
-	hashB := strings.Repeat("b", 64)
-	hashC := strings.Repeat("c", 64)
-	manifest := ContextSource{Kind: "manifest", Ref: "docs/workgroups/s6/manifest.json", ID: "team-manifest-s6", Version: "v1.2.0", SHA256: hashA}
-	task := ContextSource{Kind: "task", Ref: "docs/dev/tasks/TASK-042-01.md", ID: "TASK-042-01", Version: "v1.0.0", SHA256: hashB}
-	role := ContextSource{Kind: "agent_definition", Ref: ".claude/agents/backend-builder.md", ID: "backend-builder", SHA256: hashC}
-	skill := ContextSource{Kind: "authorized_skill", Ref: ".claude/skills/backend-engineering/SKILL.md", ID: "backend-engineering", SHA256: hashA}
+	manifest := ContextSource{Kind: "manifest", Ref: "docs/workgroups/s6/manifest.json", ID: "team-manifest-s6", Version: "v1.2.0"}
+	task := ContextSource{Kind: "task", Ref: "docs/dev/tasks/TASK-042-01.md", ID: "TASK-042-01", Version: "v1.0.0"}
+	role := ContextSource{Kind: "agent_definition", Ref: ".claude/agents/backend-builder.md", ID: "backend-builder"}
+	skill := ContextSource{Kind: "authorized_skill", Ref: ".claude/skills/backend-engineering/SKILL.md", ID: "backend-engineering"}
 	sources, _ := canonicalContextSources([]ContextSource{manifest, task, role, skill})
 	scope := ScopeBasis{
 		ManifestScope:       []string{"internal"},

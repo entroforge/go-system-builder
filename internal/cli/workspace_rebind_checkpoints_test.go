@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"github.com/entroforge/go-system-builder/internal/checkexec"
 	"github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/semantic"
 	"os"
@@ -21,7 +20,7 @@ import (
 func TestRelocatedCheckpointRecoveryPreservesEvidence(t *testing.T) {
 	root := t.TempDir()
 	old := filepath.Join(t.TempDir(), "old")
-	e := workspace.Execution{RuntimeID: "loop-test", BaselineGeneration: 1, AssignmentID: "assignment", Path: filepath.Join(old, ".worktrees/worker"), Branch: "worker", TargetBranch: "test2", Status: "ready", DeliveryRef: "candidate.json", DeliverySHA256: "candidate-hash", Checks: []string{"test product"}}
+	e := workspace.Execution{RuntimeID: "loop-test", BaselineGeneration: 1, AssignmentID: "assignment", Path: filepath.Join(old, ".worktrees/worker"), Branch: "worker", TargetBranch: "test2", Status: "ready", DeliveryRef: "candidate.json", Checks: []string{"test product"}}
 	path := integration.CheckpointPath(root, e.RuntimeID, 1, e.AssignmentID)
 	receipt := filepath.Join(filepath.Dir(path), "checks/receipt.json")
 	if err := os.MkdirAll(filepath.Dir(receipt), 0700); err != nil {
@@ -31,7 +30,7 @@ func TestRelocatedCheckpointRecoveryPreservesEvidence(t *testing.T) {
 	if err := os.WriteFile(receipt, data, 0600); err != nil {
 		t.Fatal(err)
 	}
-	cp := integration.Checkpoint{AssignmentID: e.AssignmentID, BaselineGeneration: 1, WorktreePath: e.Path, SourceBranch: e.Branch, TargetBranch: e.TargetBranch, State: integration.StateComplete, SourceHead: "source", MergeCommit: "merge", TestedHead: "tested", CompletionReportSHA256: "report-hash", CompletionReportPath: "reports/result.json", CheckReceipts: []string{filepath.Join(old, ".claude/evidence/loop-test/g1/worktree/assignment/checks/receipt.json")}}
+	cp := integration.Checkpoint{AssignmentID: e.AssignmentID, BaselineGeneration: 1, WorktreePath: e.Path, SourceBranch: e.Branch, TargetBranch: e.TargetBranch, State: integration.StateComplete, CompletionReportPath: "reports/result.json", CheckReceipts: []string{filepath.Join(old, ".claude/evidence/loop-test/g1/worktree/assignment/checks/receipt.json")}}
 	cp, err := integration.DefaultCheckpointStore().ForceWrite(path, cp)
 	if err != nil {
 		t.Fatal(err)
@@ -70,7 +69,7 @@ func TestRelocatedCheckpointRecoveryPreservesEvidence(t *testing.T) {
 	if _, err := verifiedDomainChecks(root, e, got); err == nil {
 		t.Fatal("accepted old receipt CWD without explicit mapping")
 	}
-	got.TestedHead = "different"
+	got.State = integration.StatePreserved
 	if _, err := integration.DefaultCheckpointStore().ForceWrite(path, got); err != nil {
 		t.Fatal(err)
 	}
@@ -81,30 +80,13 @@ func TestRelocatedCheckpointRecoveryPreservesEvidence(t *testing.T) {
 
 func quoteJSON(s string) string { data, _ := json.Marshal(s); return string(data) }
 
-func TestRelocatedCheckpointPreservesCapturedFactsAndOnlyMovesReceiptCoordinate(t *testing.T) {
-	old, newRoot := filepath.Join(t.TempDir(), "old"), t.TempDir()
-	e := workspace.Execution{AssignmentID: "assignment", BaselineGeneration: 1, Path: filepath.Join(old, ".worktrees/worker"), Branch: "worker", TargetBranch: "test2", Status: "complete"}
-	path := filepath.Join(old, ".claude/evidence/checks/receipt.json")
-	ref := checkexec.ToolReceipt{Path: path, SHA256: checkexec.Hash([]byte("receipt")), LogSHA256: checkexec.Hash([]byte("log")), Checkout: old, Command: "true", ProfileDigest: checkexec.Hash([]byte("profile")), Binding: checkexec.Binding{RuntimeID: "runtime", Generation: 1, AssignmentID: e.AssignmentID, Owner: "builder", ExecutionGeneration: 1, Responsibility: "main_required_integration"}}
-	cp := integration.Checkpoint{AssignmentID: e.AssignmentID, BaselineGeneration: 1, State: integration.StateComplete, WorktreePath: e.Path, SourceBranch: e.Branch, TargetBranch: e.TargetBranch, TestedHead: "tested", MergeCommit: "merge", CheckReceipts: []string{path}, ToolCheckReceipts: []checkexec.ToolReceipt{ref}}
-	got, err := relocatedCheckpoint(cp, e, workspace.RebindRequest{OldMainRoot: old, NewMainRoot: newRoot, Paths: map[string]string{e.Path: filepath.Join(newRoot, ".worktrees/worker")}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	expected := ref
-	expected.Path = filepath.Join(newRoot, ".claude/evidence/checks/receipt.json")
-	if len(got.ToolCheckReceipts) != 1 || got.ToolCheckReceipts[0] != expected || cp.ToolCheckReceipts[0] != ref {
-		t.Fatal("relocation mutated captured facts", got.ToolCheckReceipts)
-	}
-}
-
 func TestRelocationRejectsUnfinishedDelivery(t *testing.T) {
 	for _, state := range []string{"missing", integration.StateVerified, integration.StateCleanupPending, integration.StatePreserved} {
 		t.Run(state, func(t *testing.T) {
 			root := t.TempDir()
 			e := workspace.Execution{RuntimeID: "loop-test", BaselineGeneration: 1, AssignmentID: "assignment", Path: "/old/worker", Branch: "worker", TargetBranch: "test2", Status: "ready", DeliveryRef: "candidate.json"}
 			if state != "missing" {
-				if _, err := integration.DefaultCheckpointStore().ForceWrite(integration.CheckpointPath(root, e.RuntimeID, 1, e.AssignmentID), integration.Checkpoint{AssignmentID: e.AssignmentID, BaselineGeneration: 1, State: state, WorktreePath: e.Path, SourceBranch: e.Branch, TargetBranch: e.TargetBranch, TestedHead: "tested", MergeCommit: "merge"}); err != nil {
+				if _, err := integration.DefaultCheckpointStore().ForceWrite(integration.CheckpointPath(root, e.RuntimeID, 1, e.AssignmentID), integration.Checkpoint{AssignmentID: e.AssignmentID, BaselineGeneration: 1, State: state, WorktreePath: e.Path, SourceBranch: e.Branch, TargetBranch: e.TargetBranch}); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -149,12 +131,12 @@ func TestTerminalRebindRecoversRuntimeAndCheckpointBoundaries(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(fix.root, ".claude/loop-state.json"), data, 0600); err != nil {
 				t.Fatal(err)
 			}
-			cp := integration.Checkpoint{AssignmentID: e.AssignmentID, BaselineGeneration: e.BaselineGeneration, SourceBranch: e.Branch, TargetBranch: e.TargetBranch, WorktreePath: e.Path, State: integration.StateComplete, SourceHead: e.BaseCommit, MergeCommit: e.BaseCommit, TestedHead: e.BaseCommit, CompletionReportSHA256: "unchanged-report"}
+			cp := integration.Checkpoint{AssignmentID: e.AssignmentID, BaselineGeneration: e.BaselineGeneration, SourceBranch: e.Branch, TargetBranch: e.TargetBranch, WorktreePath: e.Path, State: integration.StateComplete}
 			if _, err := integration.DefaultCheckpointStore().ForceWrite(integration.CheckpointPath(fix.root, e.RuntimeID, e.BaselineGeneration, e.AssignmentID), cp); err != nil {
 				t.Fatal(err)
 			}
 			moved := filepath.Join(t.TempDir(), "moved")
-			req := workspace.RebindRequest{RuntimeID: workspace.RuntimeID(state), OldMainRoot: fix.root, OldCommonDir: b.CommonDir, NewMainRoot: moved, NewCommonDir: filepath.Join(moved, ".git"), Branch: b.Branch, ExpectedHead: b.BoundHead, Paths: map[string]string{e.Path: filepath.Join(moved, ".worktrees/worker")}}
+			req := workspace.RebindRequest{RuntimeID: workspace.RuntimeID(state), OldMainRoot: fix.root, OldCommonDir: b.CommonDir, NewMainRoot: moved, NewCommonDir: filepath.Join(moved, ".git"), Branch: b.Branch, Paths: map[string]string{e.Path: filepath.Join(moved, ".worktrees/worker")}}
 			if err := os.Rename(fix.root, moved); err != nil {
 				t.Fatal(err)
 			}
@@ -169,9 +151,6 @@ func TestTerminalRebindRecoversRuntimeAndCheckpointBoundaries(t *testing.T) {
 			}
 
 			for _, change := range []func(*relocationCheckpoint){
-				func(r *relocationCheckpoint) { r.After.TestedHead = "forged-test" },
-				func(r *relocationCheckpoint) { r.After.CompletionReportSHA256 = "forged-report" },
-				func(r *relocationCheckpoint) { r.After.SourceHead = "forged-source" },
 				func(r *relocationCheckpoint) { r.After.WorktreePath = moved },
 				func(r *relocationCheckpoint) { r.Path = "checkpoint-elsewhere.json" },
 			} {
@@ -239,8 +218,8 @@ func TestTerminalRebindRecoversRuntimeAndCheckpointBoundaries(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if current.WorktreePath != req.Paths[e.Path] || current.SourceHead != cp.SourceHead || current.MergeCommit != cp.MergeCommit || current.TestedHead != cp.TestedHead || current.CompletionReportSHA256 != cp.CompletionReportSHA256 {
-				t.Fatal("relocation changed evidence identity")
+			if current.WorktreePath != req.Paths[e.Path] || current.State != cp.State || current.AssignmentID != cp.AssignmentID || current.SourceBranch != cp.SourceBranch || current.TargetBranch != cp.TargetBranch {
+				t.Fatal("relocation changed the original checkpoint responsibility")
 			}
 			// A later baseline must not strand an older registered terminal execution.
 			bound.Executions[e.AssignmentID] = func() workspace.Execution { old := bound.Executions[e.AssignmentID]; old.Status = "ready"; return old }()

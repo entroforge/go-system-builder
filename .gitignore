@@ -22,6 +22,7 @@ coverage.html
 /tmp/
 /temp/
 *.tmp
+*.lock.process
 
 # IDE and editor files
 .idea/

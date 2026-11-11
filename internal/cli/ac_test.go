@@ -82,7 +82,13 @@ func acFixtureRoot(t *testing.T) string {
 func writeACState(t *testing.T, root string, state map[string]any) {
 	commitStageFixture(t, root)
 	if bound, ok := state["bound_req"].(map[string]any); ok {
-		bound["workspace"] = map[string]any{"project_root": root, "dev_branch": "test-development", "release_upstream": "origin/release", "bound_commit": "fixture"}
+		// The current runtime workspace binding contract carries exactly
+		// project_root / dev_branch / release_upstream. The former
+		// bound_commit field is rejected by the state schema
+		// (additionalProperties=false), so a fixture that still ships it
+		// fails validation and every runtime write — the milestone
+		// refresh included — is rolled back.
+		bound["workspace"] = map[string]any{"project_root": root, "dev_branch": "test-development", "release_upstream": "origin/release"}
 	}
 	t.Helper()
 	path := filepath.Join(root, ".claude", "loop-state.json")
@@ -206,6 +212,17 @@ func phaseLetter(phase string) string {
 	return "2"
 }
 
+// acCurrentS2NextAction is the next action the runtime currently projects
+// for the S2 (planning.design) cursor (internal/cli/run.go). The blueprint
+// requires the recovery summary to carry the accurate next action, so the
+// AC tests pin the live projection instead of the fixture's own wording.
+const acCurrentS2NextAction = "complete the planning phase for design"
+
+// acStaleFixtureObjective is the hand-written objective the shared fixture
+// ships. It is the pre-refactor wording; a milestone that still carries it
+// was never refreshed from the runtime.
+const acStaleFixtureObjective = "complete the design phase"
+
 // parseQualityGateField digs a nested quality_gate.status string out of the
 // JSON wire payload the hook entrypoint prints to stdout. Returns the
 // decoded status plus the parent envelope so callers can assert on other
@@ -265,7 +282,6 @@ func TestAC001_PreToolUseAutoAdvancesOnSatisfiedGate(t *testing.T) {
 	input := `{
 		"session_id":"session-ac-001",
 		"hook_event_name":"PreToolUse",
-		"agent_id":"agent-1",
 		"tool_name":"Write",
 		"tool_input":{"file_path":"docs/architecture/ARCHITECTURE-039.md"}
 	}`
@@ -300,7 +316,6 @@ func TestAC002_NotReadyQualityGateDoesNotBlockTool(t *testing.T) {
 	input := `{
 		"session_id":"session-ac-002",
 		"hook_event_name":"PreToolUse",
-		"agent_id":"agent-1",
 		"tool_name":"Edit",
 		"tool_input":{"file_path":"internal/cli/controller.go"}
 	}`
@@ -396,12 +411,16 @@ func TestAC004_PreToolUseObservesCommandsWithoutToolDeny(t *testing.T) {
 	}
 }
 
-// TestAC005_MilestoneProjectsQualityGate pins AC-005 from REQ-039 §19:
-// the durable Milestone must persist a quality_gate projection. The
-// Controller's persistGateForPreToolUse helper writes the gate into the
-// runtime snapshot for the PreToolUse path; subsequent SessionStart
-// projections must surface the same gate fingerprint (via
-// snapshot.Milestone.QualityGate).
+// TestAC005_MilestonePersistsQualityGate pins AC-005 from REQ-039 §19:
+// after a PreToolUse observation the durable Milestone must carry the
+// recovery summary the blueprint requires — stage, objective, action,
+// protocol_ref and the recovery steps (L4-runtime-control-plane.md §269).
+//
+// The gate projection is no longer part of that contract: the milestone
+// summary is a recovery handover, not a hash artefact, and the blueprint
+// forbids re-introducing the hashing-era fingerprint. The test therefore
+// asserts the recovery summary fields and, in the other direction, that no
+// fingerprint projection is stored.
 func TestAC005_MilestonePersistsQualityGate(t *testing.T) {
 	root := acFixtureRoot(t)
 	state := planningState(t, root, "design", 1)
@@ -412,7 +431,6 @@ func TestAC005_MilestonePersistsQualityGate(t *testing.T) {
 	input := `{
 		"session_id":"session-ac-005",
 		"hook_event_name":"PreToolUse",
-		"agent_id":"agent-1",
 		"tool_name":"Edit",
 		"tool_input":{"file_path":"internal/cli/run.go"}
 	}`
@@ -433,35 +451,94 @@ func TestAC005_MilestonePersistsQualityGate(t *testing.T) {
 	if !ok {
 		t.Fatalf("milestone must persist on PreToolUse; got %s", rawState)
 	}
-	if _, hasQG := ms["quality_gate"]; !hasQG {
-		t.Fatalf("AC-005: Milestone MUST project quality_gate (BUG-039-07 / REQ-039 §11): %s", rawState)
+	// The recovery summary must describe the stage the runtime actually
+	// holds, not the phase label the fixture was written with.
+	if stage, _ := ms["stage"].(string); stage != "S2" {
+		t.Fatalf("AC-005: milestone must persist the current stage S2, got %q: %s", stage, rawState)
+	}
+	if action, _ := ms["action"].(string); action != acCurrentS2NextAction {
+		t.Fatalf("AC-005: milestone must persist the current next action %q, got %q: %s", acCurrentS2NextAction, action, rawState)
+	}
+	if objective, _ := ms["objective"].(string); objective == "" {
+		t.Fatalf("AC-005: milestone must persist the objective: %s", rawState)
+	}
+	if objective, _ := ms["objective"].(string); objective == acStaleFixtureObjective {
+		t.Fatalf("AC-005: milestone must be refreshed from the runtime, not the stale fixture objective %q: %s", objective, rawState)
+	}
+	if ref, _ := ms["protocol_ref"].(string); ref != "docs/control/agent-protocol.md#s2" {
+		t.Fatalf("AC-005: milestone must persist the protocol reference docs/control/agent-protocol.md#s2, got %q: %s", ref, rawState)
+	}
+	recovery, _ := ms["recovery"].([]any)
+	if len(recovery) == 0 {
+		t.Fatalf("AC-005: milestone must persist the recovery steps: %s", rawState)
+	}
+	// Reverse guard: the recovery summary carries no hash projection, and a
+	// gate projection that is stored alongside it carries none either.
+	if _, hasFingerprint := ms["fingerprint"]; hasFingerprint {
+		t.Fatalf("AC-005: milestone must not carry a fingerprint projection: %s", rawState)
+	}
+	if gate, ok := ms["quality_gate"].(map[string]any); ok {
+		if _, hasFingerprint := gate["fingerprint"]; hasFingerprint {
+			t.Fatalf("AC-005: the stored gate projection must not carry a fingerprint: %s", rawState)
+		}
+		if gateID, _ := gate["gate_id"].(string); gateID == "" {
+			t.Fatalf("AC-005: a stored gate projection must name its gate: %s", rawState)
+		}
 	}
 }
 
 // TestAC006_SubagentStopEmitsIntegrationGuidance covers AC-006 from
-// REQ-039 §19. A SubagentStop event with a clean report must surface
-// the integration guidance (non-squash merge target = develop / the
-// recorded integration branch) and the completion_ack path.
+// REQ-039 §19. The blueprint responsibility of SubagentStop is to locate
+// the worker's own volume and hand it to the original consumer — or to
+// report the missing items (L3-S6-build.md §311). The merge / ACK工序
+// belongs to Main's ordinary work, so the Stop payload is not required to
+// carry the REQ-bound branch or the completion_ack path any more.
+//
+// The integration responsibility lives in S6 (building), so the fixture is
+// a real registered Builder Assignment: a workgroup manifest, the assigned
+// entity rows and the frozen questionnaire context. The Stop of a worker
+// whose own volume is not yet recorded must keep the worker on its original
+// responsibility and name the exact PLAN / Result paths to hand over.
 func TestAC006_SubagentStopEmitsIntegrationGuidance(t *testing.T) {
-	root := acFixtureRoot(t)
-	state := planningState(t, root, "tasks", 5)
-	writeACState(t, root, state)
-
-	input := `{
-		"session_id":"session-ac-006",
-		"hook_event_name":"SubagentStop",
-		"agent_id":"builder-1",
-		"agent_report_complete":true
-	}`
-	var stdout, stderr bytes.Buffer
-	code := cli.Run([]string{"hook", "--event", "SubagentStop", "--root", root}, strings.NewReader(input), &stdout, &stderr)
-	if code != 0 {
-		t.Fatalf("SubagentStop must not fail: %d stderr=%s", code, stderr.String())
+	root, taskID, taskPath := newS6RecordContextFixture(t)
+	const owner = "agent-s6-native-context"
+	stageCLI(t, "runtime", "register-workgroup", "--root", root, "--manifest", ".claude/workgroups/manifest-s6-native-context.json", "--task-id", taskID, "--task", taskPath)
+	var prepared struct {
+		Context struct {
+			Path string `json:"path"`
+		} `json:"context_ref"`
 	}
-	out := stdout.String()
-	for _, expected := range []string{"SubagentStop", "REQ-bound development branch", "completion_ack"} {
-		if !strings.Contains(out, expected) {
-			t.Fatalf("AC-006: SubagentStop integration guidance missing %q: %s", expected, out)
+	if err := json.Unmarshal([]byte(stageCLI(t, "runtime", "assignment-context", "prepare", "--root", root, "--agent-id", owner)), &prepared); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(filepath.Join(root, prepared.Context.Path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var view struct {
+		PlanPath   string `json:"plan_draft_path"`
+		ResultPath string `json:"result_path"`
+	}
+	if err := json.Unmarshal(body, &view); err != nil {
+		t.Fatal(err)
+	}
+
+	code, output := stageHookCode(t, root, root, owner, "SubagentStop", filepath.Join(root, "product.go"))
+	if code != 2 {
+		t.Fatalf("AC-006: SubagentStop must not end the worker while its own volume is unrecorded: code=%d output=%s", code, output)
+	}
+	// The Stop hands the original volume to the original consumer: the
+	// feedback names the exact PLAN / Result paths of this Assignment.
+	for _, path := range []string{view.PlanPath, view.ResultPath} {
+		if path == "" || !strings.Contains(output, path) {
+			t.Fatalf("AC-006: SubagentStop must hand the exact volume path %q to the original consumer: %s", path, output)
+		}
+	}
+	// The Stop neither performs Main's integration工序 nor asks the worker
+	// to submit its volume twice.
+	for _, mainOnly := range []string{"REQ-bound development branch", "completion_ack", "send the PLAN_REPORT via SendMessage", "register the Result (`runtime task-complete`"} {
+		if strings.Contains(output, mainOnly) {
+			t.Fatalf("AC-006: SubagentStop must not carry Main's integration/ACK work %q: %s", mainOnly, output)
 		}
 	}
 }
@@ -516,9 +593,15 @@ func TestAC007_ConcurrentPreToolUseLosesDuplicateCommit(t *testing.T) {
 
 // TestAC008_CompactRecoversMilestoneFromSnapshot pins AC-008 / REQ-039
 // §19. After a PreCompact / compact cycle, SessionStart must restore the
-// same milestone that PreToolUse last persisted. The Controller
-// persistGateForPreToolUse helper is what writes the milestone to disk;
-// SessionStart reads it back via runtime.Snapshot.
+// stage and the next action of the milestone that PreToolUse last
+// persisted. The Controller persistGateForPreToolUse helper is what writes
+// the milestone to disk; SessionStart reads it back via runtime.Snapshot.
+//
+// The blueprint asks for an accurate next action, not a verbatim replay of
+// the old prompt: the fixture's hand-written objective is pre-refactor
+// wording, while the runtime projects the live S2 action. The recovery
+// packet must therefore carry the current stage and next action and must no
+// longer replay the stale fixture text.
 func TestAC008_CompactRecoversMilestoneFromSnapshot(t *testing.T) {
 	root := acFixtureRoot(t)
 	state := planningState(t, root, "design", 1)
@@ -549,19 +632,31 @@ func TestAC008_CompactRecoversMilestoneFromSnapshot(t *testing.T) {
 	if !ok {
 		t.Fatalf("milestone must persist on PreToolUse: %s", postTool)
 	}
-	postAction, _ := ms["objective"].(string)
+	postAction, _ := ms["action"].(string)
 	if postAction == "" {
-		t.Fatalf("milestone must carry objective after PreToolUse: %s", postTool)
+		t.Fatalf("milestone must carry a next action after PreToolUse: %s", postTool)
+	}
+	if postAction != acCurrentS2NextAction {
+		t.Fatalf("AC-008: the persisted milestone must carry the current S2 next action %q, got %q: %s", acCurrentS2NextAction, postAction, postTool)
+	}
+	if objective, _ := ms["objective"].(string); objective == acStaleFixtureObjective {
+		t.Fatalf("AC-008: the persisted milestone must be refreshed from the runtime, not the stale fixture objective %q: %s", objective, postTool)
 	}
 
 	// Step 2: SessionStart (simulating post-compact recovery) must
-	// surface the same milestone in the recovery packet.
+	// surface the current stage and next action in the recovery packet.
 	stdout.Reset()
 	stderr.Reset()
 	if code := cli.Run([]string{"hook", "--event", "SessionStart", "--root", root}, strings.NewReader(`{"hook_event_name":"SessionStart","session_id":"session-ac-008-recover"}`), &stdout, &stderr); code != 0 {
 		t.Fatalf("SessionStart failed: %s", stderr.String())
 	}
-	if !strings.Contains(stdout.String(), postAction) {
-		t.Fatalf("AC-008: post-Compact SessionStart must surface the prior milestone objective %q, got %s", postAction, stdout.String())
+	out := stdout.String()
+	for _, expected := range []string{"S2", acCurrentS2NextAction} {
+		if !strings.Contains(out, expected) {
+			t.Fatalf("AC-008: post-Compact SessionStart must restore the current stage/next action %q, got %s", expected, out)
+		}
+	}
+	if strings.Contains(out, acStaleFixtureObjective) {
+		t.Fatalf("AC-008: post-Compact SessionStart must not replay the stale fixture objective %q: %s", acStaleFixtureObjective, out)
 	}
 }

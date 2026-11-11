@@ -1,11 +1,13 @@
 package review
 
 import (
-	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/entroforge/go-system-builder/internal/reviewmeta"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -19,7 +21,6 @@ import (
 	loopruntime "github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/schema"
 	"github.com/entroforge/go-system-builder/internal/semantic"
-	"github.com/entroforge/go-system-builder/internal/targetedauthoring"
 	"github.com/entroforge/go-system-builder/internal/workpacket"
 	"github.com/entroforge/go-system-builder/internal/workspace"
 	"github.com/entroforge/go-system-builder/internal/workstate"
@@ -44,9 +45,9 @@ type IssuedSubmitRequest struct {
 // keep callers from substituting validation or changing the captured source.
 // Current issuance, responsibility and execution authority remain consumer checks.
 type IssuedResultInput struct {
-	sourceRoot, path, owner, packetDigest string
-	data, professional                    []byte
-	issues                                []workpacket.FieldError
+	sourceRoot, path, owner, packetID string
+	data, professional                []byte
+	issues                            []workpacket.FieldError
 }
 
 // ReadIssuedResultInput reads and validates one exact authoring file. A new Save
@@ -61,16 +62,12 @@ func ReadIssuedResultInput(ctx context.Context, sourceRoot string, packet workpa
 	if err != nil {
 		return nil, nil, err
 	}
-	digest, err := workpacket.ReviewResultPacketDigest(packet)
-	if err != nil {
-		return nil, nil, err
-	}
 	data, err := workpacket.ReadFile(canonicalRoot, packet.AnswerPath, resultReceiptReadLimit)
 	if err != nil {
 		return nil, nil, fmt.Errorf("read exact S7 original %s: %w", packet.AnswerPath, err)
 	}
 	professional, issues := workpacket.ValidateReviewResultAnswer(packet, data)
-	input := &IssuedResultInput{sourceRoot: canonicalRoot, path: packet.AnswerPath, owner: owner, packetDigest: digest, data: data, professional: append([]byte(nil), professional...), issues: append([]workpacket.FieldError(nil), issues...)}
+	input := &IssuedResultInput{sourceRoot: canonicalRoot, path: packet.AnswerPath, owner: owner, packetID: packet.ID, data: data, professional: append([]byte(nil), professional...), issues: append([]workpacket.FieldError(nil), issues...)}
 	if ctx != nil {
 		if err := ctx.Err(); err != nil {
 			return nil, nil, err
@@ -80,11 +77,7 @@ func ReadIssuedResultInput(ctx context.Context, sourceRoot string, packet workpa
 }
 
 func (input *IssuedResultInput) validated(sourceRoot, path, owner string, packet workpacket.ReviewResultPacket) ([]byte, error) {
-	digest, err := workpacket.ReviewResultPacketDigest(packet)
-	if err != nil {
-		return nil, err
-	}
-	if input.sourceRoot != sourceRoot || input.path != path || input.owner != owner || input.packetDigest != digest || input.data == nil {
+	if input.sourceRoot != sourceRoot || input.path != path || input.owner != owner || input.packetID != packet.ID || input.data == nil {
 		return nil, errors.New("S7 frozen answer differs from exact source/path/packet/owner")
 	}
 	if len(input.issues) != 0 {
@@ -143,10 +136,40 @@ func IssueResultPacketsContext(ctx context.Context, root, statePath, journalPath
 			if old.Binding.AssignmentID != a.AssignmentID {
 				continue
 			}
+
 			if !sameReviewResponsibility(old, packet) {
 				return nil, errors.New("S7 frozen packet differs from current responsibility")
 			}
 			packet, reused = old, true
+		}
+		if !reused {
+			// A different Assignment may have changed the shared Plan pointer.
+			// Find the already issued original responsibility and compare only
+			// its own Plan/Claims before deciding that a new packet is needed.
+			index, err := loopruntime.ProjectIssuedReviewResultPacketIndex(snapshot.State, owner)
+			if err != nil {
+				return nil, err
+			}
+			for _, entry := range index {
+				if entry.Binding.AssignmentID != a.AssignmentID || entry.Binding.ReviewPlanID != ptr.PlanID {
+					continue
+				}
+				old, found, err := loopruntime.FindReviewResultPacketContext(ctx, snapshot.State, entry.ID)
+				if err != nil {
+					return nil, err
+				}
+				if !found {
+					continue
+				}
+				current, err := IssuedResultAppliesToCurrent(root, snapshot.State, old, ctx)
+				if err != nil {
+					return nil, err
+				}
+				if current {
+					packet, reused = old, true
+					break
+				}
+			}
 		}
 		if !reused {
 			packet, err = bindCurrentReviewMethods(root, snapshot.State, a, packet)
@@ -160,13 +183,22 @@ func IssueResultPacketsContext(ctx context.Context, root, statePath, journalPath
 			if !reflect.DeepEqual(old, packet) {
 				return nil, errors.New("S7 frozen packet identity conflict")
 			}
-			if err := verifyFrozenSubjects(root, plan, snapshot.State, ctx); err != nil {
-				return nil, err
-			}
-			if err := verifyCurrentResultPacketContext(ctx, root, snapshot.State, packet, true); err != nil {
+			if loopruntime.ReviewResultPacketCurrent(snapshot.State, packet) {
+				if err := verifyCurrentResultPacketContext(ctx, root, snapshot.State, packet, true); err != nil {
+					return nil, err
+				}
+			} else if err := loopruntime.VerifyReviewResultPacketIssueContext(ctx, root, snapshot.State, packet); err != nil {
 				return nil, err
 			}
 		} else {
+			sourceRoot, _, sourceErr := registeredResultPacketSourceRoot(root, snapshot.State, packet, ctx)
+			if sourceErr != nil {
+				return nil, sourceErr
+			}
+			packet, err = reserveReviewResultDelivery(ctx, root, sourceRoot, packet)
+			if err != nil {
+				return nil, err
+			}
 			encoded, err := json.Marshal(packet)
 			if err != nil {
 				return nil, err
@@ -175,6 +207,7 @@ func IssueResultPacketsContext(ctx context.Context, root, statePath, journalPath
 			if err := json.Unmarshal(encoded, &value); err != nil {
 				return nil, err
 			}
+			value["review_result_reception"] = map[string]any{"execution_root": sourceRoot}
 			life, _ := snapshot.State["lifecycle"].(map[string]any)
 			cursor := map[string]any{"state": life["state"], "phase": life["phase"]}
 			snapshot, err = writer.UpdateCurrent(loopruntime.Mutation{
@@ -188,7 +221,7 @@ func IssueResultPacketsContext(ctx context.Context, root, statePath, journalPath
 					if old, found, err := loopruntime.FindReviewResultPacketContext(ctx, state, packet.ID); err != nil {
 						return err
 					} else if found {
-						if !reflect.DeepEqual(old, packet) {
+						if !sameReviewResponsibility(old, packet) {
 							return errors.New("S7 packet identity conflict")
 						}
 						return errExactResultReplay
@@ -214,24 +247,32 @@ func IssueResultPacketsContext(ctx context.Context, root, statePath, journalPath
 					return nil, err
 				}
 				old, found, findErr := loopruntime.FindReviewResultPacketContext(ctx, latest.State, packet.ID)
-				if findErr != nil || !found || !reflect.DeepEqual(old, packet) {
+				if findErr != nil || !found || !sameReviewResponsibility(old, packet) {
 					return nil, err
 				}
+				packet = old
 				if proofErr := verifyCurrentResultPacketContext(ctx, root, latest.State, packet, true); proofErr != nil {
 					return nil, proofErr
 				}
 				snapshot = latest
 			}
+			// UpdateCurrent can replay an existing event without running Apply.
+			// Always return the path that its original Writer actually recorded.
+			registered, found, findErr := loopruntime.FindReviewResultPacketContext(ctx, snapshot.State, packet.ID)
+			if findErr != nil || !found || !sameReviewResponsibility(registered, packet) {
+				return nil, fmt.Errorf("S7 issued responsibility was not recorded: %v", findErr)
+			}
+			packet = registered
 		}
+		// This path is already registered to this responsibility. A retained
+		// author file or altered display view is left untouched and cannot
+		// prevent the original delivery from continuing.
 		view, err := json.MarshalIndent(packet, "", "  ")
 		if err != nil {
 			return nil, err
 		}
-		view = append(view, '\n')
-		if existing, err := workpacket.PublishBounded(root, packet.ViewPath, view, resultReceiptReadLimit); err != nil {
+		if _, err := workpacket.PublishNewBounded(root, packet.ViewPath, append(view, '\n'), resultReceiptReadLimit); err != nil {
 			return nil, err
-		} else if !bytes.Equal(existing, view) {
-			return nil, errors.New("S7 issued view differs from original registry")
 		}
 		draft, err := json.MarshalIndent(packet.Draft, "", "  ")
 		if err != nil {
@@ -242,18 +283,92 @@ func IssueResultPacketsContext(ctx context.Context, root, statePath, journalPath
 			return nil, err
 		}
 		if !independent {
-			if workpacket.ReviewResultUsesNormalAuthoring(packet) {
-				if err := targetedauthoring.CheckNormalOriginal(ctx, root, packet.AnswerPath); err != nil {
-					return nil, fmt.Errorf("prepare S7 original: %w", err)
-				}
-			}
-			if _, err := workpacket.PublishBounded(root, packet.AnswerPath, append(draft, '\n'), resultReceiptReadLimit); err != nil {
+			if _, err := workpacket.PublishNewBounded(root, packet.AnswerPath, append(draft, '\n'), resultReceiptReadLimit); err != nil {
 				return nil, err
 			}
 		}
+
 		packets = append(packets, packet)
 	}
 	return packets, nil
+}
+
+// reserveReviewResultDelivery creates the actual paths before the Writer
+// registers them. Unknown occupants are neither read nor claimed.
+func reserveReviewResultDelivery(ctx context.Context, root, source string, packet workpacket.ReviewResultPacket) (workpacket.ReviewResultPacket, error) {
+	// Use the same wire representation that the original registry reads back,
+	// so a later missing-view restoration reproduces the issued delivery.
+	encoded, err := json.Marshal(packet)
+	if err != nil {
+		return packet, err
+	}
+	if err := json.Unmarshal(encoded, &packet); err != nil {
+		return packet, err
+	}
+	for _, target := range []struct{ root, probe string }{
+		{root, ".claude/work-packets/probe.json"},
+		{source, ".claude/work-packets/probe.json"},
+		{source, ".loop-submissions/s7/probe.json"},
+	} {
+		parent, _, err := workpacket.OpenParent(target.root, target.probe, true)
+		if err != nil {
+			return packet, err
+		}
+		parent.Close()
+	}
+	mainInfo, err := os.Stat(root)
+	if err != nil {
+		return packet, err
+	}
+	sourceInfo, err := os.Stat(source)
+	if err != nil {
+		return packet, err
+	}
+	sameRoot := os.SameFile(mainInfo, sourceInfo)
+	viewBase := strings.TrimPrefix(packet.ViewPath, ".claude/work-packets/")
+	answerBase := strings.TrimPrefix(packet.AnswerPath, ".loop-submissions/s7/")
+	for attempt := 0; ; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return packet, err
+		}
+		if attempt > 0 {
+			packet.ViewPath = fmt.Sprintf(".claude/work-packets/s7-candidate-%d/%s", attempt, viewBase)
+			packet.AnswerPath = fmt.Sprintf(".loop-submissions/s7/candidate-%d/%s", attempt, answerBase)
+		}
+		draft, err := json.MarshalIndent(packet.Draft, "", "  ")
+		if err != nil {
+			return packet, err
+		}
+		created, err := workpacket.PublishNewBounded(source, packet.AnswerPath, append(draft, '\n'), resultReceiptReadLimit)
+		if err != nil {
+			return packet, err
+		}
+		if !created {
+			continue
+		}
+		view, err := json.MarshalIndent(packet, "", "  ")
+		if err != nil {
+			return packet, err
+		}
+		view = append(view, '\n')
+		created, err = workpacket.PublishNewBounded(root, packet.ViewPath, view, resultReceiptReadLimit)
+		if err != nil {
+			return packet, err
+		}
+		if !created {
+			continue
+		}
+		if !sameRoot {
+			created, err = workpacket.PublishNewBounded(source, packet.ViewPath, view, resultReceiptReadLimit)
+			if err != nil {
+				return packet, err
+			}
+			if !created {
+				continue
+			}
+		}
+		return packet, nil
+	}
 }
 
 func resultPacketAssignmentRow(state map[string]any, id string) map[string]any {
@@ -288,7 +403,7 @@ func loadResultPacketPlan(root string, state map[string]any, verifyBaseline bool
 	if err := ValidatePlan(plan); err != nil {
 		return nil, nil, err
 	}
-	if plan.BaselineGeneration != baselineGeneration(state) || plan.ReviewRound != currentReviewRound(state) {
+	if plan.BaselineGeneration != baselineGeneration(state) || reviewmeta.CompareIdentity(plan.Identity(), activeReviewIdentity(state)) == reviewmeta.Different {
 		return nil, nil, errors.New("S7 Plan is not the current generation/round")
 	}
 	if ptr.Status != "running" && ptr.Status != "cannot_clean" && ptr.Status != "discovery_draining" {
@@ -297,11 +412,7 @@ func loadResultPacketPlan(root string, state map[string]any, verifyBaseline bool
 	// New issuance validates the baseline once under the original Writer lock.
 	// The pre-load retains pinned plan and eligibility checks. An existing
 	// packet's restore branch keeps its original baseline check separately.
-	if verifyBaseline {
-		if err := verifyFrozenSubjects(root, plan, state, contexts...); err != nil {
-			return nil, nil, err
-		}
-	}
+
 	return plan, ptr, nil
 }
 
@@ -315,10 +426,6 @@ func buildCurrentResultPacket(root string, state map[string]any, plan *Plan, ptr
 		return zero, errors.New("S7 Assignment projection differs from original Claim/lens set")
 	}
 	if err := validateResultPacketOwner(state, a, owner); err != nil {
-		return zero, err
-	}
-	assignmentSHA, err := planAssignmentDigest(a)
-	if err != nil {
 		return zero, err
 	}
 	claims := []Claim{}
@@ -339,7 +446,17 @@ func buildCurrentResultPacket(root string, state map[string]any, plan *Plan, ptr
 	if err != nil {
 		return zero, err
 	}
-	subjectsJSON, err := json.Marshal(plan.FrozenSubjects)
+	subjects := make([]struct {
+		Path string `json:"path"`
+		Kind string `json:"kind,omitempty"`
+	}, 0, len(plan.FrozenSubjects))
+	for _, subject := range plan.FrozenSubjects {
+		subjects = append(subjects, struct {
+			Path string `json:"path"`
+			Kind string `json:"kind,omitempty"`
+		}{Path: subject.Path, Kind: subject.Kind})
+	}
+	subjectsJSON, err := json.Marshal(subjects)
 	if err != nil {
 		return zero, err
 	}
@@ -352,10 +469,9 @@ func buildCurrentResultPacket(root string, state map[string]any, plan *Plan, ptr
 	}
 	return workpacket.BuildReviewResult(workpacket.ReviewResultBinding{
 		RuntimeID: stringField(state["runtime_id"]), BaselineGeneration: plan.BaselineGeneration,
-		ReviewPlanID: plan.ReviewPlanID, ReviewPlanRef: planRef, ReviewPlanSHA256: ptr.SHA256, ReviewPlanRevision: ptr.Revision,
-		ReviewRound: plan.ReviewRound, AssignmentID: a.AssignmentID, AssignmentSHA256: assignmentSHA,
-		OwnerAgentID: owner, ClaimIDs: append([]string(nil), a.ClaimIDs...), SubjectDigest: SubjectDigest(plan),
-		VerificationArtifactDigest: nil,
+		ReviewPlanID: plan.ReviewPlanID, ReviewPlanRef: planRef, ReviewPlanRevision: ptr.Revision,
+		AssignmentID: a.AssignmentID,
+		OwnerAgentID: owner, ClaimIDs: append([]string(nil), a.ClaimIDs...),
 	}, workpacket.ReviewResultInputs{Claims: claimsJSON, FrozenSubjects: subjectsJSON})
 }
 
@@ -363,7 +479,11 @@ func buildCurrentResultPacket(root string, state map[string]any, plan *Plan, ptr
 // issued responsibility keeps its frozen selection and issuance proof; it is
 // never silently reissued with today's catalog or defaults.
 func sameReviewResponsibility(a, b workpacket.ReviewResultPacket) bool {
-	return reflect.DeepEqual(a.Binding, b.Binding) && bytes.Equal(a.Inputs.Claims, b.Inputs.Claims) && bytes.Equal(a.Inputs.FrozenSubjects, b.Inputs.FrozenSubjects)
+	x, y := a.Binding, b.Binding
+	return x.RuntimeID == y.RuntimeID && x.BaselineGeneration == y.BaselineGeneration &&
+		x.ReviewPlanID == y.ReviewPlanID && x.ReviewPlanRef == y.ReviewPlanRef &&
+		x.ReviewPlanRevision == y.ReviewPlanRevision &&
+		x.AssignmentID == y.AssignmentID && x.OwnerAgentID == y.OwnerAgentID && reflect.DeepEqual(x.ClaimIDs, y.ClaimIDs)
 }
 
 func bindCurrentReviewMethods(root string, state map[string]any, a *PlanAssignment, p workpacket.ReviewResultPacket) (workpacket.ReviewResultPacket, error) {
@@ -401,13 +521,6 @@ func bindCurrentReviewMethods(root string, state map[string]any, a *PlanAssignme
 	if err != nil {
 		return fail(err.Error())
 	}
-	digest := workpacket.Digest(data)
-	// Old registrations did not pin a SHA. A first issuance still validates
-	// their named manifest and freezes its bytes here; existing old packets
-	// bypass this projection altogether. New registrations pin it at dispatch.
-	if pinned := stringField(registered["manifest_sha256"]); pinned != "" && pinned != digest {
-		return fail("manifest changed after original registration")
-	}
 	if err := workpacket.ValidateUniqueJSON(data); err != nil {
 		return fail(err.Error())
 	}
@@ -415,8 +528,8 @@ func bindCurrentReviewMethods(root string, state map[string]any, a *PlanAssignme
 	if err := json.Unmarshal(data, &manifest); err != nil {
 		return fail(err.Error())
 	}
-	if manifest.RuntimeID != p.Binding.RuntimeID || manifest.BaselineGeneration != p.Binding.BaselineGeneration || manifest.ReviewRound != p.Binding.ReviewRound || manifest.WorkgroupID != registered["id"] || manifest.WorkgroupKind != LensToWorkgroupKind(a.Lens) || registered["kind"] != manifest.WorkgroupKind {
-		return fail("manifest no longer names the original Runtime/round/workgroup/lens")
+	if manifest.RuntimeID != p.Binding.RuntimeID || manifest.BaselineGeneration != p.Binding.BaselineGeneration || manifest.WorkgroupID != registered["id"] || manifest.WorkgroupKind != LensToWorkgroupKind(a.Lens) || registered["kind"] != manifest.WorkgroupKind {
+		return fail("manifest no longer names the original Runtime/workgroup/lens")
 	}
 	var selected *ManifestAssignment
 	for i := range manifest.Assignments {
@@ -448,7 +561,7 @@ func bindCurrentReviewMethods(root string, state map[string]any, a *PlanAssignme
 		return fail("original selected skill_refs are missing")
 	}
 	p.Inputs.Methods = methods
-	p.Inputs.MethodSource = &workpacket.ReviewMethodSource{ManifestRef: ref, SHA256: digest}
+	p.Inputs.MethodSource = &workpacket.ReviewMethodSource{ManifestRef: ref}
 	return workpacket.BuildReviewResult(p.Binding, p.Inputs)
 }
 
@@ -480,7 +593,7 @@ func validateResultPacketOwner(state map[string]any, a *PlanAssignment, owner st
 	if count != 1 {
 		return errors.New("S7 owner must be a unique registered Reviewer")
 	}
-	return validateProducerIndependence(state, &Result{ProducerAgentID: owner})
+	return nil
 }
 
 func verifyCurrentResultPacket(root string, state map[string]any, p workpacket.ReviewResultPacket, issued bool) error {
@@ -500,20 +613,10 @@ func verifyCurrentResultPacketContext(ctx context.Context, root string, state ma
 	if err != nil {
 		return err
 	}
-	// Legacy issued packets have no method source: keep their exact original
-	// identity rather than retroactively attaching today's selection.
-	if !issued || p.Inputs.MethodSource != nil {
-		expected, err = bindCurrentReviewMethods(root, state, a, expected)
-		if err != nil {
-			return err
-		}
-	}
-	if !reflect.DeepEqual(expected.Binding, p.Binding) || !reflect.DeepEqual(expected.Inputs, p.Inputs) {
-		return errors.New("S7 issuance no longer matches current Plan/Assignment/owner/subjects")
-	}
-	rebuilt, err := workpacket.RebuildReviewResult(p)
-	if err != nil || !reflect.DeepEqual(rebuilt, p) {
-		return errors.New("S7 issuance differs from its original frozen template")
+	// Issued packets retain their original input and template; the actual
+	// Plan, Assignment and owner relationship, not a recomputed proof, is used.
+	if !sameReviewResponsibility(expected, p) {
+		return errors.New("S7 issuance no longer matches current Plan/Assignment/owner")
 	}
 	if issued {
 		return loopruntime.VerifyReviewResultPacketIssueContext(ctx, root, state, p)
@@ -549,21 +652,19 @@ func SubmitIssuedResult(root, statePath, journalPath string, request IssuedSubmi
 	if path != p.AnswerPath {
 		return snapshot, errors.New("S7 save path differs from exact original issuance")
 	}
-	row := resultPacketAssignmentRow(snapshot.State, p.Binding.AssignmentID)
-	isReplay := workstate.ReviewAssignmentActivity(row) == "consumed" || workstate.ReviewAssignmentActivity(row) == "result_submitted"
-	// Exact Save replay still reads the current answer bytes so the original
-	// SubmitResult idempotency check can compare AnswerDigest and the full
-	// machine tuple. Replay only skips revalidating mutable checkout/Git state;
-	// receipt-only recovery is available through IssuedResultReceipt.
-	sourceRoot, _, err := registeredResultPacketSourceRoot(root, snapshot.State, p, !isReplay, request.Context)
+	row := issuedResultRow(snapshot.State, p)
+	isReplay := IssuedResultWorkComplete(snapshot.State, p)
+	if isReplay {
+		return snapshot, nil
+	}
+	// Unfinished responsibilities read their current original answer. Completed
+	// work returns above without requiring mutable authoring files or checkout;
+	// receipt recovery is also available through IssuedResultReceipt.
+	sourceRoot, _, err := registeredResultPacketSourceRoot(root, snapshot.State, p, request.Context)
 	if err != nil {
 		return snapshot, err
 	}
-	if !isReplay && workpacket.ReviewResultUsesNormalAuthoring(p) {
-		if err := targetedauthoring.CheckNormalOriginal(request.Context, sourceRoot, p.AnswerPath); err != nil {
-			return snapshot, fmt.Errorf("receive S7 original: %w", err)
-		}
-	}
+
 	if request.SourceRoot != "" {
 		requestedRoot, err := workspace.Canonical(request.SourceRoot)
 		if err != nil {
@@ -582,6 +683,9 @@ func SubmitIssuedResult(root, statePath, journalPath string, request IssuedSubmi
 	if input == nil {
 		input, _, err = ReadIssuedResultInput(request.Context, sourceRoot, p, request.OwnerAgentID)
 		if err != nil {
+			if errors.Is(err, os.ErrNotExist) && row["result_receipt"] != nil {
+				return snapshot, nil // The previously accepted obstacle remains fact.
+			}
 			return snapshot, err
 		}
 	}
@@ -596,209 +700,82 @@ func SubmitIssuedResult(root, statePath, journalPath string, request IssuedSubmi
 	if err := json.Unmarshal(professional, &result); err != nil {
 		return snapshot, err
 	}
+	// The professional verdict may omit per-Claim observations. The canonical
+	// result uses an empty list for that same absence, without requiring the
+	// Reviewer to manufacture per-Claim entries.
+	if result.ClaimResults == nil {
+		result.ClaimResults = []ClaimResult{}
+	}
 	b := p.Binding
-	result.SchemaVersion = "1.0.0"
+	result.SchemaVersion = reviewmeta.IdentitySchemaVersion
 	result.ResultID = p.ResultID
 	result.AssignmentID = b.AssignmentID
 	result.AssignmentRevision = b.ReviewPlanRevision
 	result.ReviewPlanID = b.ReviewPlanID
-	result.ReviewRound = b.ReviewRound
 	result.BaselineGeneration = b.BaselineGeneration
 	result.ProducerAgentID = b.OwnerAgentID
-	result.SubjectDigest = b.SubjectDigest
-	if result.VerificationArtifactDigest == nil {
-		if b.VerificationArtifactDigest != nil {
-			result.VerificationArtifactDigest = b.VerificationArtifactDigest
-		} else if isReplay {
-			// Reconstruct accepted machine metadata without reading mutable artifacts.
-			// The original replay consumer still validates the complete receipt.
-			if receipt, ok := row["result_receipt"].(map[string]any); ok {
-				if digest, ok := receipt["verification_artifact_digest"].(string); ok {
-					result.VerificationArtifactDigest = &digest
-				}
-			}
-		} else if ptr := PlanPointerFromState(snapshot.State); row["lens"] == "e2e" && ptr != nil && ptr.VerificationArtifactWorkspace != "" {
-			// This binds saved artifact bytes, never a professional execution verdict.
-			// SubmitResult rechecks the actual workspace and all original evidence.
-			digest, err := WorkspaceDigestContext(request.Context, sourceRoot, ptr.VerificationArtifactWorkspace)
-			if err != nil {
-				return snapshot, err
-			}
-			result.VerificationArtifactDigest = &digest
+
+	if previous, ok := row["result_receipt"].(map[string]any); ok && !IssuedResultWorkComplete(snapshot.State, p) {
+		// Only unfinished original work observes new content. Compare with the
+		// saved handoff, never mutate that historical answer or require a signal.
+		stored, err := workpacket.ReadFile(root, stringField(previous["result_ref"]), resultReceiptReadLimit)
+		if err != nil {
+			return snapshot, fmt.Errorf("read original unfinished S7 handoff: %w", err)
 		}
+		var envelope struct {
+			EffectiveAnswer json.RawMessage `json:"effective_answer"`
+		}
+		if err := json.Unmarshal(stored, &envelope); err != nil {
+			return snapshot, err
+		}
+		oldContent, oldErr := professionalAnswerContent(envelope.EffectiveAnswer)
+		currentBytes, newErr := issuedResultDocument(professional, result)
+		newContent, contentErr := professionalAnswerContent(currentBytes)
+		if oldErr == nil && newErr == nil && contentErr == nil && oldContent == newContent {
+			return snapshot, nil
+		}
+		redeliveryID, err := redeliveryResultID(p.ResultID, previous)
+		if err != nil {
+			return snapshot, err
+		}
+		result.ResultID = redeliveryID
 	}
-	if b.VerificationArtifactDigest != nil && !equalOptionalString(result.VerificationArtifactDigest, b.VerificationArtifactDigest) {
-		return snapshot, errors.New("S7 professional execution digest differs from frozen issuance")
-	}
-	// capture exec owns the original Main control-evidence tree while its
-	// provenance separately records the actual execution checkout.
-	capturePath := CaptureFile(root, b.RuntimeID, b.BaselineGeneration, b.AssignmentID)
-	if err := bindIssuedPathEvidence(root, sourceRoot, row, &result, isReplay, capturePath); err != nil {
-		return snapshot, err
-	}
-	resultData, err := json.Marshal(result)
+
+	resultData, err := issuedResultDocument(professional, result)
 	if err != nil {
 		return snapshot, err
 	}
-	received, err := SubmitResult(root, statePath, journalPath, SubmitRequest{Context: request.Context, ExpectedRevision: request.ExpectedRevision, AssignmentID: b.AssignmentID, ResultPath: filepath.Join(sourceRoot, filepath.FromSlash(path)), CaptureDir: capturePath, OccurredAt: request.OccurredAt, resultData: resultData, issuedPacket: &p, packetOwner: request.OwnerAgentID, issuedSourceRoot: sourceRoot})
+	received, err := SubmitResult(root, statePath, journalPath, SubmitRequest{Context: request.Context, ExpectedRevision: request.ExpectedRevision, AssignmentID: b.AssignmentID, ResultPath: filepath.Join(sourceRoot, filepath.FromSlash(path)), OccurredAt: request.OccurredAt, resultData: resultData, parsedResult: &result, issuedPacket: &p, packetOwner: request.OwnerAgentID, issuedSourceRoot: sourceRoot})
 	if err != nil {
 		return received, fmt.Errorf("original S7 result consumer: %w", err)
 	}
 	return received, nil
 }
 
-// Bind only the local path references consumed by the original evidence validator.
-// Professional content and the author's questionnaire bytes remain unchanged.
-func bindIssuedPathEvidence(root, sourceRoot string, row map[string]any, result *Result, replay bool, capturePaths ...string) error {
-	groups := func(value *Result) [][]string {
-		var refs [][]string
-		for _, claim := range value.ClaimResults {
-			refs = append(refs, claim.EvidenceRefs)
-		}
-		for _, check := range value.Checks {
-			refs = append(refs, check.EvidenceRefs)
-		}
-		for _, finding := range value.Findings {
-			refs = append(refs, finding.EvidenceRefs)
-			for _, step := range finding.Encounter.Timeline {
-				refs = append(refs, step.EvidenceRefs)
-			}
-		}
-		for _, blocked := range value.BlockedClaims {
-			refs = append(refs, blocked.EvidenceRefs)
-		}
-		return refs
+// issuedResultDocument retains the author's professional JSON, including
+// fields unknown to this version, while attaching only the issued identity.
+func issuedResultDocument(professional []byte, result Result) ([]byte, error) {
+	var document map[string]json.RawMessage
+	if err := json.Unmarshal(professional, &document); err != nil {
+		return nil, err
 	}
-	refs := groups(result)
-	missing := false
-	for _, group := range refs {
-		for _, rawRef := range group {
-			ref := strings.TrimSpace(rawRef)
-			if (strings.HasPrefix(ref, "path:") || strings.HasPrefix(ref, "command_output:")) && !strings.Contains(ref, "#sha256=") && !strings.Contains(ref, " (withheld:") {
-				missing = true
-			}
-		}
+	fields := map[string]any{
+		"schema_version": result.SchemaVersion, "result_id": result.ResultID,
+		"assignment_id": result.AssignmentID, "assignment_revision": result.AssignmentRevision,
+		"review_plan_id": result.ReviewPlanID, "baseline_generation": result.BaselineGeneration,
+		"producer_agent_id": result.ProducerAgentID,
 	}
-	if !missing {
-		return nil
+	if _, ok := document["claim_results"]; !ok {
+		fields["claim_results"] = result.ClaimResults
 	}
-	acceptedRefs := map[string]string{}
-	if replay {
-		receipt, _ := row["result_receipt"].(map[string]any)
-		data, err := workpacket.ReadFile(root, stringField(receipt["result_ref"]), resultReceiptReadLimit)
+	for key, value := range fields {
+		encoded, err := json.Marshal(value)
 		if err != nil {
-			return err
+			return nil, err
 		}
-		var envelope struct {
-			Submitted Result `json:"submitted_answer"`
-		}
-		if err := json.Unmarshal(data, &envelope); err != nil {
-			return err
-		}
-		for _, group := range groups(&envelope.Submitted) {
-			for _, rawRef := range group {
-				ref := strings.TrimSpace(rawRef)
-				switch {
-				case strings.HasPrefix(ref, "path:"):
-					rel, digest, err := parsePathEvidenceRef(ref)
-					if err != nil {
-						return err
-					}
-					if digest != "" {
-						acceptedRefs["path:"+rel] = ref
-					}
-				case strings.HasPrefix(ref, "command_output:"):
-					output, err := parseCommandOutputEvidenceRef(ref)
-					if err != nil {
-						return err
-					}
-					if !output.Withheld {
-						acceptedRefs["command_output:"+output.RelativePath] = ref
-					}
-				}
-			}
-		}
+		document[key] = encoded
 	}
-	// Metadata for command output comes only from its original capture. A
-	// regular file alone cannot establish execution, byte count or truncation.
-	capturedOutputs := map[string]string{}
-	if !replay && len(capturePaths) > 0 && capturePaths[0] != "" {
-		steps, err := LoadCaptureStepsStrict(capturePaths[0])
-		if err != nil {
-			return err
-		}
-		for _, step := range steps {
-			for _, ref := range step.Evidence {
-				if !strings.HasPrefix(ref, "command_output:") || step.Provenance == nil {
-					continue
-				}
-				output, err := parseCommandOutputEvidenceRef(ref)
-				if err != nil {
-					return err
-				}
-				if output.Withheld {
-					continue
-				}
-				key := "command_output:" + output.RelativePath
-				if old, exists := capturedOutputs[key]; exists && old != ref {
-					return fmt.Errorf("S7 command output %q has conflicting original capture metadata", key)
-				}
-				capturedOutputs[key] = ref
-			}
-		}
-	}
-	for _, group := range refs {
-		for i, rawRef := range group {
-			ref := strings.TrimSpace(rawRef)
-			if strings.HasPrefix(ref, "command_output:") && !strings.Contains(ref, "#sha256=") && !strings.Contains(ref, " (withheld:") {
-				bound, ok := capturedOutputs[ref]
-				if replay {
-					bound, ok = acceptedRefs[ref]
-				}
-				if !ok {
-					return fmt.Errorf("S7 command output %q has no original capture metadata; restore its actual capture source, do not author SHA/bytes/truncated", ref)
-				}
-				group[i] = bound
-				continue
-			}
-			if !strings.HasPrefix(ref, "path:") {
-				continue
-			}
-			rel, digest, err := parsePathEvidenceRef(ref)
-			if err != nil {
-				return err
-			}
-			if digest != "" {
-				continue
-			}
-			if replay {
-				bound, ok := acceptedRefs[ref]
-				if !ok {
-					return fmt.Errorf("S7 replay has no original bound path evidence for %q", ref)
-				}
-				group[i] = bound
-				continue
-			}
-			// Match the original local evidence resolver's containment and file rules.
-			path, err := repositoryContainedPath(sourceRoot, rel)
-			if err != nil {
-				return err
-			}
-			info, err := os.Stat(path)
-			if err != nil {
-				return err
-			}
-			if !info.Mode().IsRegular() {
-				return fmt.Errorf("S7 path evidence %q is not a regular file", ref)
-			}
-			data, err := os.ReadFile(path)
-			if err != nil {
-				return err
-			}
-			group[i] = ref + "#sha256=" + sha256Of(data)
-		}
-	}
-	return nil
+	return json.Marshal(document)
 }
 
 func validateIssuedResultRequest(root string, state map[string]any, request SubmitRequest, result *Result, replay bool, currentPlans ...*Plan) error {
@@ -828,18 +805,32 @@ func validateIssuedResultRequest(root string, state map[string]any, request Subm
 	if err := loopruntime.VerifyReviewResultPacketIssueContext(loopruntime.WithReviewResultReadCache(request.Context), root, state, p); err != nil {
 		return err
 	}
-	if result.ResultID != p.ResultID || result.AssignmentID != p.Binding.AssignmentID || result.AssignmentRevision != p.Binding.ReviewPlanRevision || result.ReviewPlanID != p.Binding.ReviewPlanID || result.ReviewRound != p.Binding.ReviewRound || result.BaselineGeneration != p.Binding.BaselineGeneration || result.SubjectDigest != p.Binding.SubjectDigest || (p.Binding.VerificationArtifactDigest != nil && !equalOptionalString(result.VerificationArtifactDigest, p.Binding.VerificationArtifactDigest)) {
+	if !resultIDForPacket(p, result.ResultID) || result.AssignmentID != p.Binding.AssignmentID || result.AssignmentRevision != p.Binding.ReviewPlanRevision || result.ReviewPlanID != p.Binding.ReviewPlanID || result.BaselineGeneration != p.Binding.BaselineGeneration {
 		return errors.New("S7 Result tuple differs from original packet")
+	}
+	if !loopruntime.ReviewResultPacketCurrent(state, p) {
+		_, _, err := loadOriginalResultPlan(root, p, request.Context)
+		if err != nil {
+			return err
+		}
+		source, err := IssuedResultSourceRoot(root, state, p)
+		if err != nil {
+			return err
+		}
+		if source != request.issuedSourceRoot {
+			return errors.New("S7 source differs from original issuance")
+		}
+		return nil
 	}
 	row := resultPacketAssignmentRow(state, p.Binding.AssignmentID)
 	if row["agent_id"] != request.packetOwner {
 		return errors.New("S7 dispatched owner changed before reception")
 	}
 	ptr := PlanPointerFromState(state)
-	if ptr == nil || ptr.PlanID != p.Binding.ReviewPlanID || repositoryPath(root, ptr.Path) != p.Binding.ReviewPlanRef || ptr.SHA256 != p.Binding.ReviewPlanSHA256 || ptr.Revision != p.Binding.ReviewPlanRevision || currentReviewRound(state) != p.Binding.ReviewRound || baselineGeneration(state) != p.Binding.BaselineGeneration {
-		return errors.New("S7 issued answer is stale after Plan/round/generation revision")
+	if ptr == nil || ptr.PlanID != p.Binding.ReviewPlanID || repositoryPath(root, ptr.Path) != p.Binding.ReviewPlanRef || ptr.Revision != p.Binding.ReviewPlanRevision || baselineGeneration(state) != p.Binding.BaselineGeneration {
+		return errors.New("S7 issued answer is stale after Plan/generation revision")
 	}
-	sourceRoot, _, err := registeredResultPacketSourceRoot(root, state, p, !replay, request.Context)
+	sourceRoot, _, err := registeredResultPacketSourceRoot(root, state, p, request.Context)
 	if err != nil {
 		return err
 	}
@@ -868,14 +859,10 @@ func validateIssuedResultRequest(root string, state map[string]any, request Subm
 	if row["lens"] != a.Lens || !jsonValueEqual(row["claim_ids"], a.ClaimIDs) {
 		return errors.New("S7 Assignment projection differs from original Claim/lens set")
 	}
-	assignmentSHA, err := planAssignmentDigest(a)
-	if err != nil || assignmentSHA != p.Binding.AssignmentSHA256 || SubjectDigest(plan) != p.Binding.SubjectDigest {
-		return errors.New("S7 issuance no longer matches current Plan/Assignment/subjects")
-	}
 	if err := validateResultPacketOwner(state, a, request.packetOwner); err != nil {
 		return err
 	}
-	return validateReviewApprovalMode(root, state, request.packetOwner)
+	return nil
 }
 
 func validateReviewApprovalMode(root string, state map[string]any, owner string) error {
@@ -899,17 +886,18 @@ func validateReviewApprovalMode(root string, state map[string]any, owner string)
 }
 
 func resultPacketSourceRoot(root string, state map[string]any, p workpacket.ReviewResultPacket) (string, bool, error) {
-	return registeredResultPacketSourceRoot(root, state, p, true)
+	return registeredResultPacketSourceRoot(root, state, p)
 }
 
 // registeredResultPacketSourceRoot resolves the packet's Main or Worker
-// checkout from the current original Runtime registry. validateLive is used
-// for a new save. Receipt replay passes false so it checks the persisted tuple
-// and path identity without touching a Worker's live checkout.
-func registeredResultPacketSourceRoot(root string, state map[string]any, p workpacket.ReviewResultPacket, validateLive bool, contexts ...context.Context) (string, bool, error) {
-	parent := context.Background()
-	if len(contexts) > 0 && contexts[0] != nil {
-		parent = contexts[0]
+// source from the original Runtime relationship. It checks the registered
+// responsibility and path identity without authenticating live checkout/Git
+// contents. The original answer reader owns any missing-file error.
+func registeredResultPacketSourceRoot(root string, state map[string]any, p workpacket.ReviewResultPacket, contexts ...context.Context) (string, bool, error) {
+
+	if p.Binding.ReviewPlanID != "" && !loopruntime.ReviewResultPacketCurrent(state, p) {
+		source, err := IssuedResultSourceRoot(root, state, p)
+		return source, source != root, err
 	}
 	main, err := workspace.Canonical(root)
 	if err != nil {
@@ -932,18 +920,7 @@ func registeredResultPacketSourceRoot(root string, state map[string]any, p workp
 	if e.AssignmentID != p.Binding.AssignmentID || e.RuntimeID != p.Binding.RuntimeID || e.BaselineGeneration != p.Binding.BaselineGeneration || e.AgentID != p.Binding.OwnerAgentID || e.Status != "ready" || b.MainRoot != main || e.Path == main {
 		return "", true, errors.New("S7 original execution owner/status/root differs")
 	}
-	if validateLive {
-		ctx, cancel := context.WithTimeout(parent, 3*time.Second)
-		defer cancel()
-		if err := b.ValidateExecution(ctx, e, false); err != nil {
-			return "", true, err
-		}
-		path, err := workspace.Canonical(e.Path)
-		if err != nil || path != e.Path {
-			return "", true, errors.New("S7 registered execution path is not canonical")
-		}
-		return path, true, nil
-	}
+
 	if !filepath.IsAbs(e.Path) || filepath.Clean(e.Path) != e.Path {
 		return "", true, errors.New("S7 registered execution path is not a canonical absolute path")
 	}
@@ -965,7 +942,7 @@ func IssuedResultReceiptContext(ctx context.Context, root string, state map[stri
 	if !found || owner == "" || p.Binding.OwnerAgentID != owner {
 		return ResultReceipt{}, false, errors.New("S7 receipt has no issuance for owner")
 	}
-	row := resultPacketAssignmentRow(state, p.Binding.AssignmentID)
+	row := issuedResultRow(state, p)
 	if row["result_receipt"] == nil {
 		return ResultReceipt{}, false, nil
 	}
@@ -974,28 +951,62 @@ func IssuedResultReceiptContext(ctx context.Context, root string, state map[stri
 		return ResultReceipt{}, false, err
 	}
 	var receipt ResultReceipt
-	if err := json.Unmarshal(encoded, &receipt); err != nil {
+	if err := decodeOriginalResultReceipt(encoded, &receipt); err != nil {
 		return receipt, false, err
 	}
 	if receipt.PacketID != packetID || receipt.ProducerAgentID != owner {
 		return receipt, false, errors.New("S7 current receipt belongs to a different issuance")
 	}
-	data, err := workpacket.ReadFile(root, receipt.ResultRef, resultReceiptReadLimit)
-	if err != nil {
-		return receipt, false, err
-	}
-	var envelope struct {
-		SubmittedAnswer json.RawMessage `json:"submitted_answer"`
-	}
-	if err := json.Unmarshal(data, &envelope); err != nil {
-		return receipt, false, err
-	}
-	var result Result
-	if err := json.Unmarshal(envelope.SubmittedAnswer, &result); err != nil {
-		return receipt, false, err
-	}
-	if err := verifyResultReceiptClosure(root, state, row, receipt, &result, ctx); err != nil {
-		return receipt, false, err
-	}
+
 	return receipt, true, nil
+}
+
+// redeliveryResultID derives the identity of a new delivery of the same
+// unfinished responsibility from the domain facts of the delivery it replaces:
+// the previous delivery's recorded submission key and its saved answer-sheet
+// artifact path. Both are already-received facts, so the same delivery always
+// keeps one identity, and a new delivery can never reuse the previous
+// identity or the save path derived from it. Neither the Runtime write count
+// nor an accumulated round counter takes part in this identity.
+func redeliveryResultID(base string, previous map[string]any) (string, error) {
+	previousKey := stringField(previous["submission_key"])
+	previousRef := stringField(previous["result_ref"])
+	if previousKey == "" && previousRef == "" {
+		return "", fmt.Errorf("the previous S7 delivery has no recorded identity to derive a re-delivery identity")
+	}
+	sum := sha256.Sum256([]byte(previousKey + "\x00" + previousRef))
+	return fmt.Sprintf("%s-redelivery-%s", base, hex.EncodeToString(sum[:8])), nil
+}
+
+// Result IDs are internal persistence coordinates for successive handoffs in
+// the same unfinished responsibility; authors keep the original packet/path.
+func resultIDForPacket(packet workpacket.ReviewResultPacket, id string) bool {
+	if id == packet.ResultID {
+		return true
+	}
+	// A re-delivery identity carries the domain discriminator taken from the
+	// previous delivery's recorded submission key and saved answer sheet.
+	if suffix, ok := strings.CutPrefix(id, packet.ResultID+"-redelivery-"); ok {
+		if len(suffix) != 16 {
+			return false
+		}
+		for _, c := range suffix {
+			if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+				return false
+			}
+		}
+		return true
+	}
+	// Historical re-delivery identities were written as "<base>-attempt-<n>".
+	// They stay readable by their saved identity and are never recomputed.
+	suffix, ok := strings.CutPrefix(id, packet.ResultID+"-attempt-")
+	if !ok || suffix == "" {
+		return false
+	}
+	for _, c := range suffix {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return suffix[0] != '0'
 }

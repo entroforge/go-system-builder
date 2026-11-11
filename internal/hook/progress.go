@@ -1,7 +1,6 @@
 package hook
 
 import (
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -95,8 +94,7 @@ func PrepareNotice(root, session, agent, event string, output []byte) ([]byte, f
 	if specific["permissionDecision"] == "deny" {
 		return output, noop
 	}
-	identity := sha256.Sum256([]byte(session + "\x00" + agent))
-	path := filepath.Join(root, ".claude", "hook-notices", fmt.Sprintf("%x", identity))
+	path := diagnosticCachePath(root, "hook-notices", session, agent)
 	if event == "SessionStart" || event == "SubagentStart" {
 		return output, func() { _ = os.Remove(path) }
 	}
@@ -116,7 +114,6 @@ func PrepareNotice(root, session, agent, event string, output []byte) ([]byte, f
 				var gate map[string]any
 				if json.Unmarshal([]byte(strings.TrimPrefix(line, "QUALITY_GATE ")), &gate) == nil {
 					delete(gate, "observed_revision")
-					delete(gate, "fingerprint")
 					stable, _ := json.Marshal(gate)
 					context = string(stable) + "\n" + rest
 				}
@@ -127,15 +124,14 @@ func PrepareNotice(root, session, agent, event string, output []byte) ([]byte, f
 	if gate, ok := specific["quality_gate"].(map[string]any); ok {
 		copy := map[string]any{}
 		for k, v := range gate {
-			if k != "observed_revision" && k != "fingerprint" {
+			if k != "observed_revision" {
 				copy[k] = v
 			}
 		}
 		state["gate"] = copy
 	}
 	data, _ := json.Marshal(state)
-	sum := sha256.Sum256(data)
-	stamp := fmt.Sprintf("%x", sum)
+	stamp := string(data)
 	if old, err := os.ReadFile(path); err == nil && string(old) == stamp {
 		delete(p, "systemMessage")
 		if encoded, err := json.Marshal(p); err == nil {
@@ -161,4 +157,4 @@ func PrepareNotice(root, session, agent, event string, output []byte) ([]byte, f
 
 // These transport fields change on observation alone; the rest of the full
 // context participates so even a conflict beyond the UI preview reappears.
-var noticeRevisionFields = regexp.MustCompile(` Observed revision: [0-9]+\.| Fingerprint: [^ ]+\.`)
+var noticeRevisionFields = regexp.MustCompile(` Observed revision: [0-9]+\.`)

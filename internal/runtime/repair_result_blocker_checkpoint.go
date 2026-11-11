@@ -3,7 +3,6 @@ package runtime
 import (
 	"encoding/json"
 	"fmt"
-	"path"
 	"reflect"
 	"strings"
 
@@ -55,7 +54,7 @@ func verifiedRepairResultBlockerReceiptWithVerifier(verifier *repairResultResume
 	if err := controlproof.ValidateStateJournalPair(state, journal); err != nil {
 		return RepairResultBlockerReceipt{}, false, err
 	}
-	issueSequence, issueAfter, err := verifier.issue(p)
+	issueSequence, _, err := verifier.issue(p)
 	if err != nil {
 		return RepairResultBlockerReceipt{}, false, err
 	}
@@ -64,7 +63,7 @@ func verifiedRepairResultBlockerReceiptWithVerifier(verifier *repairResultResume
 	if err != nil {
 		return RepairResultBlockerReceipt{}, false, err
 	}
-	lifecycleEvents, err := repairResultBlockerEvents(journal, p, owner)
+	lifecycleEvents, err := repairResultBlockerEvents(journal, p, owner, evidenceRows)
 	if err != nil {
 		return RepairResultBlockerReceipt{}, false, err
 	}
@@ -89,13 +88,8 @@ func verifiedRepairResultBlockerReceiptWithVerifier(verifier *repairResultResume
 	evidence := evidenceRows[0]
 	artifactRef := stringValue(evidence["id"])
 	artifactPath := stringValue(evidence["path"])
-	artifactSHA := stringValue(evidence["sha256"])
-	if artifactRef == "" || artifactRef != artifactPath || !isSHA256Hex(artifactSHA) {
-		return RepairResultBlockerReceipt{}, false, fmt.Errorf("S9 blocker evidence row lacks its content-addressed artifact ref/SHA")
-	}
-	expectedArtifactDir := path.Join(".claude/evidence", b.RuntimeID, fmt.Sprintf("g%d", b.BaselineGeneration), "S9", "blockers", p.ID)
-	if artifactPath != path.Join(expectedArtifactDir, artifactSHA+".json") {
-		return RepairResultBlockerReceipt{}, false, fmt.Errorf("S9 blocker artifact path is not content addressed under its issued packet")
+	if artifactRef == "" || artifactRef != artifactPath {
+		return RepairResultBlockerReceipt{}, false, fmt.Errorf("S9 blocker artifact reference unavailable")
 	}
 	if err := verifyUniqueBlockerEvidencePath(state, artifactPath, evidence); err != nil {
 		return RepairResultBlockerReceipt{}, false, err
@@ -104,9 +98,6 @@ func verifiedRepairResultBlockerReceiptWithVerifier(verifier *repairResultResume
 	if err != nil {
 		return RepairResultBlockerReceipt{}, false, fmt.Errorf("read S9 blocker artifact: %w", err)
 	}
-	if workpacket.Digest(artifactBytes) != artifactSHA {
-		return RepairResultBlockerReceipt{}, false, fmt.Errorf("S9 blocker artifact bytes differ from original evidence SHA")
-	}
 	if err := schema.NewEmbeddedValidator().ValidateBytes("repair-result-blocker.schema.json", artifactBytes); err != nil {
 		return RepairResultBlockerReceipt{}, false, fmt.Errorf("validate S9 blocker artifact: %w", err)
 	}
@@ -114,11 +105,7 @@ func verifiedRepairResultBlockerReceiptWithVerifier(verifier *repairResultResume
 	if err := json.Unmarshal(artifactBytes, &artifact); err != nil {
 		return RepairResultBlockerReceipt{}, false, fmt.Errorf("decode S9 blocker artifact: %w", err)
 	}
-	packetSHA, err := verifier.packetDigest(p)
-	if err != nil {
-		return RepairResultBlockerReceipt{}, false, err
-	}
-	if err := verifyRepairResultBlockerArtifact(p, artifact, packetSHA); err != nil {
+	if err := verifyRepairResultBlockerArtifact(p, artifact); err != nil {
 		return RepairResultBlockerReceipt{}, false, err
 	}
 
@@ -126,25 +113,18 @@ func verifiedRepairResultBlockerReceiptWithVerifier(verifier *repairResultResume
 	if err != nil {
 		return RepairResultBlockerReceipt{}, false, fmt.Errorf("read S9 blocker lifecycle message: %w", err)
 	}
-	if workpacket.Digest(messageBytes) != artifact.MessageSHA256 {
-		return RepairResultBlockerReceipt{}, false, fmt.Errorf("S9 blocker message bytes differ from its immutable SHA")
-	}
-	expectedMessageDir := path.Join(".claude/evidence", b.RuntimeID, fmt.Sprintf("g%d", b.BaselineGeneration), "S9", "blocker-messages", p.ID)
-	if artifact.MessageRef != path.Join(expectedMessageDir, artifact.MessageSHA256+".json") {
-		return RepairResultBlockerReceipt{}, false, fmt.Errorf("S9 blocker message ref is not content addressed under its issued packet")
-	}
 	if err := schema.NewEmbeddedValidator().ValidateBytes("agent-message.schema.json", messageBytes); err != nil {
 		return RepairResultBlockerReceipt{}, false, fmt.Errorf("validate S9 blocker lifecycle message: %w", err)
 	}
 	if err := verifyRepairResultBlockerMessage(messageBytes, p, artifact); err != nil {
 		return RepairResultBlockerReceipt{}, false, err
 	}
-	if err := verifyRepairResultBlockerEvidence(evidence, p, artifactRef, artifactSHA); err != nil {
+	if err := verifyRepairResultBlockerEvidence(evidence, p, artifactRef); err != nil {
 		return RepairResultBlockerReceipt{}, false, err
 	}
 
 	event := lifecycleEvents[0]
-	acceptedEventID, acceptedKey, acceptedAfter, acceptedSequence, err := verifyRepairResultBlockerEvent(event, p, owner, artifactRef, artifact.MessageRef, issueSequence, issueAfter, state)
+	acceptedEventID, acceptedKey, acceptedAfter, acceptedSequence, err := verifyRepairResultBlockerEvent(event, p, owner, artifactRef, artifact.MessageRef, issueSequence)
 	if err != nil {
 		return RepairResultBlockerReceipt{}, false, err
 	}
@@ -154,7 +134,6 @@ func verifiedRepairResultBlockerReceiptWithVerifier(verifier *repairResultResume
 	return RepairResultBlockerReceipt{
 		Contract:                     "s9-repair-result-blocker-receipt-v1",
 		ArtifactRef:                  artifactRef,
-		ArtifactSHA256:               artifactSHA,
 		Artifact:                     artifact,
 		AcceptedEventID:              acceptedEventID,
 		AcceptedIdempotencyKey:       acceptedKey,
@@ -165,7 +144,7 @@ func verifiedRepairResultBlockerReceiptWithVerifier(verifier *repairResultResume
 
 // verifyHistoricalRepairResultIssueWithPackets validates the original packet
 // issue event against the registry already parsed for this request.
-func verifyHistoricalRepairResultIssueWithPackets(state map[string]any, p workpacket.RepairResultPacket, journal controlproof.JournalInspection, packets map[string]workpacket.RepairResultPacket, digest string) (sequence, after int, err error) {
+func verifyHistoricalRepairResultIssueWithPackets(state map[string]any, p workpacket.RepairResultPacket, journal controlproof.JournalInspection, packets map[string]workpacket.RepairResultPacket, _ ...string) (sequence, after int, err error) {
 	stored, found := packets[p.ID]
 	if !found || !reflect.DeepEqual(stored, p) {
 		return 0, 0, fmt.Errorf("S9 blocker packet is not the exact retained Runtime work_packet")
@@ -178,13 +157,11 @@ func verifyHistoricalRepairResultIssueWithPackets(state map[string]any, p workpa
 	actor, _ := event["actor"].(map[string]any)
 	from, _ := event["from"].(map[string]any)
 	to, _ := event["to"].(map[string]any)
-	before, be := integerField(event, "before_revision")
 	after, ae := integerField(event, "after_revision")
 	sequence, se := integerField(event, "sequence")
 	generation, ge := integerField(event, "baseline_generation")
-	stateRevision, re := integerField(state, "revision")
 	b := p.Binding.Sources
-	if !isSHA256Hex(digest) || event["event"] != "transition_committed" || event["outcome"] != "committed" || event["transition_id"] != "PACKET-ISSUE" || event["event_id"] != p.IssuanceEventID || event["idempotency_key"] != "packet:"+p.ID || event["runtime_id"] != b.RuntimeID || actor["type"] != "orchestrator" || actor["id"] != "orchestrator" || be != nil || ae != nil || se != nil || ge != nil || re != nil || before < 0 || after != before+1 || after > stateRevision || sequence < 1 || generation != b.BaselineGeneration || from["state"] != "bug_resolution" || from["phase"] != "fixing" || !reflect.DeepEqual(from, to) {
+	if event["event"] != "transition_committed" || event["outcome"] != "committed" || event["transition_id"] != "PACKET-ISSUE" || event["event_id"] != p.IssuanceEventID || event["idempotency_key"] != "packet:"+p.ID || event["runtime_id"] != b.RuntimeID || actor["type"] != "orchestrator" || actor["id"] != "orchestrator" || ae != nil || se != nil || ge != nil || sequence < 1 || generation < 1 || !reflect.DeepEqual(from, to) {
 		return 0, 0, fmt.Errorf("S9 blocker original packet issue tuple differs")
 	}
 	if err := verifyUniqueRepairResultBlockerCommittedKey(journal, "packet:"+p.ID, p.IssuanceEventID); err != nil {
@@ -220,7 +197,6 @@ func repairResultBlockerEvidenceRows(state map[string]any, p workpacket.RepairRe
 	}
 	matching := make([]map[string]any, 0, 1)
 	seenIDs := map[string]bool{}
-	artifactDirPrefix := path.Join(".claude/evidence", p.Binding.Sources.RuntimeID, fmt.Sprintf("g%d", p.Binding.Sources.BaselineGeneration), "S9", "blockers", p.ID) + "/"
 	for i, raw := range rows {
 		row, ok := raw.(map[string]any)
 		if !ok {
@@ -235,8 +211,7 @@ func repairResultBlockerEvidenceRows(state map[string]any, p workpacket.RepairRe
 		}
 		refs, refsOK := checkpointStringSlice(row["scope_refs"])
 		isPacketScopedBlocker := row["kind"] == "repair_result_blocker" && refsOK && containsStringRuntime(refs, p.ID)
-		isInExactBlockerDir := strings.HasPrefix(stringValue(row["path"]), artifactDirPrefix)
-		if isPacketScopedBlocker || isInExactBlockerDir {
+		if isPacketScopedBlocker {
 			matching = append(matching, row)
 		}
 	}
@@ -274,21 +249,26 @@ func eventIndexHas(index map[string]int, eventID string) bool {
 	return found
 }
 
-func repairResultBlockerEvents(journal controlproof.JournalInspection, p workpacket.RepairResultPacket, owner string) ([]map[string]any, error) {
-	base := path.Join(".claude/evidence", p.Binding.Sources.RuntimeID, fmt.Sprintf("g%d", p.Binding.Sources.BaselineGeneration), "S9")
-	artifactPrefix := path.Join(base, "blockers", p.ID) + "/"
-	messagePrefix := path.Join(base, "blocker-messages", p.ID) + "/"
-	matching := make([]map[string]any, 0, 1)
+// agentLifecycleIdentity reports whether a saved Agent lifecycle event id and
+// idempotency key belong to one owner and one event kind. The historical shape
+// ended in "-r<revision>" and the semantic shape ends in "-<intent key>"; both
+// start with the same prefix, so an already saved identity is accepted in
+// either form and never recomputed from the Runtime write counter (G18 §1.4).
+func agentLifecycleIdentity(eventID, key, owner, kind string) bool {
+	eventPrefix := "evt-agent-" + owner + "-" + kind + "-"
+	keyPrefix := "runtime:agent:" + owner + ":" + kind + ":"
+	return len(eventID) > len(eventPrefix) && strings.HasPrefix(eventID, eventPrefix) &&
+		len(key) > len(keyPrefix) && strings.HasPrefix(key, keyPrefix)
+}
+
+func repairResultBlockerEvents(journal controlproof.JournalInspection, p workpacket.RepairResultPacket, owner string, rows []map[string]any) ([]map[string]any, error) {
+	paths := map[string]bool{}
+	for _, row := range rows {
+		paths[stringValue(row["path"])] = true
+	}
+	matching := []map[string]any{}
 	for _, event := range journal.Events {
-		if event["transition_id"] != "AGENT-LIFECYCLE" || event["runtime_id"] != p.Binding.Sources.RuntimeID {
-			continue
-		}
-		generation, err := integerField(event, "baseline_generation")
-		if err != nil || generation != p.Binding.Sources.BaselineGeneration {
-			continue
-		}
-		eventID := stringValue(event["event_id"])
-		if !strings.HasPrefix(eventID, "evt-agent-"+owner+"-work_blocked-r") {
+		if event["transition_id"] != "AGENT-LIFECYCLE" || event["runtime_id"] != p.Binding.Sources.RuntimeID || !strings.HasPrefix(stringValue(event["event_id"]), "evt-agent-"+owner+"-work_blocked-") {
 			continue
 		}
 		refs, ok := checkpointStringSlice(event["evidence_ids"])
@@ -296,7 +276,7 @@ func repairResultBlockerEvents(journal controlproof.JournalInspection, p workpac
 			return nil, fmt.Errorf("S9 work_blocked journal evidence_ids is not a string array")
 		}
 		for _, ref := range refs {
-			if strings.HasPrefix(ref, artifactPrefix) || strings.HasPrefix(ref, messagePrefix) {
+			if paths[ref] && ref != "" {
 				matching = append(matching, event)
 				break
 			}
@@ -305,27 +285,10 @@ func repairResultBlockerEvents(journal controlproof.JournalInspection, p workpac
 	return matching, nil
 }
 
-func verifyRepairResultBlockerEvidence(row map[string]any, p workpacket.RepairResultPacket, artifactRef, artifactSHA string) error {
-	b := p.Binding.Sources
-	if row["id"] != artifactRef || row["kind"] != "repair_result_blocker" || row["path"] != artifactRef || row["sha256"] != artifactSHA || row["responsibility_id"] != "BUILD-WORK-PACKAGE" {
-		return fmt.Errorf("S9 blocker evidence identity, kind, SHA or responsibility differs")
+func verifyRepairResultBlockerEvidence(row map[string]any, p workpacket.RepairResultPacket, artifactRef string) error {
+	if row["kind"] != "repair_result_blocker" || row["path"] != artifactRef {
+		return fmt.Errorf("S9 blocker original reference differs")
 	}
-	generation, genErr := integerField(row, "baseline_generation")
-	round, roundErr := integerField(row, "review_round")
-	if genErr != nil || roundErr != nil || generation != b.BaselineGeneration || round != b.ReviewRound {
-		return fmt.Errorf("S9 blocker evidence generation/review round differs")
-	}
-	producers, ok := checkpointStringSlice(row["produced_by"])
-	if !ok || len(producers) != 1 || producers[0] != b.OwnerAgentID {
-		return fmt.Errorf("S9 blocker evidence must be produced only by the original owner")
-	}
-	refs, ok := checkpointStringSlice(row["scope_refs"])
-	if !ok || !sameBlockerScopeRefs(refs, p.ID, b.RepairAssignmentID) {
-		return fmt.Errorf("S9 blocker evidence scope must contain exactly the packet and RepairAssignment, without duplicates")
-	}
-	// status and invalidation columns are mutable current-evidence metadata.
-	// This historical receipt proves the original CAS and never grants current
-	// responsibility; a separate current selector must evaluate freshness.
 	return nil
 }
 
@@ -350,40 +313,20 @@ func verifyUniqueBlockerEvidencePath(state map[string]any, artifactPath string, 
 	return nil
 }
 
-func verifyRepairResultBlockerArtifact(p workpacket.RepairResultPacket, artifact RepairResultBlockerArtifact, packetSHA string) error {
-	b := p.Binding.Sources
-	if !isSHA256Hex(packetSHA) {
-		return fmt.Errorf("S9 blocker packet digest is invalid")
+func verifyRepairResultBlockerArtifact(p workpacket.RepairResultPacket, artifact RepairResultBlockerArtifact) error {
+	if artifact.PacketID != p.ID || artifact.Binding.Sources.OwnerAgentID != p.Binding.Sources.OwnerAgentID || artifact.Binding.Sources.RepairAssignmentID != p.Binding.Sources.RepairAssignmentID {
+		return fmt.Errorf("S9 blocker responsibility differs")
 	}
-	if artifact.Contract != "s9-repair-result-blocker-v1" || artifact.SchemaVersion != "1.0.0" || artifact.PacketID != p.ID || artifact.PacketSHA256 != packetSHA || artifact.IssuanceEventID != p.IssuanceEventID || !reflect.DeepEqual(artifact.Binding, p.Binding) || artifact.AnswerPath != p.AnswerPath {
-		return fmt.Errorf("S9 blocker artifact packet/binding/answer-path identity differs")
-	}
-	var execution map[string]any
-	if err := json.Unmarshal(p.Inputs.Execution, &execution); err != nil || execution == nil {
-		return fmt.Errorf("S9 blocker frozen Execution is invalid")
-	}
-	projection, err := ProjectRepairResultExecution(execution)
-	if err != nil || workpacket.Digest(projection) != p.Binding.ExecutionSHA256 {
-		return fmt.Errorf("S9 blocker frozen execution digest differs: %v", err)
-	}
-	frozenAssignmentID := stringValue(execution["assignment_id"])
-	if execution["runtime_id"] != b.RuntimeID || !hypothesisJSONEqual(execution["baseline_generation"], b.BaselineGeneration) || execution["agent_id"] != b.OwnerAgentID || !validBlockerExecutionAssignmentID(frozenAssignmentID, b.RepairAssignmentID, b.ManifestAssignmentID, artifact.ExecutionAssignmentID) || artifact.ExecutionGeneration < 1 || !hypothesisJSONEqual(execution["execution_generation"], artifact.ExecutionGeneration) || artifact.ExecutionRoot != stringValue(execution["worktree_path"]) || artifact.BaseCommit != stringValue(execution["base_commit"]) || !validBlockerCommitID(artifact.SourceHead) {
-		return fmt.Errorf("S9 blocker artifact execution/owner/base tuple differs from frozen packet")
-	}
-	draft, err := repairResultBlockerDraft(p, artifact.SubmittedAnswer)
-	if err != nil {
-		return fmt.Errorf("encode S9 issued questionnaire for answer validation: %w", err)
-	}
-	answer, problems := workpacket.ValidateRepairResultAnswer(p, draft)
-	if len(problems) != 0 || string(answer) != string(artifact.SubmittedAnswer) || workpacket.Digest(answer) != artifact.AnswerSHA256 {
-		return fmt.Errorf("S9 blocker professional answer is not the exact full answer for this packet: %v", problems)
+	answer, problems := workpacket.ValidateRepairResultAnswer(p, artifact.SubmittedAnswer)
+	if len(problems) != 0 {
+		return fmt.Errorf("S9 blocker answer invalid: %v", problems)
 	}
 	var professional workpacket.RepairResultProfessionalAnswer
 	if err := json.Unmarshal(answer, &professional); err != nil {
-		return fmt.Errorf("decode S9 blocker verdict: %w", err)
+		return err
 	}
 	if professional.Verdict != "blocked" && professional.Verdict != "contract_conflict" && professional.Verdict != "stale" {
-		return fmt.Errorf("S9 blocker receipt cannot accept a completed verdict")
+		return fmt.Errorf("S9 blocker verdict differs")
 	}
 	return nil
 }
@@ -415,7 +358,7 @@ func verifyRepairResultBlockerMessage(data []byte, p workpacket.RepairResultPack
 	// schema validation so the indexed message cannot be rebound to another
 	// packet after it has been copied to its immutable content-addressed path.
 	extension, ok := message["s9_blocker"].(map[string]any)
-	if !ok || extension["packet_id"] != p.ID || extension["packet_sha256"] != artifact.PacketSHA256 || extension["answer_path"] != artifact.AnswerPath || extension["answer_sha256"] != artifact.AnswerSHA256 {
+	if !ok || extension["packet_id"] != p.ID || extension["answer_path"] != artifact.AnswerPath {
 		return fmt.Errorf("S9 blocker message does not bind the exact packet and answer ref/SHA")
 	}
 	if _, has := extension["artifact_ref"]; has {
@@ -424,25 +367,33 @@ func verifyRepairResultBlockerMessage(data []byte, p workpacket.RepairResultPack
 	return nil
 }
 
-func verifyRepairResultBlockerEvent(event map[string]any, p workpacket.RepairResultPacket, owner, artifactRef, messageRef string, issueSequence, issueAfter int, state map[string]any) (eventID, key string, after, sequence int, err error) {
-	before, be := integerField(event, "before_revision")
+func verifyRepairResultBlockerEvent(event map[string]any, p workpacket.RepairResultPacket, owner, artifactRef, messageRef string, issueSequence int) (eventID, key string, after, sequence int, err error) {
+	_, be := integerField(event, "before_revision")
 	after, ae := integerField(event, "after_revision")
 	sequence, se := integerField(event, "sequence")
 	generation, ge := integerField(event, "baseline_generation")
-	stateRevision, re := integerField(state, "revision")
 	actor, _ := event["actor"].(map[string]any)
 	from, _ := event["from"].(map[string]any)
 	to, _ := event["to"].(map[string]any)
 	refs, refsOK := checkpointStringSlice(event["evidence_ids"])
-	wantID := fmt.Sprintf("evt-agent-%s-work_blocked-r%d", owner, after)
-	wantKey := fmt.Sprintf("runtime:agent:%s:work_blocked:%d", owner, before)
-	if be != nil || ae != nil || se != nil || ge != nil || re != nil || !refsOK || before < 0 || after != before+1 || after > stateRevision || sequence < 1 || generation != p.Binding.Sources.BaselineGeneration || event["event_id"] != wantID || event["event"] != "transition_committed" || event["outcome"] != "committed" || event["transition_id"] != "AGENT-LIFECYCLE" || event["runtime_id"] != p.Binding.Sources.RuntimeID || event["idempotency_key"] != wantKey || actor["type"] != "orchestrator" || actor["id"] != "orchestrator" || event["message"] != "Recorded a schema-valid Agent lifecycle event (work_blocked)" || from["state"] != "bug_resolution" || from["phase"] != "fixing" || !reflect.DeepEqual(from, to) || !sameBlockerEvidenceRefs(refs, messageRef, artifactRef) {
+	// The saved identity is compared, never recomputed from the Runtime write
+	// counter (G18 §1.4). Both the historical "-r<revision>" shape and the
+	// semantic "-<intent key>" shape are accepted.
+	eventID = stringValue(event["event_id"])
+	key = stringValue(event["idempotency_key"])
+	// The Runtime's write counter is a recorded field, never a qualifier. It is
+	// read on its original path and carried into the receipt for audit and
+	// history restoration; the required-field checks below only mirror the
+	// journal event schema, and no continuity, freshness or ordering is
+	// derived from the counter. The committed event coordinate (sequence) and
+	// the evidence references are what bind this event to the original blocker.
+	if be != nil || ae != nil || se != nil || ge != nil || !refsOK || sequence < 1 || generation != p.Binding.Sources.BaselineGeneration || !agentLifecycleIdentity(eventID, key, owner, "work_blocked") || event["event"] != "transition_committed" || event["outcome"] != "committed" || event["transition_id"] != "AGENT-LIFECYCLE" || event["runtime_id"] != p.Binding.Sources.RuntimeID || actor["type"] != "orchestrator" || actor["id"] != "orchestrator" || event["message"] != "Recorded a schema-valid Agent lifecycle event (work_blocked)" || !reflect.DeepEqual(from, to) || !sameBlockerEvidenceRefs(refs, messageRef, artifactRef) {
 		return "", "", 0, 0, fmt.Errorf("S9 original work_blocked lifecycle event tuple or evidence IDs differ")
 	}
-	if sequence <= issueSequence || after <= issueAfter {
+	if sequence <= issueSequence {
 		return "", "", 0, 0, fmt.Errorf("S9 original blocker event does not follow packet issuance")
 	}
-	return wantID, wantKey, after, sequence, nil
+	return eventID, key, after, sequence, nil
 }
 
 func containsStringRuntime(values []string, target string) bool {
@@ -488,17 +439,22 @@ func validBlockerCommitID(value string) bool {
 // reauthorize the Worker or reconstruct historical execution permissions.
 func recordedRepairResultLifecycleEvent(journal controlproof.JournalInspection, packet workpacket.RepairResultPacket, messageRef, action string) (map[string]any, error) {
 	var selected map[string]any
-	prefix := "evt-agent-" + packet.Binding.Sources.OwnerAgentID + "-" + action + "-r"
+	prefix := "evt-agent-" + packet.Binding.Sources.OwnerAgentID + "-" + action + "-"
 	for _, event := range journal.Events {
 		refs, _ := checkpointStringSlice(event["evidence_ids"])
 		if !containsStringRuntime(refs, messageRef) || !strings.HasPrefix(stringValue(event["event_id"]), prefix) || event["outcome"] != "committed" {
 			continue
 		}
-		before, be := integerField(event, "before_revision")
-		after, ae := integerField(event, "after_revision")
+		// The Runtime's write counter is a recorded field, never a qualifier.
+		// The required-field checks below only mirror the journal event schema;
+		// no continuity or freshness is derived from the counter. The committed
+		// event coordinate (sequence) and the evidence references are what
+		// identify the original acceptance event.
+		_, be := integerField(event, "before_revision")
+		_, ae := integerField(event, "after_revision")
 		sequence, se := integerField(event, "sequence")
 		generation, ge := integerField(event, "baseline_generation")
-		if selected != nil || event["transition_id"] != "AGENT-LIFECYCLE" || event["runtime_id"] != packet.Binding.Sources.RuntimeID || ge != nil || generation != packet.Binding.Sources.BaselineGeneration || be != nil || ae != nil || se != nil || before < 0 || after != before+1 || sequence < 1 || stringValue(event["idempotency_key"]) == "" {
+		if selected != nil || event["transition_id"] != "AGENT-LIFECYCLE" || event["runtime_id"] != packet.Binding.Sources.RuntimeID || ge != nil || generation < 1 || (action != "work_blocked" && generation != packet.Binding.Sources.BaselineGeneration) || be != nil || ae != nil || se != nil || sequence < 1 || stringValue(event["idempotency_key"]) == "" {
 			return nil, fmt.Errorf("S9 recorded %s has ambiguous or invalid original acceptance coordinates", action)
 		}
 		selected = event

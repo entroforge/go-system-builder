@@ -1,9 +1,7 @@
 package cli
 
 import (
-	"crypto/sha256"
 	"encoding/json"
-	"fmt"
 	"github.com/entroforge/go-system-builder/internal/hookctx"
 	"github.com/entroforge/go-system-builder/internal/plancheckpoint"
 	"github.com/entroforge/go-system-builder/internal/policy"
@@ -32,7 +30,6 @@ func TestActivatedCheckpointRecoveryRejectsTamperingAndWrongAssignment(t *testin
 	for _, k := range []string{"runtime_id", "agent_id", "task_id", "team_id"} {
 		activation[k] = plan[k]
 	}
-	activation["approved_readback_sha256"] = fmt.Sprintf("%x", sha256.Sum256(planBytes))
 	activation["approved_readback_message_id"] = plan["message_id"]
 	activationPath := writePlanCheckpointJSON(t, root, "activation.json", activation)
 	rows := snapshot.State["entities"].(map[string]any)["agents"].([]any)
@@ -53,14 +50,15 @@ func TestActivatedCheckpointRecoveryRejectsTamperingAndWrongAssignment(t *testin
 	if loadErr != nil || loaded.Agent == nil || loaded.Agent.PlanReportedRef != planPath || loaded.PlanReportedRef != planPath {
 		t.Fatalf("Idle and write gates did not receive the same restored checkpoint: %#v %v", loaded, loadErr)
 	}
-	// Same valid JSON and same identity, different bytes: activation no longer binds it.
+	// Same valid JSON and same identity, different bytes: the activation binds
+	// the identity, not the bytes. No digest attestation is part of the contract.
 	os.WriteFile(planPath, append(planBytes, '\n'), 0600)
-	if ref, err := plancheckpoint.ActivatedRef(root, snapshot, "agent-s9"); err == nil || ref != "" {
-		t.Fatal("tampered plan recovered")
+	if ref, err := plancheckpoint.ActivatedRef(root, snapshot, "agent-s9"); err != nil || ref != planPath {
+		t.Fatalf("same identity must stay recoverable without byte attestation: %q %v", ref, err)
 	}
 	loaded, loadErr = hookctx.Load(root, "agent-s9")
-	if loadErr != nil || loaded.Agent == nil || loaded.Agent.PlanReportedRef != "" || loaded.PlanReportedRef != "" {
-		t.Fatalf("tampered plan cleared a gate: %#v %v", loaded, loadErr)
+	if loadErr != nil || loaded.Agent == nil || loaded.Agent.PlanReportedRef != planPath || loaded.PlanReportedRef != planPath {
+		t.Fatalf("identity-bound gate did not survive the byte change: %#v %v", loaded, loadErr)
 	}
 	os.WriteFile(planPath, planBytes, 0600)
 	row["task_ids"] = []any{"TASK-OTHER"}

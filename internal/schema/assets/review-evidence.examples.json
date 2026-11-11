@@ -14,13 +14,11 @@
     "source_reports": [
       {
         "id": "REV-001",
-        "path": "docs/reports/review/REV-001.md",
-        "sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+        "path": "docs/reports/review/REV-001.md"
       },
       {
         "id": "QA-003",
-        "path": "docs/reports/qa/QA-003.md",
-        "sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+        "path": "docs/reports/qa/QA-003.md"
       }
     ],
     "severity": "P1",
@@ -88,13 +86,11 @@
     "changed_artifacts": [
       {
         "id": "runtime-store",
-        "path": ".claude/hooks/runtime-store.js",
-        "sha256": "3333333333333333333333333333333333333333333333333333333333333333"
+        "path": ".claude/hooks/runtime-store.js"
       },
       {
         "id": "runtime-store-tests",
-        "path": "tests/runtime-store.test.js",
-        "sha256": "4444444444444444444444444444444444444444444444444444444444444444"
+        "path": "tests/runtime-store.test.js"
       }
     ],
     "decisions": [
@@ -202,29 +198,24 @@
     "frozen_artifacts": [
       {
         "id": "runtime-store",
-        "path": ".claude/hooks/runtime-store.js",
-        "sha256": "3333333333333333333333333333333333333333333333333333333333333333"
+        "path": ".claude/hooks/runtime-store.js"
       },
       {
         "id": "runtime-store-tests",
-        "path": "tests/runtime-store.test.js",
-        "sha256": "4444444444444444444444444444444444444444444444444444444444444444"
+        "path": "tests/runtime-store.test.js"
       }
     ],
     "delivery_manifest_ref": {
       "id": "team-manifest-delivery-round-2",
-      "path": "docs/evidence/team-manifest-delivery-round-2.json",
-      "sha256": "5555555555555555555555555555555555555555555555555555555555555555"
+      "path": "docs/evidence/team-manifest-delivery-round-2.json"
     },
     "qa_manifest_ref": {
       "id": "team-manifest-qa-round-2",
-      "path": "docs/evidence/team-manifest-qa-round-2.json",
-      "sha256": "6666666666666666666666666666666666666666666666666666666666666666"
+      "path": "docs/evidence/team-manifest-qa-round-2.json"
     },
     "e2e_manifest_ref": {
       "id": "team-manifest-e2e-round-2",
-      "path": "docs/evidence/team-manifest-e2e-round-2.json",
-      "sha256": "7777777777777777777777777777777777777777777777777777777777777777"
+      "path": "docs/evidence/team-manifest-e2e-round-2.json"
     },
     "responsibility_results": [
       {

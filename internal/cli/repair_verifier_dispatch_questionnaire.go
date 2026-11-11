@@ -26,6 +26,9 @@ func repairVerifierDispatchCurrent(state map[string]any) bool {
 	if stringValue(mapFieldCLI(state, "lifecycle")["state"]) != "bug_resolution" {
 		return false
 	}
+	if stringValue(repairPointerCLI(state)["session_id"]) == "" {
+		return false
+	}
 	status := stringValue(repairPointerCLI(state)["status"])
 	return status == "planning" || status == "reproducing" || status == "targeted_reverification"
 }
@@ -69,6 +72,7 @@ func repairVerifierDispatchContext(root string, state map[string]any, assignment
 	if division, pathErr := repairLeadQuestionnairePath(root, state, "independent-verifier-dispatch.json"); pathErr == nil {
 		context += "Restore the named source/filesystem failure, then save the registered division again at " + division + "; the original registration is reused and its Targeted answer is prepared. "
 	}
+
 	return context
 }
 
@@ -188,7 +192,7 @@ func runSavedRepairVerifierDispatch(root string, request policy.Input, stdout, s
 		} else {
 			var commandOut, commandErr bytes.Buffer
 			if code := runRuntimeRepairDispatch([]string{"--root", root, "--assignment-id", row.AssignmentID, "--agent-id", owner, "--independent-verification"}, &commandOut, &commandErr); code != 0 {
-				return feedback(result.String() + fmt.Sprintf(" Original independent dispatch for %s did not register: %s %s. Retain this answer and save again after resolving the named source; existing registrations will be reused.", row.AssignmentID, commandErr.String(), commandOut.String()))
+				return feedback(result.String() + fmt.Sprintf(" Original independent dispatch for %s did not register: %s %s. Main restores the named source; existing registrations remain received and the original pending dispatch continues from this answer on natural events.", row.AssignmentID, commandErr.String(), commandOut.String()))
 			}
 			latest, err = store.Snapshot()
 			if err != nil {
@@ -198,7 +202,7 @@ func runSavedRepairVerifierDispatch(root string, request policy.Input, stdout, s
 		if stringValue(repairPointerCLI(latest.State)["status"]) == "targeted_reverification" {
 			selections, err := repairTargetedSelections(root, latest.State)
 			if err != nil {
-				return feedback(result.String() + " Independent Targeted source: " + err.Error() + ". Restore the named source and save this same registered division again; its original registration is reused and Targeted preparation retried.")
+				return feedback(result.String() + " Independent Targeted source: " + err.Error() + ". Main restores the named source; the system retries Targeted preparation from the registered responsibility on natural events.")
 			}
 			for _, selection := range selections {
 				if selection.performingAssignmentID != choice.AssignmentID || selection.verifierOwner != owner {
@@ -206,7 +210,7 @@ func runSavedRepairVerifierDispatch(root string, request policy.Input, stdout, s
 				}
 				answerPath, _, err := prepareRepairTargetedQuestionnaire(root, latest.State, selection)
 				if err != nil {
-					return feedback(result.String() + " Original verifier dispatch recorded; Targeted questionnaire preparation: " + err.Error() + ". Restore the named source/filesystem failure and save this same division again; the original registration will be reused.")
+					return feedback(result.String() + " Original verifier dispatch recorded; Targeted questionnaire preparation: " + err.Error() + ". Main restores the named source/filesystem failure; the system retries preparation from the registered responsibility on natural events.")
 				}
 				result.WriteString(" Independent verifier answer: " + answerPath + ". ")
 			}
@@ -218,4 +222,29 @@ func runSavedRepairVerifierDispatch(root string, request policy.Input, stdout, s
 	}
 	result.WriteString("This identity covers the current Contract assertions. Follow the readiness or original preparation recovery above; no native agent was started by this save.")
 	return feedback(result.String())
+}
+
+// Preparation resumes from the original registered identity, independently of
+// the private division draft and without requiring another author save.
+func continueRegisteredS9Verification(root string, state map[string]any, diagnostic io.Writer) {
+	if stringValue(repairPointerCLI(state)["impact_ref"]) == "" {
+		return
+	}
+	selections, err := repairTargetedSelections(root, state)
+	if err != nil {
+		fmt.Fprintln(diagnostic, "Original verifier registration retained; Targeted preparation: "+err.Error())
+		return
+	}
+	for _, selection := range selections {
+		receipt := lookupTargetedForSelection(root, repairPointerCLI(state), selection, "pass")
+		if receipt.found {
+			continue
+		}
+		if receipt.unknown {
+			fmt.Fprintln(diagnostic, targetedHistoricalUnknownMessage(receipt))
+		}
+		if _, _, err := prepareRepairTargetedQuestionnaire(root, state, selection); err != nil {
+			fmt.Fprintln(diagnostic, "Original verifier registration retained; Targeted preparation: "+err.Error())
+		}
+	}
 }

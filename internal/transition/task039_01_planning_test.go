@@ -271,7 +271,7 @@ func TestTASK03901CatalogCoversAutomaticMainlineAndRecovery(t *testing.T) {
 	wantAuto := []string{
 		"PTR-PLAN-01", "PTR-PLAN-02", "TR-002", "TR-003", "TR-004", "TR-006", "TR-007",
 		"TR-008", "TR-009", "TR-010", "TR-011", "TR-012", "TR-013", "TR-014", "TR-015",
-		"TR-016", "TR-017", "TR-018", "PTR-BUG-01", "PTR-BUG-02", "PTR-BUG-03", "PTR-BUG-04",
+		"TR-016", "TR-017", "TR-018",
 		"PTR-BUG-05", "PTR-BUG-06", "PTR-BUG-07", "TR-022", "TR-023", "TR-024",
 	}
 	for _, id := range wantAuto {

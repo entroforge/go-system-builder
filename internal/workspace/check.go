@@ -2,8 +2,6 @@ package workspace
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"github.com/entroforge/go-system-builder/internal/checkexec"
@@ -11,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -47,18 +46,12 @@ func (b *ExecutionRegistry) RunCheck(ctx context.Context, e Execution, index int
 	if err := b.ValidateInputs(e); err != nil {
 		return "", err
 	}
-	if _, profiled := ProfileAt(e, index); profiled && e.BootstrapSHA256 != "" {
-		if err := b.ValidateBootstrap(e); err != nil {
-			return "", err
-		}
-	}
 	scratch, err := os.MkdirTemp("", "loop-worker-check-")
 	if err != nil {
 		return "", err
 	}
 	defer os.RemoveAll(scratch)
-	hash, err := copyCheckTree(ctx, e.Path, scratch)
-	if err != nil {
+	if err := copyCheckTreeWithoutDigest(ctx, e.Path, scratch); err != nil {
 		return "", err
 	}
 	var observation *checkexec.Observation
@@ -70,7 +63,6 @@ func (b *ExecutionRegistry) RunCheck(ctx context.Context, e Execution, index int
 		}
 		permissions := b.observeCheckPermissions(ctx, e, scratch)
 		observed.Permissions = &permissions
-		observed.PermissionDigest = permissions.Digest()
 		observation = &observed
 		guard := checkexec.CurrentReuseGuard(ctx)
 		decision := checkexec.DecideReuse(filepath.Join(b.MainRoot, ".claude/evidence/workspace-checks"), checkexec.ReuseRequest{Profile: p, Observation: observed, Binding: CheckBinding(e), Checkout: e.Path, Fresh: guard.Fresh, NewHypothesis: guard.NewHypothesis}, e.ToolCheckReceipts)
@@ -101,8 +93,8 @@ func (b *ExecutionRegistry) RunCheck(ctx context.Context, e Execution, index int
 	if p, ok := ProfileAt(e, index); ok && err == nil {
 		after, afterErr := checkexec.ObserveProfile(ctx, scratch, p)
 		permissions := b.observeCheckPermissions(ctx, e, scratch)
-		after.PermissionDigest = permissions.Digest()
-		if afterErr != nil || after.SubjectDigest != observation.SubjectDigest || after.EnvironmentDigest != observation.EnvironmentDigest || after.RunnerDigest != observation.RunnerDigest || after.PermissionDigest != observation.PermissionDigest {
+		after.Permissions = &permissions
+		if afterErr != nil || !reflect.DeepEqual(after.Environment, observation.Environment) || !reflect.DeepEqual(after.Permissions, observation.Permissions) {
 			err = checkexec.New("input_drift", "environment owner", e.Checks[index], fmt.Errorf("profile inputs/environment/runner changed during check"))
 		}
 	}
@@ -125,11 +117,11 @@ func (b *ExecutionRegistry) RunCheck(ctx context.Context, e Execution, index int
 		failure.LogRef = filepath.Join(dir, "output.log")
 	}
 	binding, _ := checkexec.CurrentBinding(ctx)
-	receipt := map[string]any{"reuse_decision": reuseDecision, "check_binding": binding, "profile_observation": observation, "failure": failure, "version": 1, "runtime_id": e.RuntimeID, "assignment_id": e.AssignmentID, "execution_generation": e.Generation, "baseline_generation": e.BaselineGeneration, "check_index": index, "command": e.Checks[index], "snapshot_sha256": hash, "started_at": started, "elapsed_ms": time.Since(started).Milliseconds(), "status": status, "error": reason, "output": filepath.Join(dir, "output.log"), "disposable_copy": true}
+	receipt := map[string]any{"reuse_decision": reuseDecision, "check_binding": binding, "profile_observation": observation, "failure": failure, "version": 1, "runtime_id": e.RuntimeID, "assignment_id": e.AssignmentID, "execution_generation": e.Generation, "baseline_generation": e.BaselineGeneration, "check_index": index, "command": e.Checks[index], "started_at": started, "elapsed_ms": time.Since(started).Milliseconds(), "status": status, "error": reason, "output": filepath.Join(dir, "output.log"), "disposable_copy": true}
 	data, _ := json.MarshalIndent(receipt, "", "  ")
 	if observation != nil {
 		receipt["version"] = 2
-		sealed, sealErr := checkexec.SealReceipt(receipt, filepath.Join(dir, "output.log"))
+		sealed, sealErr := checkexec.SealReceipt(receipt)
 		if sealErr != nil {
 			return "", checkexec.New("diagnostic_io", "environment owner", e.Checks[index], sealErr)
 		}
@@ -149,8 +141,7 @@ func (b *ExecutionRegistry) RunCheck(ctx context.Context, e Execution, index int
 	return path, err
 }
 
-func copyCheckTree(ctx context.Context, source, dest string) (string, error) {
-	hash := sha256.New()
+func copyCheckTreeWithoutDigest(ctx context.Context, source, dest string) error {
 	var total int64
 	err := filepath.WalkDir(source, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -174,7 +165,6 @@ func copyCheckTree(ctx context.Context, source, dest string) (string, error) {
 			return err
 		}
 		target := filepath.Join(dest, rel)
-		fmt.Fprintf(hash, "%q %d %d\n", filepath.ToSlash(rel), info.Mode(), info.Size())
 		if d.IsDir() {
 			return os.Mkdir(target, info.Mode().Perm()|0700)
 		}
@@ -183,7 +173,6 @@ func copyCheckTree(ctx context.Context, source, dest string) (string, error) {
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(hash, "%q\n", link)
 			return os.Symlink(link, target)
 		}
 		if !info.Mode().IsRegular() {
@@ -197,8 +186,7 @@ func copyCheckTree(ctx context.Context, source, dest string) (string, error) {
 		if err != nil {
 			return err
 		}
-		hash.Write(data)
 		return os.WriteFile(target, data, info.Mode().Perm()|0600)
 	})
-	return hex.EncodeToString(hash.Sum(nil)), err
+	return err
 }

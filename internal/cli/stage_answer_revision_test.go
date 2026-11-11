@@ -115,10 +115,10 @@ func TestStageAnswerNamedRevisionHoldsOriginalGateUntilNewAnswer(t *testing.T) {
 }
 
 func TestIndependentNamedRevisionRetainsOldSourceAndRequiresNewExecution(t *testing.T) {
-	f := newStageAnswerFixture(t)
+	f := newHistoricalStageAnswerFixture(t)
 	p := f.packets[0]
 	oldExecution := f.prepare(t, p)
-	f.begin(t, p, &oldExecution)
+	f.startFrozenReviewWorker(t, oldExecution)
 	first := saveStageHook(t, f.root, oldExecution.Path, p.Binding.Owner, workpacket.WorkerAnswerPath, completedDraft(p, "pass"))
 	if !first.WorkComplete {
 		t.Fatalf("original source not received: %+v", first)
@@ -218,10 +218,12 @@ func (e *revisionPausedEvaluator) Evaluate(ctx context.Context, input qualitygat
 }
 
 func TestNamedRevisionDefeatsAnAlreadyEvaluatedPeerPass(t *testing.T) {
-	f := newStageAnswerFixture(t)
+	// This controlled race deliberately exercises the historical working
+	// authorization callback below before its followup may commit a PASS.
+	f := newHistoricalStageAnswerFixture(t)
 	old, peer := f.packets[0], f.packets[1]
-	f.begin(t, old, nil)
-	f.begin(t, peer, nil)
+	f.beginHistorical(t, old)
+	f.beginHistorical(t, peer)
 	first := saveStageHook(t, f.root, f.root, old.Binding.Owner, old.AnswerPath, completedDraft(old, "pass"))
 	s, err := submission.New(f.root)
 	if err != nil {

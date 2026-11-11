@@ -20,14 +20,13 @@ func acceptedFixture(t *testing.T) (string, ReuseRequest, ToolReceipt) {
 	}
 	permissions := unitPermissions()
 	observation.Permissions = &permissions
-	observation.PermissionDigest = permissions.Digest()
 	binding := Binding{RuntimeID: "runtime", Generation: 1, AssignmentID: "assignment", Owner: "builder", ExecutionGeneration: 1, Responsibility: "owned_check"}
 	log := filepath.Join(root, "output.log")
 	if err := os.WriteFile(log, []byte("actual test fixture output\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	r := map[string]any{"version": 2, "command": p.Command, "status": "pass", "output": log, "profile_observation": observation, "check_binding": binding}
-	data, err := SealReceipt(r, log)
+	data, err := SealReceipt(r)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,8 +53,8 @@ func TestReuseExactFactsAreShadowAndNeverSkip(t *testing.T) {
 	}
 }
 
-func TestReuseBoundariesAndEveryObservedDigest(t *testing.T) {
-	for _, change := range []string{"owner", "runtime", "generation", "assignment", "execution", "mandatory", "independent", "fresh", "hypothesis", "permission", "never", "environment_policy", "side_effects", "closure", "profile", "subject", "runner", "environment", "dependency", "fixture", "checkout", "incomplete_observation"} {
+func TestReuseRespectsActualResponsibilityAndPolicy(t *testing.T) {
+	for _, change := range []string{"owner", "runtime", "generation", "assignment", "execution", "mandatory", "independent", "fresh", "hypothesis", "never", "environment_policy", "side_effects", "closure", "profile", "checkout"} {
 		t.Run(change, func(t *testing.T) {
 			root, current, ref := acceptedFixture(t)
 			switch change {
@@ -77,9 +76,6 @@ func TestReuseBoundariesAndEveryObservedDigest(t *testing.T) {
 				current.Fresh = true
 			case "hypothesis":
 				current.NewHypothesis = true
-			case "permission":
-				current.Observation.Permissions.Available = false
-				current.Observation.PermissionDigest = current.Observation.Permissions.Digest()
 			case "never":
 				current.Profile.ReusePolicy = "never"
 			case "environment_policy":
@@ -90,20 +86,8 @@ func TestReuseBoundariesAndEveryObservedDigest(t *testing.T) {
 				current.Profile.InputClosure = "unknown"
 			case "profile":
 				current.Profile.Command = "false"
-			case "subject":
-				current.Observation.SubjectDigest = Hash([]byte(change))
-			case "runner":
-				current.Observation.RunnerDigest = Hash([]byte(change))
-			case "environment":
-				current.Observation.EnvironmentDigest = Hash([]byte(change))
-			case "dependency":
-				current.Observation.DependencyDigest = Hash([]byte(change))
-			case "fixture":
-				current.Observation.FixtureDigest = Hash([]byte(change))
 			case "checkout":
 				current.Checkout = t.TempDir()
-			case "incomplete_observation":
-				current.Observation.SubjectDigest = ""
 			}
 			if d := DecideReuse(root, current, []ToolReceipt{ref}); d.Action != "run" || d.WouldReuse {
 				t.Fatal("changed authority/facts were reused", d)
@@ -112,7 +96,7 @@ func TestReuseBoundariesAndEveryObservedDigest(t *testing.T) {
 	}
 }
 
-func TestCapturedReceiptRejectsResealLogDriftTruncationAndLegacy(t *testing.T) {
+func TestCapturedReceiptKeepsActualFactsWithoutByteAuthentication(t *testing.T) {
 	for _, kind := range []string{"reseal", "log", "truncated", "legacy", "missing", "escape"} {
 		t.Run(kind, func(t *testing.T) {
 			root, current, ref := acceptedFixture(t)
@@ -123,7 +107,7 @@ func TestCapturedReceiptRejectsResealLogDriftTruncationAndLegacy(t *testing.T) {
 			case "reseal":
 				raw["status"] = "fail"
 				delete(raw, "receipt_integrity")
-				data, _ = SealReceipt(raw, raw["output"].(string))
+				data, _ = SealReceipt(raw)
 				os.WriteFile(ref.Path, data, 0600)
 			case "log":
 				os.WriteFile(raw["output"].(string), []byte("forged output"), 0600)
@@ -141,11 +125,19 @@ func TestCapturedReceiptRejectsResealLogDriftTruncationAndLegacy(t *testing.T) {
 				os.Remove(ref.Path)
 				os.Symlink(outside, ref.Path)
 			}
-			if _, err := VerifyToolReceipt(root, ref); err == nil {
-				t.Fatal("damaged source was accepted", kind)
+			verified, err := VerifyToolReceipt(root, ref)
+			if kind == "reseal" || kind == "log" {
+				if err != nil {
+					t.Fatalf("original receipt identity rejected after %s: %v", kind, err)
+				}
+				if kind == "reseal" && verified.Passed {
+					t.Fatal("explicit failed check was treated as passed")
+				}
+			} else if err == nil {
+				t.Fatal("invalid receipt source was accepted", kind)
 			}
-			if d := DecideReuse(root, current, []ToolReceipt{ref}); d.WouldReuse {
-				t.Fatal("damaged source was reused", kind, d)
+			if d := DecideReuse(root, current, []ToolReceipt{ref}); (kind == "log") != d.WouldReuse {
+				t.Fatal("recorded result reuse disagrees with actual receipt", kind, d)
 			}
 		})
 	}
@@ -158,13 +150,16 @@ func TestCaptureUsesOwnBytesAndFailedChecksCannotReuse(t *testing.T) {
 	json.Unmarshal(data, &raw)
 	raw["status"] = "fail"
 	delete(raw, "receipt_integrity")
-	data, _ = SealReceipt(raw, raw["output"].(string))
+	data, _ = SealReceipt(raw)
 	os.WriteFile(ref.Path, data, 0600)
 	ctx := WithReceiptCapture(WithBinding(WithProfile(context.Background(), current.Profile), current.Binding), func(r ToolReceipt) { ref = r })
 	if err := CaptureReceipt(ctx, ref.Path, current.Checkout, data); err != nil {
 		t.Fatal(err)
 	}
-	if d := DecideReuse(root, current, []ToolReceipt{ref}); d.WouldReuse || d.Reason != "previous_check_failed" {
+	if verified, err := VerifyToolReceipt(root, ref); err != nil || verified.Passed {
+		t.Fatal("failed original check was not retained", verified, err)
+	}
+	if d := DecideReuse(root, current, []ToolReceipt{ref}); d.WouldReuse || d.Action != "run" {
 		t.Fatal(d)
 	}
 	current.Binding.Owner = "another"
@@ -198,23 +193,26 @@ func TestExplicitEvidenceRelocationPreservesBytesButCannotReuseAnotherCheckout(t
 	if err := os.Rename(oldCheckout, current.Checkout); err != nil {
 		t.Fatal(err)
 	}
-	if d := DecideReuse(moved, current, []ToolReceipt{ref}); d.WouldReuse || d.Reason != "different_checkout" {
+	if d := DecideReuse(moved, current, []ToolReceipt{ref}); d.WouldReuse || d.Action != "run" {
 		t.Fatal("relocation authorized cross-checkout reuse", d)
 	}
 }
 
 func unitPermissions() PermissionObservation {
-	d := Hash([]byte("explicit unit fixture; not real Worker isolation proof"))
-	return PermissionObservation{Version: "1.0.0", Runner: "worker_bubblewrap_seccomp_v1", Platform: "linux/amd64", Kernel: "unit-fixture", UID: 1000, GID: 1000, Groups: []int{1000}, BinarySHA256: d, ShellSHA256: d, LibrariesSHA256: d, FilterSHA256: d, PolicySHA256: d, AuthoritySHA256: d, MainRoot: "/main", CommonDir: "/main/.git", WorkerRoot: "/worker", CWD: "/worker", Available: true}
+	return PermissionObservation{Version: "1.0.0", Runner: "worker_bubblewrap_seccomp_v1", Platform: "linux/amd64", Kernel: "unit-fixture", UID: 1000, GID: 1000, Groups: []int{1000}, MainRoot: "/main", CommonDir: "/main/.git", WorkerRoot: "/worker", CWD: "/worker", Available: true}
 }
 
 func TestExplicitEnabledReuseRequiresItsOwnAcceptedProfile(t *testing.T) {
 	root, current, ref := acceptedFixture(t)
 	current.Profile.Location = "worker"
 	current.Profile.ReuseMode = "enabled"
-	current.Observation.ProfileDigest = current.Profile.Digest()
 	if d := DecideReuse(root, current, []ToolReceipt{ref}); d.Action == "reuse" {
 		t.Fatal("shadow receipt was upgraded to enabled")
+	}
+	var err error
+	current.Observation, err = ObserveProfile(context.Background(), current.Checkout, current.Profile)
+	if err != nil {
+		t.Fatal(err)
 	}
 	data, err := os.ReadFile(ref.Path)
 	if err != nil {
@@ -223,7 +221,7 @@ func TestExplicitEnabledReuseRequiresItsOwnAcceptedProfile(t *testing.T) {
 	var raw map[string]any
 	json.Unmarshal(data, &raw)
 	raw["profile_observation"] = current.Observation
-	data, err = SealReceipt(raw, raw["output"].(string))
+	data, err = SealReceipt(raw)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -239,5 +237,39 @@ func TestExplicitEnabledReuseRequiresItsOwnAcceptedProfile(t *testing.T) {
 	current.Fresh = true
 	if d := DecideReuse(root, current, []ToolReceipt{ref}); d.Action != "run" {
 		t.Fatal("fresh check reused", d)
+	}
+}
+
+func TestEnabledReuseUsesAcceptedResultWithoutLogOrDigestProof(t *testing.T) {
+	root, current, ref := acceptedFixture(t)
+	current.Profile.Location = "worker"
+	current.Profile.ReuseMode = "enabled"
+	observation, err := ObserveProfile(context.Background(), current.Checkout, current.Profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(ref.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var receipt map[string]any
+	if err := json.Unmarshal(data, &receipt); err != nil {
+		t.Fatal(err)
+	}
+	log := receipt["output"].(string)
+	receipt["profile_observation"] = observation
+	data, err = SealReceipt(receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(ref.Path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(log); err != nil {
+		t.Fatal(err)
+	}
+	decision := DecideReuse(root, current, []ToolReceipt{ref})
+	if decision.Action != "reuse" || decision.ReceiptRef != ref.Path {
+		t.Fatalf("accepted result was blocked by missing log or digest: %+v", decision)
 	}
 }

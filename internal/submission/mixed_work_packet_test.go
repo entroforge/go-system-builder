@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/entroforge/go-system-builder/internal/workpacket"
@@ -30,15 +29,15 @@ func TestS5SourceRoutesMixedWorkPacketsBySubtype(t *testing.T) {
 	}
 }
 
-func TestS5SubtypeRoutingSkipsOnlyKnownNonS5Packets(t *testing.T) {
+func TestS5SubtypeRoutingSkipsOtherPacketTypes(t *testing.T) {
 	for _, subtype := range []string{
 		"s2-design-v1", "s3-contract-v1", "s4-task-planning-v1",
 		"s7-review-result-v1", "s8-hypothesis-result-v1",
-		"s9-plan-report-v1", "s9-repair-result-v1",
+		"s9-plan-report-v1", "s9-repair-result-v1", "s10-acceptance-v1",
 	} {
 		t.Run(subtype, func(t *testing.T) {
 			state := mixedS5TestState(map[string]any{"packet_id": "packet-other", "template_id": subtype})
-			if !skipKnownNonS5WorkPacket(state, "packet-other") {
+			if !skipNonS5WorkPacket(state, "packet-other") {
 				t.Fatalf("registered non-S5 subtype %q was not routed away from the S5 reader", subtype)
 			}
 		})
@@ -50,8 +49,6 @@ func TestS5SubtypeRoutingSkipsOnlyKnownNonS5Packets(t *testing.T) {
 		duplicate bool
 	}{
 		{name: "S5 remains with its typed reader", row: map[string]any{"packet_id": "packet-x", "template_id": s5DocumentReviewTemplateID}},
-		{name: "unknown subtype remains fail closed", row: map[string]any{"packet_id": "packet-x", "template_id": "s10-acceptance-v1"}},
-		{name: "missing subtype remains fail closed", row: map[string]any{"packet_id": "packet-x"}},
 		{name: "malformed packet identity is not skipped", row: map[string]any{"template_id": "s2-design-v1"}},
 		{name: "duplicate identity is not skipped", row: map[string]any{"packet_id": "packet-x", "template_id": "s2-design-v1"}, duplicate: true},
 	} {
@@ -60,14 +57,14 @@ func TestS5SubtypeRoutingSkipsOnlyKnownNonS5Packets(t *testing.T) {
 			if tc.duplicate {
 				rows = append(rows, map[string]any{"packet_id": "packet-x", "template_id": "s5-document-review-v1"})
 			}
-			if skipKnownNonS5WorkPacket(mixedS5TestState(rows...), "packet-x") {
+			if skipNonS5WorkPacket(mixedS5TestState(rows...), "packet-x") {
 				t.Fatal("noncanonical, unknown, or S5 row was incorrectly skipped")
 			}
 		})
 	}
 }
 
-func TestS5SourceDoesNotSkipUnknownOrMalformedS5Rows(t *testing.T) {
+func TestS5SourceIgnoresUnrelatedUnknownOrMalformedRows(t *testing.T) {
 	root := t.TempDir()
 	packet := mixedS5TestPacket(t)
 	validRow := mixedS5TestPacketRow(t, packet)
@@ -82,8 +79,8 @@ func TestS5SourceDoesNotSkipUnknownOrMalformedS5Rows(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			state := mixedS5TestState(tc.row, validRow)
-			if _, _, err := (&Service{Root: root}).source(context.Background(), state, packet.Binding.Owner, path); err == nil || !strings.Contains(err.Error(), "issued packet cannot be read") {
-				t.Fatalf("S5 source skipped a row that must reach its typed lookup: %v", err)
+			if got, _, err := (&Service{Root: root}).source(context.Background(), state, packet.Binding.Owner, path); err != nil || got.ID != packet.ID {
+				t.Fatalf("unrelated row blocked the original S5 answer: %v", err)
 			}
 		})
 	}
@@ -93,10 +90,9 @@ func mixedS5TestPacket(t *testing.T) workpacket.Packet {
 	t.Helper()
 	packet, err := workpacket.BuildS5(workpacket.Binding{
 		RuntimeID: "loop-mixed-s5", Generation: 1, StageEntry: 3,
-		Owner: "reviewer-mixed", AssignmentID: "assignment-mixed",
-		AssignmentSHA: strings.Repeat("a", 64), Responsibility: "DV-SPEC-CONSISTENCY", Attempt: 1,
+		Owner: "reviewer-mixed", AssignmentID: "assignment-mixed", Attempt: 1, Responsibility: "DV-SPEC-CONSISTENCY",
 	}, []workpacket.Reference{{
-		ID: "REQ-001", Path: "docs/requirements/REQ-001.md", Version: "1.0.0", SHA256: strings.Repeat("b", 64),
+		ID: "REQ-001", Path: "docs/requirements/REQ-001.md", Version: "1.0.0",
 	}})
 	if err != nil {
 		t.Fatalf("build S5 test packet: %v", err)

@@ -10,7 +10,6 @@ import (
 	"github.com/entroforge/go-system-builder/internal/assignment"
 	"github.com/entroforge/go-system-builder/internal/schema"
 	"github.com/entroforge/go-system-builder/internal/semantic"
-	"github.com/entroforge/go-system-builder/internal/transition"
 )
 
 // planCheckpointState builds a runtime whose reviewer agent is dispatched
@@ -58,7 +57,7 @@ func planCheckpointState(t *testing.T, root, mode string) (string, string) {
 
 // writePlanReport writes a minimal plan_report message file and returns its
 // path plus the file's sha256 for the activation chain.
-func writePlanReport(t *testing.T, dir string, revision int) (string, string) {
+func writePlanReport(t *testing.T, dir string, revision int) string {
 	t.Helper()
 	message := map[string]any{
 		"schema_version": "1.0.0", "message_type": "plan_report",
@@ -84,16 +83,12 @@ func writePlanReport(t *testing.T, dir string, revision int) (string, string) {
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	fileBytes, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return path, transition.SHA256(fileBytes)
+	return path
 }
 
 // planCheckpointActivation builds the activation message from the schema's
-// canonical example, rebinding the hash chain to the plan report file.
-func planCheckpointActivation(t *testing.T, revision int, planSHA string) map[string]any {
+// canonical example, retaining the original plan message identity.
+func planCheckpointActivation(t *testing.T, revision int) map[string]any {
 	t.Helper()
 	data, err := schema.ReadAsset("agent-message.examples.json")
 	if err != nil {
@@ -112,7 +107,6 @@ func planCheckpointActivation(t *testing.T, revision int, planSHA string) map[st
 		message["runtime_id"] = "loop-REQ-002-plan"
 		message["team_id"] = "workgroup-build-1"
 		message["expected_runtime_revision"] = float64(revision)
-		message["approved_readback_sha256"] = planSHA
 		message["approved_readback_message_id"] = "msg-plan-0001"
 		return message
 	}
@@ -142,7 +136,7 @@ func TestPlanCheckpointActivatesStraightOffPlanReport(t *testing.T) {
 	statePath, journalPath := planCheckpointState(t, root, "plan_checkpoint")
 	dir := filepath.Dir(statePath)
 
-	planPath, planSHA := writePlanReport(t, dir, 7)
+	planPath := writePlanReport(t, dir, 7)
 	submitted, err := assignment.AdvanceAgent(root, statePath, journalPath, assignment.AgentEventRequest{
 		ExpectedRevision: 7, AgentID: "agent-plan-1", Event: "readback_submitted",
 		MessagePath: planPath,
@@ -156,7 +150,7 @@ func TestPlanCheckpointActivatesStraightOffPlanReport(t *testing.T) {
 		t.Fatalf("readback and plan checkpoint must be one Writer commit: %#v", row)
 	}
 	// Direct activation without understanding_approved.
-	activationPath := writeMessage(t, dir, "activation.json", planCheckpointActivation(t, submitted.Revision, planSHA))
+	activationPath := writeMessage(t, dir, "activation.json", planCheckpointActivation(t, submitted.Revision))
 	activated, err := assignment.AdvanceAgent(root, statePath, journalPath, assignment.AgentEventRequest{
 		ExpectedRevision: submitted.Revision, AgentID: "agent-plan-1", Event: "activation_sent",
 		MessagePath: activationPath,
@@ -182,7 +176,7 @@ func TestApprovalModeStillRequiresApproval(t *testing.T) {
 	dir := filepath.Dir(statePath)
 
 	// Approval mode rejects the plan_report message type.
-	planPath, _ := writePlanReport(t, dir, 7)
+	planPath := writePlanReport(t, dir, 7)
 	_, err := assignment.AdvanceAgent(root, statePath, journalPath, assignment.AgentEventRequest{
 		ExpectedRevision: 7, AgentID: "agent-plan-1", Event: "readback_submitted",
 		MessagePath: planPath,

@@ -68,7 +68,7 @@ func verifiedContractPacketFacts(input Input) ([]documentFact, bool, error) {
 		case strings.HasPrefix(filepath.ToSlash(path), "docs/dev/contracts/"):
 			return nil, true, fmt.Errorf("original S3 receipt has an undeclared contract output: %s", path)
 		}
-		facts = append(facts, documentFact{ID: id, Kind: kind, Path: path, Version: subject.Version, SHA256: subject.SHA256, Status: status, Generation: verified.packet.Binding.Generation})
+		facts = append(facts, documentFact{ID: id, Kind: kind, Path: path, Version: subject.Version, Status: status, Generation: verified.packet.Binding.Generation})
 	}
 	return facts, true, nil
 }
@@ -121,7 +121,7 @@ func readAcceptedContractSubmission(input Input) (*verifiedContractSubmission, b
 			candidate.Binding.Generation == binding.Generation &&
 			candidate.Binding.StageEntry == binding.StageEntry &&
 			candidate.Binding.Stage == "S3" && candidate.Binding.Owner == "Main" {
-			if candidate.Binding.Requirement != binding.Requirement {
+			if candidate.Binding.Requirement.ID != binding.Requirement.ID || candidate.Binding.Requirement.Path != binding.Requirement.Path || candidate.Binding.Requirement.Version != binding.Requirement.Version {
 				return nil, true, fmt.Errorf("current S3 questionnaire requirement differs from the current bound REQ")
 			}
 			packet = candidate
@@ -142,10 +142,8 @@ func readAcceptedContractSubmission(input Input) (*verifiedContractSubmission, b
 	if !accepted {
 		return nil, false, nil
 	}
-	expectedKey := workpacket.Digest([]byte("submission:" + packet.ID))
-	if submission.Key != expectedKey || submission.PacketID != packet.ID || submission.Owner != "Main" ||
-		submission.EvidenceID == "" || submission.ContentHash == "" ||
-		submission.FollowupID != workpacket.Digest([]byte(expectedKey+":after-domain")) ||
+	if submission.PacketID != packet.ID || submission.Owner != "Main" ||
+		submission.EvidenceID == "" ||
 		submission.OriginState != "planning" || submission.OriginPhase != "contracts" ||
 		submission.OriginEntry != packet.Binding.StageEntry || submission.RevisionPacketID != "" || submission.SupersededBy != "" {
 		return nil, true, fmt.Errorf("current S3 submission is not the original Main planning.contracts reception")
@@ -165,44 +163,26 @@ func readAcceptedContractSubmission(input Input) (*verifiedContractSubmission, b
 		return nil, true, fmt.Errorf("original S3 evidence registration differs from the accepted Main planning_contract")
 	}
 	evidencePath := stringValue(evidence["path"])
-	evidenceSHA := stringValue(evidence["sha256"])
-	if !safeContractEvidencePath(evidencePath) || evidenceSHA == "" {
-		return nil, true, fmt.Errorf("original S3 evidence registration has an invalid path or digest")
+	if !safeContractEvidencePath(evidencePath) {
+		return nil, true, fmt.Errorf("original S3 evidence registration has an invalid path")
 	}
-	envelopeBytes, err := input.Files.ReadFile(evidencePath)
+	// This is the original Writer's registered Runtime artifact, not a
+	// product source selected from the development Git tree.
+	envelopeBytes, err := workpacket.ReadFile(input.Root, evidencePath, workpacket.ContractEvidenceReadLimit(packet))
 	if err != nil {
 		return nil, true, fmt.Errorf("read original S3 planning_contract envelope %s: %w", evidencePath, err)
 	}
-	if sha256Hex(envelopeBytes) != evidenceSHA {
-		return nil, true, fmt.Errorf("original S3 planning_contract envelope differs from its registered hash: %s", evidencePath)
-	}
 	var envelope struct {
-		EvidenceID             string                    `json:"evidence_id"`
-		Kind                   string                    `json:"kind"`
-		RuntimeID              string                    `json:"runtime_id"`
-		BaselineGeneration     int                       `json:"baseline_generation"`
-		ProducerAgentID        string                    `json:"producer_agent_id"`
-		ProducerResponsibility string                    `json:"producer_responsibility"`
-		SubjectRefs            []workpacket.Subject      `json:"subject_refs"`
-		Conclusion             string                    `json:"conclusion"`
-		ContractAnswer         workpacket.ContractAnswer `json:"contract_answer"`
+		SubjectRefs    []workpacket.Subject      `json:"subject_refs"`
+		ContractAnswer workpacket.ContractAnswer `json:"contract_answer"`
 	}
 	if err := json.Unmarshal(envelopeBytes, &envelope); err != nil {
-		return nil, true, fmt.Errorf("decode original S3 planning_contract envelope %s: %w", evidencePath, err)
-	}
-	if envelope.EvidenceID != submission.EvidenceID || envelope.Kind != "planning_contract" ||
-		envelope.RuntimeID != packet.Binding.RuntimeID || envelope.BaselineGeneration != packet.Binding.Generation ||
-		envelope.ProducerAgentID != "Main" || envelope.ProducerResponsibility != "Orchestrator" || envelope.Conclusion != "pass" {
-		return nil, true, fmt.Errorf("original S3 envelope header differs from the accepted Main binding: %s", evidencePath)
-	}
-	answerDigest, err := workpacket.ContractAnswerDigest(envelope.ContractAnswer)
-	if err != nil || answerDigest != submission.ContentHash {
-		return nil, true, fmt.Errorf("original S3 professional answer differs from the accepted submission hash: %s", evidencePath)
+		return nil, true, fmt.Errorf("decode original S3 professional result %s: %w", evidencePath, err)
 	}
 
 	subjects := make(map[string]workpacket.Subject, len(envelope.SubjectRefs))
 	for _, subject := range envelope.SubjectRefs {
-		if subject.Path == "" || subject.SHA256 == "" {
+		if subject.Path == "" {
 			return nil, true, fmt.Errorf("original S3 envelope contains an unreadable subject reference: %s", subject.Path)
 		}
 		if _, duplicate := subjects[subject.Path]; duplicate {
@@ -225,12 +205,12 @@ func contractPacketSourceFacts(packet workpacket.ContractPacket, subjects map[st
 	// historical S2 rows stay intact and no source files are reread here.
 	sources := append([]workpacket.Subject(nil), packet.Inputs.Sources...)
 	for _, design := range packet.Inputs.Designs {
-		sources = append(sources, workpacket.Subject{Path: design.Path, Version: design.Version, SHA256: design.SHA256})
+		sources = append(sources, workpacket.Subject{Path: design.Path, Version: design.Version})
 	}
 	facts := make([]documentFact, 0, len(sources))
 	for _, source := range sources {
 		subject, ok := subjects[source.Path]
-		if !ok || subject.SHA256 != source.SHA256 {
+		if !ok {
 			return nil, fmt.Errorf("original S3 envelope does not bind frozen source %s", source.Path)
 		}
 		facts = append(facts, documentFact{
@@ -238,7 +218,6 @@ func contractPacketSourceFacts(packet workpacket.ContractPacket, subjects map[st
 			Kind:       "source",
 			Path:       source.Path,
 			Version:    subject.Version,
-			SHA256:     subject.SHA256,
 			Status:     "frozen",
 			Generation: packet.Binding.Generation,
 		})

@@ -11,7 +11,7 @@ skills:
 
 ## Native S7 handoff
 
-Main supplies this responsibility's exact view and private answer paths in the native Agent task. Read those sources, perform the assigned independent end-to-end behavior work, save the original professional answer and report results to Main when finished. PreToolUse listens for the ready original answer; successful PostToolUse and Stop/SubagentStop provide fallback through the same original consumer. No extra submit, done or activation is required. Reception does not wait for a final message or returned reference. Ordinary tools remain available. Missing paths or stale sources belong to Main preparation/recovery. Original approval requirements and frozen execution sources remain; do not create a generic readback, PLAN, activation or platform identity envelope.
+Main supplies this responsibility's exact view and private answer paths in the native Agent task. Read those sources, perform the assigned independent end-to-end behavior work, save the original professional answer and report results to Main when finished. PreToolUse listens for the ready original answer; successful PostToolUse and Stop/SubagentStop provide fallback through the same original consumer. No extra submit, done or activation is required. Reception does not wait for a final message or returned reference. Ordinary tools remain available. Missing paths or stale sources belong to Main preparation/recovery. Do not create a generic readback, PLAN, activation or platform identity envelope.
 
 # E2E Tester
 ## Mission
@@ -37,22 +37,22 @@ Claim/ReviewResult output. Read the approved Contract's actual assertions/IDs,
 source Findings, before-fix evidence and ChangeImpact at their supplied paths.
 You must not have implemented or merged the work; do not modify the product.
 Independently verify the complete assigned Contract surface, including root and
-detection-gap checks, then save the exact Targeted questionnaire: continuity
-reason, assertion results/evidence, scope compliance, verdict and applicable
+detection-gap checks, then save the exact Targeted questionnaire: actual assertion results/references, verdict and applicable
 failure class. Use the field shapes/enums supplied with your exact current
 questionnaire; preserve supplied machine bindings and cite real evidence. Do not add generic PLAN/completion or an S7
 ReviewResult. A blocked result records actual attempts/gaps and follows original
 Main-owned recovery; missing paths are a preparation gap, not legacy fallback.
 Explicit approval and original independence/CAS checks remain; Targeted PASS is
-not fresh S7. Hook guidance does not deny ordinary tools.
+not fresh S7. PreToolUse observes the original Targeted answer, with successful
+PostToolUse and Stop/SubagentStop fallback through its original consumer. No
+returned reference, re-save or extra proof qualifies reception. Hook guidance
+does not deny ordinary tools.
 
 ## Skill Contract
 Read the exact native task view and its supplied source paths and applicable
 installed Skills. Source hashes and machine identity are maintained by the system;
 you do not copy them or recover missing paths by inspecting Runtime. Report
-missing/stale sources to Main. Only an existing registered frozen execution uses
-its original [recovery contract](../skills/agent-dispatch/frozen-execution.md),
-with its original source root; it must not fall back to Main.
+missing/stale sources to Main.
 The frontmatter preloads general verification methods. Follow the exact selected methods in the issued read list: a browser responsibility uses e2e-browser-testing and playwright-e2e, with user-flow-design and scenario-model-design for its linked scenario sources. API, command and state-based responsibilities use their actual contracts and methods without requiring frontend assets. Read api-contracts for an assigned API boundary, frontend-engineering for frontend behavior, and vue-router or pinia only when the actual application uses them. Read ui-prototyping when assessing its design surface. Relevant specialist work remains required; unrelated stacks are not startup prerequisites. Main declares each new E2E plan Assignment's behavior_surface as browser or non_browser before registration; an undecided new draft returns to Main. Already registered historical plans without that field retain their original browser contract, including pending dispatch. Reviewers follow the issued scope and methods without inferring a different task.
 ## Allowed Artifacts
 Read the current module package, specs, contracts and actual execution sources.
@@ -74,32 +74,31 @@ contract sources, applicable methods, and the actual execution environment. Brow
 also requires its module package, PATHs, frontend URL, applicable auth and Playwright/CDP
 method. API, command and state-based work instead uses its actual endpoint, command,
 state preconditions and observation method; no frontend, HTML or browser credentials
-are required for an unrelated surface. "ALL" means a full sweep only when assigned. The system
-maintains source fingerprints; the Reviewer does not copy them into another report.
+are required for an unrelated surface. "ALL" means a full sweep only when assigned.
+Use the actual assigned sources without calculating or registering fingerprints.
 ## Output Contract
 For an issued S7 `s7-review-result-v1` packet, fill only the professional `answer`
 at its exact path. Keep the questions and machine bindings unchanged. Normally complete all
 assigned Claims and encounters, record the actual execution evidence in
-the assigned evidence location, and state your own verdict. Return the saved answer
-reference; PreToolUse listens for the ready original answer; successful PostToolUse and Stop/SubagentStop provide fallback through the same original consumer. No extra submit, done or activation is required. A currently valid accepted Result with your own
-checks satisfied projects this responsibility to `done` without waiting for the round.
-Use the new questionnaire after revision. The original consumer validates and records
-machine bindings, including artifact digests. Do not create a second Canonical ReviewResult
-or copy `subject_digest` or `verification_artifact_digest` from Runtime commands in the
-ordinary questionnaire flow. Only an existing frozen legacy/no-questionnaire responsibility uses its original
-Result recovery format; a missing native answer path is a Main preparation gap.
+the assigned evidence location, and state your own verdict. Report actual results
+to Main when finished; PreToolUse listens for the ready original answer; successful PostToolUse and Stop/SubagentStop provide fallback through the same original consumer. No extra submit, done or activation is required. Reception records your answer; completion and blocked work are separate facts. Other Reviewers need not wait for your finished work.
+The original consumer checks this answer’s necessary structure and conclusion
+once and records the original result; it does not reprove artifact digests. Do not create a second Canonical ReviewResult
+or copy `subject_digest` or `verification_artifact_digest` from Runtime commands; a missing answer path is a Main preparation gap.
 Maintain the evidence inventory in the issued answer and assigned evidence location.
 For cold-start execution, reference the scripts and fixtures you actually used
 inside the declared workspace in the original Claim/check `evidence_refs`, using
-`path:<repository-relative file>`. The consumer binds hashes. Execution logs
+`path:<repository-relative file>`. Cite the actual readable file without a hash
+qualification. Execution logs
 describe observations; they do not identify script/fixture dependencies. Do not
 claim another Reviewer's files as your dependencies merely because they share
 the workspace. Already selected reusable assets retain their original Plan bindings.
 For every failed flow include the concrete operation walk (the
 user action, request/response or console observation, visible result, terminal state,
 persisted/forbidden side effects, and recovery) so S8 need not reproduce the symptom.
-Only a P0 Finding accepted by the original consumer seals the round immediately.
-Record the observed P0 and genuine capture_gaps before ending; a draft is not a seal.
+Any accepted Finding can hand the received facts to S8. For a real P0, stop
+dangerous work and record observed facts and genuine capture gaps. A draft does
+not establish reception or stage handoff.
 State only the observed Finding; root cause and repair contract belong to S8/S9.
 For every actually executed assigned negative CASE, the answer accounts for `visible`, `terminal_state`,
 `persisted_effects`, `forbidden_side_effects`, `rejection`, `expected_state`, and `recovery`
@@ -111,29 +110,28 @@ Recovery N/A requires source refs and a non-empty reason.
 Record ordinary Findings and continue safe checks for the assigned Claims. For a
 real P0, stop dangerous work, keep observed conclusions and the actual P0 Finding,
 and explain genuine capture_gaps. Remove unanswered draft Claim rows instead of
-inventing pass/fail or blocked_claims. The accepted batch derives unobserved Claim
-IDs, including your own remaining Claims; ordinary incomplete answers still fail.
+inventing pass/fail or blocked_claims. Report the actual unexecuted Claims and why they remain unfinished. Main handles
+their effect on this responsibility and the round; do not fabricate their result.
 If stale inputs or environment/source obstacles prevent a conclusion, preserve
-actual observations and return the original paths, obstacle and actual attempts
-to Main. Do not invent a verdict, product Finding or blocked Claim. An unreceived
-answer leaves the responsibility incomplete. SubagentStop reports the actual
-consumer rejection with the original owner and answer path to Main on this
-return; no second Stop is required to report the obstacle. Main restores sources
-or prerequisites, or resumes you on the same responsibility for specific
-professional corrections. A preparation gap does not require new generic approval.
+actual observations and explain the obstacle and attempts in your original answer.
+A real `verdict=blocked` may be saved and handed to Main; do not invent PASS or
+a product Finding. Main handles the missing source or prerequisite and decides
+what work should continue. If the answer cannot be received, the first native
+return carries the actual gap to Main; no second Stop, re-save or generic approval
+is required to report it.
 ## Stop Conditions
 Stop dangerous work for a real P0 or an operation that cannot be performed safely; preserve the actual observations and capture gaps. Ordinary Findings continue the remaining safe assigned checks. Stale sources or a missing prerequisite that prevents a conclusion go to Main with the exact affected Claim, source/environment gap and actual attempts; for browser work these may include unreachable frontend, unavailable auth or required selectors. Do not impose browser prerequisites on API, command or state-based work. Record an ordinary prototype gap (steps do not match real UI) as a `DV-SPEC-CONSISTENCY` Finding and continue safe checks for the current required Claims; do not work around the gap in the spec.
 
-## Recovery: site-lost BLOCKER
+## Lost observation material
 
-If original reception reports `not investigation-ready` and you cannot reconstruct the
-encounter (the runtime/scene is gone, capture buffer empty, logs unreachable),
-declare `site_lost[]` in your original answer (one entry per affected Finding:
-`{finding_id, reason}`); return its exact reference. Original reception does not
-accept the Result and the Assignment moves to
-`blocked`. The listener identifies the original Assignment, owner, blocker and
-reason, and supplies its exact `agent-event blocker_resolved --body` recovery
-entry. Main restores the capture conditions and records the actual recovery
-explanation through that original entry; missing registration/source facts remain
-Main recovery work. After the blocker is resolved, the same finder resumes the
-original responsibility and saves the corrected current issued answer for automatic reception. Reproduction debt is never handed to S8.
+If the original scene, logs or capture are unavailable, preserve the actual
+observations and explain the precise gap in the same original answer. Main decides
+whether controlled followup is needed. Reception does not require an extra
+site-lost proof, restored capture buffer or new author report. Existing historical
+blockers retain their named recovery. Already issued S7 work may deliver its first
+answer after the round enters S8; Main receives late Findings and handles their
+actual impact without reopening S7 or changing an existing approval automatically.
+
+Accepted personal results do not depend on surviving private answer files. If
+successor preparation fails, Main continues the named original pending action
+from the saved fact; the author does not resave or return again for that failure.

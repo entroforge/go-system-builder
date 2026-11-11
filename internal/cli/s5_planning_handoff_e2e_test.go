@@ -11,7 +11,6 @@ import (
 
 	"github.com/entroforge/go-system-builder/internal/cli"
 	"github.com/entroforge/go-system-builder/internal/runtime"
-	"github.com/entroforge/go-system-builder/internal/schema"
 	"github.com/entroforge/go-system-builder/internal/submission"
 	"github.com/entroforge/go-system-builder/internal/workpacket"
 	fixtures "github.com/entroforge/go-system-builder/tests/fixtures/req039"
@@ -46,8 +45,12 @@ func TestS4OriginalSavePreparesS5WithoutMainMetadataOrConfirmation(t *testing.T)
 			for _, input := range p.Inputs {
 				if input.Path == source.Path {
 					found = true
-					if input.SHA256 != source.SHA256 {
-						t.Fatalf("unchanged method changed S5 input identity: %s", source.Path)
+					version := source.Version
+					if version == "" {
+						version = "unversioned"
+					}
+					if input.Version != version {
+						t.Fatalf("unchanged method changed S5 input version: %s", source.Path)
 					}
 				}
 			}
@@ -93,11 +96,6 @@ func TestS4NamedOutletsDeliverPreparedS5InSameResponse(t *testing.T) {
 				if err != nil || !r.Accepted {
 					t.Fatalf("pending reception: %+v %v", r, err)
 				}
-				record, found, lookupErr := runtime.FindSubmission(stageSnapshot(t, root).State, p.ID)
-				if lookupErr != nil || !found {
-					t.Fatalf("original receipt %v", lookupErr)
-				}
-				writeLegacyS3Evaluation(t, root, record) // reconstruct the same historical no_transition stamp for S4
 			}
 			args := []string{"runtime", "stage-answer", action, "--root", root, "--agent", "Main"}
 			if action == "consume" {
@@ -218,13 +216,27 @@ func TestS4ReceptionFieldFailurePersistsAcrossSessionAndClears(t *testing.T) {
 	if err == nil || r.Accepted {
 		t.Fatal("invalid path received")
 	}
+	// The rejected attempt keeps its concrete field reason in the current S4
+	// scope, so a later session can still name it.
+	pending := stageSnapshot(t, root)
+	cause := submission.PlanningDiagnostic(root, pending.State, "reception")
+	if !strings.Contains(cause, "index_path") || !strings.Contains(cause, invalid) {
+		t.Fatalf("pending reception reason is not the field reason: %s", cause)
+	}
 	for _, event := range []string{"PreToolUse", "SessionStart"} {
 		text := s3DeliveredContext(t, designGuidanceEvent(t, root, "s4-field-"+event, event, "Read"))
 		if !strings.Contains(text, "index_path") || !strings.Contains(text, "outside") {
 			t.Fatalf("%s lost cause %s", event, text)
 		}
+		if !strings.Contains(text, "/answer/index_path") || !strings.Contains(text, invalid) {
+			t.Fatalf("%s lost the exact field cause %s", event, text)
+		}
 	}
-	// The original source failure remains actionable after a fresh session.
+	// Blueprint L3-S4-task-split.md:494 and L4-state-transition-core.md:163:
+	// the natural Hook and the original consumer no longer compute, register
+	// or verify a digest. An edited accepted upstream contract therefore stays
+	// the same original source by its association, so editing it must not
+	// change the pending reason or the S4 reception result.
 	stageJSON(t, root, p.AnswerPath, completedTaskPlanningDraft(p))
 	sourcePath := p.Inputs.Contracts[0].Path
 	originalSource, readErr := os.ReadFile(filepath.Join(root, sourcePath))
@@ -237,34 +249,41 @@ func TestS4ReceptionFieldFailurePersistsAcrossSessionAndClears(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	editedSession := s3DeliveredContext(t, designGuidanceEvent(t, root, "s4-source-edited-session", "SessionStart", "Read"))
+	if !strings.Contains(editedSession, invalid) {
+		t.Fatalf("edited original source lost the pending field reason %s", editedSession)
+	}
+	for _, invented := range []string{"source changed", "changed source", "source has changed", "source is changed", "source drift"} {
+		if strings.Contains(strings.ToLower(editedSession), invented) {
+			t.Fatalf("session invented a %q reason: %s", invented, editedSession)
+		}
+	}
+	if strings.Contains(editedSession, "changed accepted contract description") {
+		t.Fatalf("session reported the edited original source as changed: %s", editedSession)
+	}
+	cause = submission.PlanningDiagnostic(root, pending.State, "reception")
+	if !strings.Contains(cause, "index_path") || !strings.Contains(cause, invalid) {
+		t.Fatalf("edited original source changed the pending reason: %s", cause)
+	}
+	if strings.Contains(cause, sourcePath) {
+		t.Fatalf("pending reception invented a source change reason: %s", cause)
+	}
 	r, err = service.SaveTaskPlanning(context.Background(), p.AnswerPath)
-	if err == nil || r.Accepted {
-		t.Fatal("changed original source accepted")
-	}
-	sourceSession := s3DeliveredContext(t, designGuidanceEvent(t, root, "s4-source-new-session", "SessionStart", "Read"))
-	if !strings.Contains(sourceSession, sourcePath) {
-		t.Fatal("session lost precise source", sourceSession)
-	}
-	writeContractSource(t, root, sourcePath, string(originalSource))
-	fixtures.CommitCurrentFixture(t, root)
-	service, err = submission.New(root)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("original source association was lost: %v", err)
 	}
-	origin := stageSnapshot(t, root)
-	stageJSON(t, root, p.AnswerPath, completedTaskPlanningDraft(p))
-	r, err = service.SaveTaskPlanning(context.Background(), p.AnswerPath)
-	if err != nil || !r.Accepted {
-		t.Fatalf("repair %+v %v", r, err)
+	if !r.Accepted {
+		t.Fatalf("original source association was rejected: %+v", r)
 	}
-	if diagnostic := submission.PlanningDiagnostic(root, origin.State, "reception"); diagnostic != "" {
+	// The correct answer clears the pending reception reason.
+	if diagnostic := submission.PlanningDiagnostic(root, pending.State, "reception"); diagnostic != "" {
 		t.Fatal("stale field cause", diagnostic)
 	}
 }
 
 func TestS4ChangedMethodTextPreparesS5WithCurrentMethodSource(t *testing.T) {
 	root, p := s4HandoffFixture(t)
-	updated := map[string]string{}
+	updated := map[string]bool{}
 	for _, path := range []string{"docs/dev/tasks/TASK-template.md", "docs/rules/dispatch-plan.md"} {
 		data, err := os.ReadFile(filepath.Join(root, path))
 		if err != nil {
@@ -272,7 +291,7 @@ func TestS4ChangedMethodTextPreparesS5WithCurrentMethodSource(t *testing.T) {
 		}
 		body := append(data, []byte("\nUpdated professional explanation for this S5 preparation.\n")...)
 		writeContractSource(t, root, path, string(body))
-		updated[path] = workpacket.Digest(body)
+		updated[path] = true
 	}
 	fixtures.CommitCurrentFixture(t, root)
 	stageJSON(t, root, p.AnswerPath, completedTaskPlanningDraft(p))
@@ -290,14 +309,11 @@ func TestS4ChangedMethodTextPreparesS5WithCurrentMethodSource(t *testing.T) {
 		if _, found, err := runtime.FindWorkPacket(snap.State, packet.ID); err != nil || !found {
 			t.Fatalf("unissued packet %s %v", packet.ID, err)
 		}
-		for path, hash := range updated {
+		for path := range updated {
 			found := false
 			for _, ref := range packet.Inputs {
 				if ref.Path == path {
 					found = true
-					if ref.SHA256 != hash {
-						t.Fatalf("method retained obsolete S4 SHA: %s", path)
-					}
 				}
 			}
 			if !found {
@@ -310,7 +326,7 @@ func TestS4ChangedMethodTextPreparesS5WithCurrentMethodSource(t *testing.T) {
 			}
 		}
 	}
-	// Once issued, S5 retains its original bytes and identity under later drift.
+	// Reissuing after method edits keeps the original issued view and responsibility.
 	frozenView, err := os.ReadFile(filepath.Join(root, packets[0].ViewPath))
 	if err != nil {
 		t.Fatal(err)
@@ -318,8 +334,8 @@ func TestS4ChangedMethodTextPreparesS5WithCurrentMethodSource(t *testing.T) {
 	writeContractSource(t, root, "docs/rules/dispatch-plan.md", "later method drift after S5 issuance\n")
 	fixtures.CommitCurrentFixture(t, root)
 	var issueOut, issueErr bytes.Buffer
-	if code := cli.Run([]string{"runtime", "stage-answer", "issue", "--root", root, "--agent", "Main"}, nil, &issueOut, &issueErr); code == 0 {
-		t.Fatal("issued S5 source drift was silently resigned")
+	if code := cli.Run([]string{"runtime", "stage-answer", "issue", "--root", root, "--agent", "Main"}, nil, &issueOut, &issueErr); code != 0 {
+		t.Fatalf("reissuing the original S5 responsibility failed after method edit: %s", issueErr.String())
 	}
 	if actual, err := os.ReadFile(filepath.Join(root, packets[0].ViewPath)); err != nil || !bytes.Equal(actual, frozenView) {
 		t.Fatalf("issued view overwritten: %v", err)
@@ -395,14 +411,21 @@ func TestS4LegacyContractsDirectoryMetadataPreparesOriginalS5(t *testing.T) {
 		names = append(names, entry.Name())
 	}
 	inputs.Directories["docs/dev/contracts"] = names
-	oldTemplate, err := schema.ReadAsset("stage-form-s4-template-before-guidance.json")
+	oldTemplate, err := os.ReadFile(filepath.Join("..", "schema", "assets", "stage-form-s4-template-before-guidance.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	old, err := workpacket.BuildTaskPlanningWithTemplate(binding, inputs, workpacket.Digest(oldTemplate))
+	old, err := workpacket.BuildTaskPlanning(binding, inputs)
 	if err != nil {
 		t.Fatal(err)
 	}
+	var issuedTemplate struct {
+		Instruction string `json:"instruction"`
+	}
+	if err := json.Unmarshal(oldTemplate, &issuedTemplate); err != nil {
+		t.Fatal(err)
+	}
+	old.Draft.Instruction = issuedTemplate.Instruction
 	if _, err := runtime.RecordTaskPlanningPacket(root, service.StatePath, service.JournalPath, old, service.Files, service.Validator); err != nil {
 		t.Fatalf("historical original issuance %v", err)
 	}

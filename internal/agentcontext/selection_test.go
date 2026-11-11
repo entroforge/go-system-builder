@@ -16,14 +16,14 @@ func TestShadowSelectionKeepsAuthorityAndUsesRegisteredReasons(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.Mode != "shadow" || s.ProfileVersion != "1.0.0" || len(s.ProfileSHA256) != 64 || !reflect.DeepEqual(s.AuthorizationSkillRefs, original) {
+	if s.Mode != "shadow" || s.ProfileVersion != "1.0.0" || !reflect.DeepEqual(s.AuthorizationSkillRefs, original) {
 		t.Fatalf("changed capability source: %+v", s)
 	}
 	names := map[string]bool{}
 	for _, skill := range s.Selected {
 		names[skill.Name] = true
-		if skill.SHA256 == "" || skill.Source == "" || len(skill.Reasons) == 0 {
-			t.Fatal("unfingerprinted source")
+		if !strings.HasSuffix(skill.Source, "/"+skill.Name+"/SKILL.md") || len(skill.Reasons) == 0 {
+			t.Fatalf("selected Skill lost its actual source/reasons or registered a digest: %+v", skill)
 		}
 	}
 	for _, name := range []string{"agent-dispatch", "backend-engineering", "testing-strategy", "code-quality", "security-review", "database-change"} {

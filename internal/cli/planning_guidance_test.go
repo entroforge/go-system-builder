@@ -72,7 +72,16 @@ func TestS5PreparationGuidanceNamesCurrentEntryManifestAndOriginalSkill(t *testi
 			t.Fatalf("S5 preparation omitted exact path %s: %s", path, guidance)
 		}
 	}
-	for _, want := range []string{"S5 entry 8", "DV-SPEC-CONSISTENCY and DV-TASK-EXECUTABILITY", "accepted S4", "runtime stage-answer issue", "普通读取与 Stop 不补登记"} {
+	for _, want := range []string{
+		"S5 entry 8", "DV-SPEC-CONSISTENCY and DV-TASK-EXECUTABILITY",
+		"两项责任及 manifest/issue 由系统原入口自动准备；Main 不手工组装或登记",
+		"runtime stage-answer issue",
+		"保留 accepted S4 及已发行问卷和答案，不重交 S4",
+		"成功 Main Post 可沿已接收 S4 原责任续补当前缺题",
+		"Pre、失败 Post 与 Stop 不补登记",
+		"准备后携带准确 view/answer/source root 派入两个独立原生上下文",
+		"登记不证明平台已启动",
+	} {
 		if !strings.Contains(guidance, want) {
 			t.Fatalf("S5 preparation lost %q: %s", want, guidance)
 		}
@@ -156,7 +165,7 @@ func TestS4DeliveryGuidanceNamesCommittedBranchOnlyForGitOutputs(t *testing.T) {
 			if strings.Contains(guidance, "bound development branch") {
 				t.Fatal("disk outputs incorrectly require a commit", guidance)
 			}
-		} else if !strings.Contains(guidance, "bound development branch guidance-development") || !strings.Contains(guidance, "can change in this entry") || !strings.Contains(guidance, "Before saving this answer") {
+		} else if !strings.Contains(guidance, "bound development branch guidance-development") || !strings.Contains(guidance, "can change in this entry") || !strings.Contains(guidance, "selected git_tree source") {
 			t.Fatal("Git output preparation is left implicit", guidance)
 		}
 	}
@@ -213,8 +222,8 @@ func makePlanningGuidancePacket(t *testing.T, state map[string]any, stage string
 		}
 		inputs := workpacket.TaskPlanningInputs{
 			Contracts: []workpacket.Reference{
-				{ID: "CONTRACTS-REQ-001", Path: "docs/dev/contracts/CONTRACTS-REQ-001.md", Version: "v1.0.0", SHA256: strings.Repeat("c", 64)},
-				{ID: "BE-REQ-001", Path: "docs/dev/contracts/BE-REQ-001.md", Version: "v1.0.0", SHA256: strings.Repeat("d", 64)},
+				{ID: "CONTRACTS-REQ-001", Path: "docs/dev/contracts/CONTRACTS-REQ-001.md", Version: "v1.0.0"},
+				{ID: "BE-REQ-001", Path: "docs/dev/contracts/BE-REQ-001.md", Version: "v1.0.0"},
 			},
 			Sources: []workpacket.Subject{}, Directories: map[string][]string{},
 			ClauseUniverse: []workpacket.TaskClause{{ContractID: "BE-REQ-001", Section: 1}},
@@ -323,6 +332,44 @@ func TestMainPlanningNextShowsOnlyCurrentIssuedPacketPaths(t *testing.T) {
 	}
 }
 
+func TestS4ObserverUsesIssuedQuestionnaireWithoutRebuildingTemplate(t *testing.T) {
+	root := t.TempDir()
+	state := planningGuidanceState("S4", true)
+	packet := makePlanningGuidancePacket(t, state, "S4", 7).(workpacket.TaskPlanningPacket)
+	packet.Draft.Instruction = "The previously issued professional instruction."
+	addPlanningGuidancePacket(t, state, packet)
+
+	path, issued, verified, err := currentIssuedPlanningAnswerPath(state, "tasks")
+	if err != nil || !issued || !verified || path != packet.AnswerPath {
+		t.Fatalf("current issued S4 answer: path=%q issued=%v verified=%v err=%v", path, issued, verified, err)
+	}
+	want := filepath.Join(root, filepath.FromSlash(packet.AnswerPath))
+	for _, observed := range observableQuestionnaires(root, runtime.Snapshot{State: state}) {
+		if observed.path == want {
+			return
+		}
+	}
+	t.Fatalf("ordinary questionnaire observer omitted issued S4 answer %q", want)
+}
+
+func TestS4ObserverDoesNotGuessDuplicatePacketIdentity(t *testing.T) {
+	root := t.TempDir()
+	state := planningGuidanceState("S4", true)
+	packet := makePlanningGuidancePacket(t, state, "S4", 7).(workpacket.TaskPlanningPacket)
+	older := packet
+	older.Binding.StageEntry--
+	addPlanningGuidancePacket(t, state, older)
+	addPlanningGuidancePacket(t, state, packet)
+
+	path, issued, verified, err := currentIssuedPlanningAnswerPath(state, "tasks")
+	if err != nil || issued || verified || path != "" {
+		t.Fatalf("duplicate packet identity must remain ambiguous: path=%q issued=%v verified=%v err=%v", path, issued, verified, err)
+	}
+	if got := observableQuestionnaires(root, runtime.Snapshot{State: state}); len(got) != 0 {
+		t.Fatalf("ordinary observer selected an ambiguous S4 responsibility: %+v", got)
+	}
+}
+
 func TestMainPlanningNextRejectsOldEntryAndWrongBindings(t *testing.T) {
 	for _, stage := range []string{"S2", "S3", "S4"} {
 		for _, mutation := range []string{"old_entry", "wrong_req", "wrong_owner"} {
@@ -409,7 +456,7 @@ func TestS3DeliveryGuidanceNamesCommittedBranchOnlyForGitOutputs(t *testing.T) {
 			if strings.Contains(guidance, "bound development branch") {
 				t.Fatal("disk outputs incorrectly require a commit", guidance)
 			}
-		} else if !strings.Contains(guidance, "bound development branch guidance-development") || !strings.Contains(guidance, "S3 outputs can change in this entry") || !strings.Contains(guidance, "Before saving this answer") {
+		} else if !strings.Contains(guidance, "bound development branch guidance-development") || !strings.Contains(guidance, "S3 outputs can change in this entry") || !strings.Contains(guidance, "selected git_tree source") {
 			t.Fatal("Git output preparation is left implicit", guidance)
 		}
 	}

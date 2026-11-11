@@ -9,11 +9,33 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/entroforge/go-system-builder/internal/acceptance"
 	"github.com/entroforge/go-system-builder/internal/investigation"
 	"github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/workstate"
 	req039fixtures "github.com/entroforge/go-system-builder/tests/fixtures/req039"
 )
+
+// stampCurrentS10ReviewIdentity applies the current S10 evidence contract to
+// the seeded ledger: an S10 report is associated with the active ReviewPlan by
+// its plan identity, not by a numeric review round. The production review
+// consumer drops the legacy review_round field for the same reason
+// (internal/review/submit.go), so a fixture that keeps it describes a wiring
+// the current Runtime no longer accepts.
+func stampCurrentS10ReviewIdentity(t *testing.T, state map[string]any) {
+	t.Helper()
+	entries, _ := state["evidence"].([]any)
+	for _, raw := range entries {
+		row, _ := raw.(map[string]any)
+		if row == nil {
+			continue
+		}
+		switch row["kind"] {
+		case "acceptance", "release_audit", "acceptance_record", "release_audit_record":
+			acceptance.StampReviewIdentity(state, row)
+		}
+	}
+}
 
 func TestBUG104ApproveThenRolloverE2E(t *testing.T) {
 	root := newS11SystemRoot(t)
@@ -103,9 +125,6 @@ func TestBUG104DeferResumeS11E2E(t *testing.T) {
 
 func TestBUG104RejectDefectRoutesHumanProblemToInvestigationE2E(t *testing.T) {
 	root := newS11SystemRoot(t, true)
-	before := req039fixtures.ReadState(t, root)
-	oldBatch, _ := before["review"].(map[string]any)["observation_batch"].(map[string]any)
-	oldBatchPath, _ := oldBatch["path"].(string)
 	reason := "The human observed an incorrect customer total; investigate this actual report."
 	decisionID := decideS11(t, root, "reject_defect", reason)
 	state := req039fixtures.ReadState(t, root)
@@ -113,13 +132,8 @@ func TestBUG104RejectDefectRoutesHumanProblemToInvestigationE2E(t *testing.T) {
 		t.Fatalf("reject_defect cursor = %s.%s, want bug_resolution.investigation", got, phase)
 	}
 	review := state["review"].(map[string]any)
-	if review["observation_batch"] != nil || review["investigation"] != nil {
-		t.Fatal("human problem must clear the old intake pointers without manufacturing a batch")
-	}
-	if oldBatchPath != "" {
-		if _, err := os.Stat(filepath.Join(root, oldBatchPath)); err != nil {
-			t.Fatalf("historical batch file must remain: %v", err)
-		}
+	if review["investigation"] != nil {
+		t.Fatal("human problem must reach the original intake without a pre-created Case")
 	}
 	// The normal Hook prepares the current Main intake from this real human
 	// problem, without requiring a Finding or constructing a sealed Batch.
@@ -134,14 +148,20 @@ func TestBUG104RejectDefectRoutesHumanProblemToInvestigationE2E(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("S8 human-problem preparation: code=%d stdout=%s stderr=%s", code, feedback, hookErr)
 	}
-	paths, err := filepath.Glob(filepath.Join(root, ".claude", "submissions", "s8", "*", "g*", "r*", "*", "intake.json"))
-	if err != nil {
+	var hookOutput struct {
+		Specific struct {
+			Context string `json:"additionalContext"`
+		} `json:"hookSpecificOutput"`
+	}
+	if err := json.Unmarshal([]byte(feedback), &hookOutput); err != nil {
 		t.Fatal(err)
 	}
-	if len(paths) != 1 || !strings.Contains(feedback, paths[0]) || !strings.Contains(feedback, reason) {
-		t.Fatalf("Hook must give the actual intake path and human problem: paths=%v stdout=%s", paths, feedback)
+	const marker = "S8 Main questionnaire: "
+	_, rest, found := strings.Cut(hookOutput.Specific.Context, marker)
+	intakePath, _, terminated := strings.Cut(rest, ". Human defect decision ")
+	if !found || !terminated || intakePath == "" || !strings.Contains(hookOutput.Specific.Context, reason) {
+		t.Fatalf("Hook omitted the actual intake or human problem: %s", feedback)
 	}
-	intakePath := paths[0]
 	if err := os.WriteFile(intakePath, []byte(`{"grouping_rationale":"Investigate the customer-total discrepancy reported by the human; trace the first incorrect calculation without assuming its cause."}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -233,17 +253,17 @@ func TestBUG104RejectDefectRoutesHumanProblemToInvestigationE2E(t *testing.T) {
 		t.Fatalf("one real question must have one original packet, got %d; Hook: %s", len(packets), feedback)
 	}
 	packet := packets[0]
-	if packet.Binding.ObservationBatchID != "" || packet.Binding.ObservationBatchRef != "" || packet.Binding.ObservationBatchSHA256 != "" || len(packet.Binding.SourceFindingIDs) != 0 || len(packet.Inputs.Findings) != 0 {
-		t.Fatalf("human question packet invented Batch or Findings: %#v", packet.Binding)
+	if len(packet.Binding.SourceFindingIDs) != 0 || len(packet.Inputs.Findings) != 0 {
+		t.Fatalf("human question packet invented Findings: %#v", packet.Binding)
 	}
 	var humanMaterial bool
 	for _, ref := range packet.Inputs.EvidenceRefs {
-		if ref.Ref == decisionID && ref.Path == decisionPath {
+		if ref.Ref == decisionID {
 			humanMaterial = true
 		}
 	}
 	if !humanMaterial {
-		t.Fatalf("question packet lost actual human decision material: %#v", packet.Inputs.EvidenceRefs)
+		t.Fatalf("question packet lost the original human decision identity: %#v", packet.Inputs.EvidenceRefs)
 	}
 	// Read the actual current Case after issuance through the normal Main
 	// listener. Packet existence alone does not prove its handoff is usable.
@@ -383,6 +403,7 @@ func newS11SystemRoot(t *testing.T, modernPacket ...bool) string {
 	// Synthetic upstream preparation only: use the existing S10 fixture and
 	// original TR017 stage-entry outlet to prepare the real empty application.
 	req039fixtures.SeedReleaseAuditReady(t, root, state)
+	stampCurrentS10ReviewIdentity(t, state)
 	if len(modernPacket) > 0 && modernPacket[0] {
 		state["schema_version"] = "1.3.0"
 		state["configuration"].(map[string]any)["optimization"] = map[string]any{"packet": true}

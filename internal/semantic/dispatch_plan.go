@@ -396,12 +396,14 @@ func WriteOverlap(a, b string) bool {
 
 type DispatchFact struct {
 	State                        workstate.Status
+	Unknown                      bool
 	Reason                       string
 	Integrated, DeliveryRecorded bool
 }
 type DispatchRow struct {
 	Task             DispatchTask     `json:"task"`
 	State            workstate.Status `json:"status"`
+	Unknown          bool             `json:"unknown,omitempty"`
 	Integrated       bool             `json:"integrated"`
 	DeliveryRecorded bool             `json:"delivery_recorded"`
 	Eligible         bool             `json:"eligible"`
@@ -415,8 +417,12 @@ func NextDispatch(p *DispatchPlan, facts map[string]DispatchFact, capacity int) 
 	rows := []DispatchRow{}
 	next := []string{}
 	busy := []DispatchTask{}
+	unknown := []DispatchTask{}
 	for _, t := range p.Tasks {
 		f := facts[t.ID]
+		if f.Unknown {
+			unknown = append(unknown, t)
+		}
 		if f.State != "" && (f.State != workstate.Done || !f.Integrated) {
 			busy = append(busy, t)
 		}
@@ -442,6 +448,11 @@ func NextDispatch(p *DispatchPlan, facts map[string]DispatchFact, capacity int) 
 	})
 	for _, t := range tasks {
 		row := DispatchRow{Task: t, State: workstate.Pending, Eligible: true}
+		if f := facts[t.ID]; f.Unknown {
+			row.Unknown, row.Eligible, row.Reason = true, false, f.Reason
+			rows = append(rows, row)
+			continue
+		}
 		if f := facts[t.ID]; f.State != "" {
 			row.State = f.State
 			row.Integrated = f.Integrated
@@ -456,6 +467,15 @@ func NextDispatch(p *DispatchPlan, facts map[string]DispatchFact, capacity int) 
 				row.Eligible = false
 				row.Reason = "await verified integration: " + d
 				break
+			}
+		}
+		if row.Eligible {
+			for _, u := range unknown {
+				if DispatchConflict(t, u) {
+					row.Unknown, row.Eligible = true, false
+					row.Reason = "possible conflict with TASK " + u.ID + " whose current ownership is unknown; Main must inspect"
+					break
+				}
 			}
 		}
 		if row.Eligible {

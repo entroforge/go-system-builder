@@ -30,16 +30,15 @@ func TestS9PlanSourceProofsReuseJournalParsingAndHonorCancellation(t *testing.T)
 		t.Fatal(err)
 	}
 	spans := timings.Snapshot()
-	if spans["runtime/journal_decode_build"].Count != 1 || spans["runtime/journal_decode_hit"].Count < 3 {
-		t.Fatalf("same S9 proof journal was reparsed: %+v", spans)
+	if spans["runtime/journal_decode_build"].Count != 0 {
+		t.Fatalf("issued S9 Plan unnecessarily reparsed historical journal: %+v", spans)
 	}
-	// Reused parsing never grants a source verdict: a changed actual Plan still
-	// fails the original immutable source check under the same request/cache.
+	// Current issued responsibility does not requalify all prior source bytes.
 	if err := os.WriteFile(filepath.Join(f.root, filepath.FromSlash(f.packet.Binding.PlanRef)), []byte(`{"changed":"after journal cache warmup"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := VerifyRepairPlanReportPacketIssueContext(ctx, f.root, f.state, f.packet); err == nil {
-		t.Fatal("journal cache hid mutable source drift")
+	if err := VerifyRepairPlanReportPacketIssueContext(ctx, f.root, f.state, f.packet); err != nil {
+		t.Fatalf("later source change invalidated issued Plan: %v", err)
 	}
 	canceled, cancel := context.WithCancel(ctx)
 	cancel()
@@ -70,7 +69,7 @@ func TestS9ResultAndResumeProofsReuseRequestJournalParsing(t *testing.T) {
 		t.Fatal(err)
 	}
 	spans := timings.Snapshot()
-	if spans["runtime/journal_decode_build"].Count != 1 || spans["runtime/journal_decode_hit"].Count < 3 {
+	if spans["runtime/journal_decode_build"].Count != 1 || spans["runtime/journal_decode_hit"].Count < 1 {
 		t.Fatalf("S9 Result/Resume proof journal was reparsed: %+v", spans)
 	}
 	canceled, cancel := context.WithCancel(ctx)

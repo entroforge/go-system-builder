@@ -1,6 +1,7 @@
 package repair
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -21,17 +22,13 @@ func CreateRepairSession(root string, request SessionRequest) (RepairSession, Ar
 		return RepairSession{}, ArtifactRef{}, fmt.Errorf("runtime_id, req_id, and created_by are required")
 	}
 	createdAt := nowOr(request.OccurredAt)
-	baselineArtifacts, baselineDigest, err := captureRepositoryBaseline(root)
-	if err != nil {
-		return RepairSession{}, ArtifactRef{}, err
-	}
 	document := RepairSession{
 		SchemaVersion: "1.0.0", RecordType: "repair_session", SessionID: request.SessionID,
-		ContractRef: contract.Ref.Path, ContractSHA256: contract.Ref.SHA256, RuntimeID: request.RuntimeID,
-		ReqID: request.ReqID, BaselineGeneration: request.BaselineGeneration, BaselineArtifacts: baselineArtifacts, BaselineDigest: baselineDigest,
+		ContractRef: contract.Ref.Path, RuntimeID: request.RuntimeID,
+		ReqID: request.ReqID, BaselineGeneration: request.BaselineGeneration,
 		Status: "planned", CreatedBy: request.CreatedBy, CreatedAtText: createdAt,
 	}
-	ref, err := writeImmutable(root, artifactRoot+"/sessions/"+request.SessionID+".json", "repair-session.schema.json", document)
+	ref, err := writeImmutable(root, responsibilityArtifactPath("sessions", request.SessionID), "repair-session.schema.json", document)
 	if err != nil {
 		return RepairSession{}, ArtifactRef{}, err
 	}
@@ -41,8 +38,12 @@ func CreateRepairSession(root string, request SessionRequest) (RepairSession, Ar
 
 func ValidateRepairSession(root string, ref ArtifactRef) (RepairSession, error) {
 	var document RepairSession
-	if err := decodeArtifact(root, ref, "repair-session.schema.json", &document); err != nil {
+	data, err := readArtifact(root, ref, "repair-session.schema.json")
+	if err != nil {
 		return RepairSession{}, err
+	}
+	if err := json.Unmarshal(data, &document); err != nil {
+		return RepairSession{}, fmt.Errorf("decode artifact %s: %w", ref.Path, err)
 	}
 	if document.Status != "planned" && document.Status != "planning" && document.Status != "reproducing" && document.Status != "executing" && document.Status != "result_submitted" && document.Status != "handed_off" {
 		return RepairSession{}, fmt.Errorf("RepairSession %q has invalid status %q", ref.Path, document.Status)
@@ -59,7 +60,7 @@ func CreateRepairPlan(root string, request PlanRequest) (RepairPlan, ArtifactRef
 	if err != nil {
 		return RepairPlan{}, ArtifactRef{}, err
 	}
-	if session.ContractRef != contract.Ref.Path || session.ContractSHA256 != contract.Ref.SHA256 {
+	if session.ContractRef != contract.Ref.Path {
 		return RepairPlan{}, ArtifactRef{}, fmt.Errorf("RepairSession is not bound to the approved Contract reference")
 	}
 	if !strings.HasPrefix(request.PlanID, "repair-plan-") {
@@ -70,9 +71,9 @@ func CreateRepairPlan(root string, request PlanRequest) (RepairPlan, ArtifactRef
 	}
 	document := RepairPlan{
 		SchemaVersion: "1.1.0", RecordType: "repair_plan", PlanID: request.PlanID, SessionID: session.SessionID,
-		ContractID: contract.ContractID, ContractRef: contract.Ref.Path, ContractSHA256: contract.Ref.SHA256,
+		ContractID: contract.ContractID, ContractRef: contract.Ref.Path,
 		Units: append([]RepairUnit(nil), contract.Units...), ProspectiveScope: append([]string(nil), contract.ProspectiveScope...),
-		ForbiddenScope: append([]string(nil), contract.ForbiddenScope...), ExecutionPolicy: "coverage_complete", CreatedBy: request.CreatedBy, CreatedAt: nowOr(request.OccurredAt),
+		ForbiddenScope: append([]string{}, contract.ForbiddenScope...), ExecutionPolicy: "coverage_complete", CreatedBy: request.CreatedBy, CreatedAt: nowOr(request.OccurredAt),
 	}
 	assertionIDs, err := contractAssertionIDs(root, contract.Ref)
 	if err != nil {
@@ -108,7 +109,7 @@ func CreateRepairPlan(root string, request PlanRequest) (RepairPlan, ArtifactRef
 	if err := validateRepairPlanSemantics(root, document); err != nil {
 		return RepairPlan{}, ArtifactRef{}, err
 	}
-	ref, err := writeImmutable(root, artifactRoot+"/plans/"+request.PlanID+".json", "repair-plan.schema.json", document)
+	ref, err := writeImmutable(root, responsibilityArtifactPath("plans", request.PlanID), "repair-plan.schema.json", document)
 	if err != nil {
 		return RepairPlan{}, ArtifactRef{}, err
 	}
@@ -117,8 +118,12 @@ func CreateRepairPlan(root string, request PlanRequest) (RepairPlan, ArtifactRef
 
 func ValidateRepairPlan(root string, ref ArtifactRef) (RepairPlan, error) {
 	var document RepairPlan
-	if err := decodeArtifact(root, ref, "repair-plan.schema.json", &document); err != nil {
+	data, err := readArtifact(root, ref, "repair-plan.schema.json")
+	if err != nil {
 		return RepairPlan{}, err
+	}
+	if err := json.Unmarshal(data, &document); err != nil {
+		return RepairPlan{}, fmt.Errorf("decode artifact %s: %w", ref.Path, err)
 	}
 	if len(document.Units) == 0 {
 		return RepairPlan{}, fmt.Errorf("RepairPlan %q has no repair units", ref.Path)

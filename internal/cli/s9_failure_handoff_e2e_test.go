@@ -18,6 +18,22 @@ import (
 // Exercise the real Stop adapter/Service/Writer chain and a fresh public Main
 // request. The Git barrier is enabled by the original committed Plan journal
 // event, rather than by a guessed delay or a production test-only callback.
+//
+// The barrier is live again: G01-A put an ordinary Git branch resolution back
+// into the reception chain (internal/cli/native_s9_original.go, the recorded
+// authoring location), so the shim below does trigger and the original request
+// deadline really expires inside the Result consumer. The earlier G01-C note
+// ("the reception performs no Git call any more") described the topology
+// before G01-A landed and is no longer true.
+//
+// The published attempt is judged by its structural facts, not by one stage
+// name: the attempt stopped at the original Result consumer boundary, so the
+// consumer boundary marker, the failure kind and the exact input coordinates
+// carry the meaning (internal/cli/native_s9_attempt.go:30-39 "The stage name
+// stays a diagnostic label and never decides the consumer boundary").
+// L4-hook-acceptance-checklist.md:158 G26 — "真实原接收已收 Plan 后中断,在不重读
+// 业务来源的发布尾段保留已捕获的准确失败;全新 Main 请求在 additionalContext 获得该
+// 原因和实际恢复操作".
 func TestS9FailureHandoffRealStopDeadlineReachesFreshPublicMain(t *testing.T) {
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("requires POSIX shell")
@@ -65,7 +81,7 @@ func TestS9FailureHandoffRealStopDeadlineReachesFreshPublicMain(t *testing.T) {
 		t.Fatalf("real Stop: handled=%v code=%d stdout=%s stderr=%s", handled, code, &stopOut, &stopDiagnostic)
 	}
 	if _, err := os.Stat(marker); err != nil {
-		t.Fatalf("original committed Plan never triggered the Git barrier: %v; %s", err, &stopDiagnostic)
+		t.Fatalf("original committed Plan never triggered the Git barrier: %v; %s (the reception performs no Git call any more; see the G01-C note above)", err, &stopDiagnostic)
 	}
 	if !errors.Is(work.Err(), context.DeadlineExceeded) {
 		t.Fatalf("real work deadline did not expire: %v; %s", work.Err(), &stopDiagnostic)
@@ -85,11 +101,31 @@ func TestS9FailureHandoffRealStopDeadlineReachesFreshPublicMain(t *testing.T) {
 	record, ok := nativeS9ReturnDiagnosticRecordContext(t.Context(), root, snap, plan.ID)
 	flatRelative := nativeS9TestResultPath(t, root, plan)
 	flat := filepath.Join(worker, flatRelative)
-	if !ok || record.Attempt == nil || record.Attempt.FailureKind != "deadline" || record.Attempt.Stage != "plan_received" || record.Attempt.InputRef != flat {
+	if !ok || record.Attempt == nil || record.Attempt.FailureKind != "deadline" || record.Attempt.InputRef != flat {
 		t.Fatalf("original attempt was not published after work expiry: %#v ok=%v stderr=%s", record, ok, &stopDiagnostic)
+	}
+	// The attempt stopped at the original Result consumer boundary. The
+	// boundary, the failure kind and the exact input coordinates are the
+	// structural facts; the stage name is a diagnostic label and is not pinned
+	// to one topology.
+	if record.Attempt.ConsumerBoundary != nativeS9ConsumerBoundaryMark {
+		t.Fatalf("original attempt did not stop at the consumer boundary: %#v", record.Attempt)
+	}
+	if !nativeS9ConsumerAttempt(record.Attempt) {
+		t.Fatalf("original attempt is not a consumer attempt: %#v", record.Attempt)
+	}
+	if record.Attempt.Stage == "" || record.Attempt.Stage == "selected" || record.Attempt.Stage == "unknown" {
+		t.Fatalf("original attempt kept an undetermined stage label: %#v", record.Attempt)
+	}
+	if record.Attempt.TypedInputRef != "" {
+		t.Fatalf("original attempt named a typed input copy: %#v", record.Attempt)
 	}
 	if !strings.Contains(record.Message, "context deadline exceeded") {
 		t.Fatalf("specific timeout cause was swallowed: %s", record.Message)
+	}
+	// The published reason shows the unfinished consumer and its exact input.
+	if !strings.Contains(record.Message, "reached "+record.Attempt.Stage) || !strings.Contains(record.Message, "Consumer diagnostic:") {
+		t.Fatalf("published attempt does not show the unfinished consumer: %s", record.Message)
 	}
 	before := repairDispatchRuntimeBytes(t, root)
 	body, err := json.Marshal(map[string]any{

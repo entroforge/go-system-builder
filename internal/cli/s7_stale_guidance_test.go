@@ -26,7 +26,7 @@ func TestS7StalePlanRecoveryPrecedesQueuedDispatchAndAnswers(t *testing.T) {
 	}
 	guidance := policy.Guidance{Missing: []string{"claim_results", "claim:static"}}
 	applyS7RecoveryProjection(root, state, &guidance)
-	if !strings.Contains(guidance.Action, "Main must resolve") || len(guidance.Missing) != 1 || !strings.Contains(guidance.Missing[0], "stale ReviewPlan") || strings.Contains(strings.Join(guidance.Automation, " "), "assignments queued") {
+	if !strings.Contains(guidance.Action, "current ReviewPlan questionnaire") || len(guidance.Missing) != 1 || !strings.Contains(guidance.Missing[0], "update the original ReviewPlan questionnaire") || strings.Contains(strings.Join(guidance.Automation, " "), "assignments queued") {
 		t.Fatalf("stale plan did not take recovery priority: %+v", guidance)
 	}
 	// No Plan file, issuer journal or service exists. A stale reminder uses
@@ -44,7 +44,7 @@ func TestS7StalePlanRecoveryPrecedesQueuedDispatchAndAnswers(t *testing.T) {
 	}
 	for _, status := range []string{"running", "cannot_clean", "discovery_draining"} {
 		plan["status"] = status
-		if action := s7RecoveryNextAction(root, state, status, 1, nil, []string{"assignment-e2e"}, nil, nil, nil); !strings.Contains(action, "original ReviewPlan source") {
+		if action := s7RecoveryNextAction(root, state, status, nil, []string{"assignment-e2e"}, nil, nil, nil); !strings.Contains(action, "original ReviewPlan source") {
 			t.Fatalf("existing %s behavior changed: %s", status, action)
 		}
 	}

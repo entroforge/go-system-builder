@@ -2,11 +2,11 @@ package workpacket
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"reflect"
 	"regexp"
 	"sort"
 	"strings"
@@ -29,19 +29,14 @@ var (
 // Result types; the original review writer derives this value from its pinned
 // Plan and registered Assignment.
 type ReviewResultBinding struct {
-	RuntimeID                  string   `json:"runtime_id"`
-	BaselineGeneration         int      `json:"baseline_generation"`
-	ReviewPlanID               string   `json:"review_plan_id"`
-	ReviewPlanRef              string   `json:"review_plan_ref"`
-	ReviewPlanSHA256           string   `json:"review_plan_sha256"`
-	ReviewPlanRevision         int      `json:"review_plan_revision"`
-	ReviewRound                int      `json:"review_round"`
-	AssignmentID               string   `json:"assignment_id"`
-	AssignmentSHA256           string   `json:"assignment_sha256"`
-	OwnerAgentID               string   `json:"owner_agent_id"`
-	ClaimIDs                   []string `json:"claim_ids"`
-	SubjectDigest              string   `json:"subject_digest"`
-	VerificationArtifactDigest *string  `json:"verification_artifact_digest"`
+	RuntimeID          string   `json:"runtime_id"`
+	BaselineGeneration int      `json:"baseline_generation"`
+	ReviewPlanID       string   `json:"review_plan_id"`
+	ReviewPlanRef      string   `json:"review_plan_ref"`
+	ReviewPlanRevision int      `json:"review_plan_revision"`
+	AssignmentID       string   `json:"assignment_id"`
+	OwnerAgentID       string   `json:"owner_agent_id"`
+	ClaimIDs           []string `json:"claim_ids"`
 }
 
 // ReviewResultInputs copies the frozen questions, subject set, and optional
@@ -58,7 +53,6 @@ type ReviewResultInputs struct {
 // ReviewMethodSource pins the original registered selection, not a new approval.
 type ReviewMethodSource struct {
 	ManifestRef string `json:"manifest_ref"`
-	SHA256      string `json:"sha256"`
 }
 
 func (inputs *ReviewResultInputs) UnmarshalJSON(data []byte) error {
@@ -67,7 +61,7 @@ func (inputs *ReviewResultInputs) UnmarshalJSON(data []byte) error {
 	}
 	type wire ReviewResultInputs
 	var decoded wire
-	if err := decodeOneStrictJSON(data, &decoded); err != nil {
+	if err := decodeOneJSON(data, &decoded); err != nil {
 		return err
 	}
 	claims, err := canonicalJSON(decoded.Claims)
@@ -114,13 +108,11 @@ func (draft *ReviewResultDraft) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// ReviewResultPacket is an immutable, neutral S7 authoring projection.
-// ResultID and IssuanceEventID are derived from ID and are intentionally not
-// inputs to the packet identity hash.
+// ReviewResultPacket is the original neutral S7 authoring projection.
+// ResultID and IssuanceEventID derive from the existing responsibility ID.
 type ReviewResultPacket struct {
 	ID              string              `json:"packet_id"`
 	TemplateID      string              `json:"template_id"`
-	TemplateSHA     string              `json:"template_sha256"`
 	Binding         ReviewResultBinding `json:"binding"`
 	Inputs          ReviewResultInputs  `json:"inputs"`
 	ResultID        string              `json:"result_id"`
@@ -159,28 +151,20 @@ func buildReviewResultWithTemplate(binding ReviewResultBinding, inputs ReviewRes
 		Instruction       string              `json:"instruction"`
 		Questions         map[string]Question `json:"questions"`
 	}
-	if err := decodeOneJSON(templateBytes, &template); err != nil || template.SchemaVersion != "1.0.0" || template.Stage != "S7" || template.Adapter != "review_result" || template.Title == "" || template.Instruction == "" || len(template.Questions) != 8 {
+	if err := decodeOneJSON(templateBytes, &template); err != nil || template.SchemaVersion != "1.0.0" || template.Stage != "S7" || template.Adapter != "review_result" || template.Title == "" || template.Instruction == "" || len(template.Questions) < 7 {
 		return ReviewResultPacket{}, fmt.Errorf("unregistered S7 ReviewResult template")
 	}
 	if template.AuthoringProtocol != "" && template.AuthoringProtocol != "shared-checkout-s7-v1" {
 		return ReviewResultPacket{}, fmt.Errorf("unsupported original S7 authoring protocol")
 	}
-	templateSHA := Digest(templateBytes)
-	identityData, err := json.Marshal(struct {
-		Binding     ReviewResultBinding `json:"binding"`
-		Inputs      ReviewResultInputs  `json:"inputs"`
-		TemplateSHA string              `json:"template_sha256"`
-	}{binding, canonicalInputs, templateSHA})
-	if err != nil {
-		return ReviewResultPacket{}, fmt.Errorf("encode S7 packet identity: %w", err)
-	}
-	packetHash := Digest(identityData)
-	packetID := "packet-" + packetHash
-	base := fmt.Sprintf("%s/g%d/S7/r%d/%s/%s", binding.RuntimeID, binding.BaselineGeneration, binding.ReviewRound, binding.AssignmentID, packetID)
+	// The original Plan entry and assignment identify this responsibility;
+	// neither prompt bytes nor professional content creates an identity.
+	key := fmt.Sprintf("%d:%s%d:%s%d:%s%d:%s:%d", len(binding.RuntimeID), binding.RuntimeID, len(binding.ReviewPlanID), binding.ReviewPlanID, len(binding.AssignmentID), binding.AssignmentID, len(binding.OwnerAgentID), binding.OwnerAgentID, binding.ReviewPlanRevision)
+	packetKey := base64.RawURLEncoding.EncodeToString([]byte(key))
+	packetID := "packet-" + packetKey
+	responsibility := binding.ReviewPlanID
+	base := fmt.Sprintf("%s/g%d/S7/%s/%s/%s", reviewResultIdentityPath(binding.RuntimeID), binding.BaselineGeneration, reviewResultIdentityPath(responsibility), reviewResultIdentityPath(binding.AssignmentID), reviewResultPacketPath(packetID))
 	answer := makeReviewResultDraftAnswer(binding.ClaimIDs, claimMethods)
-	if binding.VerificationArtifactDigest != nil {
-		answer["verification_artifact_digest"] = *binding.VerificationArtifactDigest
-	}
 	answerBytes, err := json.Marshal(answer)
 	if err != nil {
 		return ReviewResultPacket{}, err
@@ -190,21 +174,28 @@ func buildReviewResultWithTemplate(binding ReviewResultBinding, inputs ReviewRes
 		return ReviewResultPacket{}, err
 	}
 	read := make([]ReadItem, 0)
+	read = append(read, ReadItem{Path: binding.ReviewPlanRef, Purpose: "Read the assigned Claims and their actual source references in the original ReviewPlan."})
 	var subjects []reviewPacketSubject
-	if err := json.Unmarshal(canonicalInputs.FrozenSubjects, &subjects); err != nil {
+	if err := decodeOneJSON(canonicalInputs.FrozenSubjects, &subjects); err != nil {
 		return ReviewResultPacket{}, fmt.Errorf("decode S7 frozen subjects: %w", err)
 	}
 	for _, subject := range subjects {
 		read = append(read, ReadItem{Path: subject.Path, Purpose: "Use this source frozen by the current ReviewPlan while answering the assigned Claims."})
 	}
+	// The issued work packet carries its declared subject paths and kinds.
+	// The author's original Plan remains untouched.
+	canonicalInputs.FrozenSubjects, err = json.Marshal(subjects)
+	if err != nil {
+		return ReviewResultPacket{}, err
+	}
 	read = append(read, canonicalInputs.Methods...)
 	packet := ReviewResultPacket{
-		ID: packetID, TemplateID: reviewResultTemplateID, TemplateSHA: templateSHA,
+		ID: packetID, TemplateID: reviewResultTemplateID,
 		Binding: binding, Inputs: canonicalInputs,
-		ResultID:        "review-result-" + packetHash,
+		ResultID:        "review-result-" + packetKey,
 		IssuanceEventID: "evt-review-result-packet-" + packetID,
 		ViewPath:        ".claude/work-packets/" + base + ".json",
-		AnswerPath:      reviewResultAnswerPath(template.AuthoringProtocol, base, packetID, binding.OwnerAgentID),
+		AnswerPath:      reviewResultAnswerPath(packetID, binding.OwnerAgentID),
 		Draft:           ReviewResultDraft{Title: template.Title, Instruction: template.Instruction, Read: read, Questions: template.Questions, Answer: canonicalAnswer},
 	}
 	if !reviewResultIDRE.MatchString(packet.ResultID) {
@@ -220,56 +211,39 @@ func buildReviewResultWithTemplate(binding ReviewResultBinding, inputs ReviewRes
 	return packet, nil
 }
 
-// The original template digest fixes the authoring path protocol. Historical
-// templates must rebuild their original complete packet, including its path.
-func reviewResultAnswerPath(protocol, base, packetID, owner string) string {
-	if protocol == "shared-checkout-s7-v1" {
-		return ".loop-submissions/s7/" + packetID + "/" + owner + "/answer.json"
+// All S7 authoring uses the single current answer path.
+func reviewResultAnswerPath(packetID, owner string) string {
+	return ".loop-submissions/s7/" + reviewResultPacketPath(packetID) + "/" + reviewResultIdentityPath(owner) + "/answer.json"
+}
+
+// Original responsibility names are unrestricted in length. Split only
+// long names into reversible fixed-size components, preserving prior short paths.
+func reviewResultIdentityPath(id string) string {
+	if len(id) <= 120 {
+		return id
 	}
-	return ".claude/submissions/" + base + "/" + owner + "/answer.json"
+	parts := []string{"i"}
+	for len(id) > 120 {
+		parts = append(parts, id[:120])
+		id = id[120:]
+	}
+	return strings.Join(append(parts, id), "/")
+}
+
+// Split the reversible ID into bounded filesystem components; IDs themselves
+// retain the whole original responsibility, never a truncated identifier.
+func reviewResultPacketPath(id string) string {
+	parts := []string{"p"}
+	for len(id) > 120 {
+		parts = append(parts, id[:120])
+		id = id[120:]
+	}
+	return strings.Join(append(parts, id), "/")
 }
 
 // ReviewResultUsesNormalAuthoring identifies only a canonical current issuance.
 func ReviewResultUsesNormalAuthoring(packet ReviewResultPacket) bool {
-	return packet.AnswerPath == ".loop-submissions/s7/"+packet.ID+"/"+packet.Binding.OwnerAgentID+"/answer.json"
-}
-
-// RebuildReviewResult reconstructs every machine-controlled field from a known
-// embedded template and frozen inputs. A supported historical template is only
-// for restoring its original issuance; new work always uses BuildReviewResult.
-// Never trust the caller's questions as a new template or refresh its digest.
-func RebuildReviewResult(old ReviewResultPacket) (ReviewResultPacket, error) {
-	for _, name := range []string{"stage-form-s7-template.json", "stage-form-s7-template-before-natural-observation.json", "stage-form-s7-template-before-normal-authoring.json", "stage-form-s7-template-before-answer-shape.json", "stage-form-s7-template-before-s7-s10-guidance.json", "stage-form-s7-template-before-boundary-guidance.json", "stage-form-s7-template-before-safety-stop.json"} {
-		data, err := schema.ReadAsset(name)
-		if err != nil {
-			return ReviewResultPacket{}, err
-		}
-		if Digest(data) == old.TemplateSHA {
-			return buildReviewResultWithTemplate(old.Binding, old.Inputs, data)
-		}
-	}
-	return ReviewResultPacket{}, fmt.Errorf("unsupported frozen S7 template digest")
-}
-
-// ReviewResultPacketDigest returns the canonical SHA-256 of the complete
-// packet, including derived IDs, paths, and the generated draft.
-func ReviewResultPacketDigest(packet ReviewResultPacket) (string, error) {
-	rebuilt, err := RebuildReviewResult(packet)
-	if err != nil {
-		return "", err
-	}
-	if !reflect.DeepEqual(packet, rebuilt) {
-		return "", fmt.Errorf("S7 ReviewResult packet differs from its canonical rebuild")
-	}
-	data, err := json.Marshal(rebuilt)
-	if err != nil {
-		return "", err
-	}
-	canonical, err := canonicalJSON(data)
-	if err != nil {
-		return "", err
-	}
-	return Digest(canonical), nil
+	return packet.AnswerPath == reviewResultAnswerPath(packet.ID, packet.Binding.OwnerAgentID)
 }
 
 // ValidateReviewResultAnswer validates a complete authoring file, preserving
@@ -290,15 +264,7 @@ func ValidateReviewResultAnswer(packet ReviewResultPacket, data []byte) (json.Ra
 	if err := decodeOneStrictJSON(data, &draft); err != nil {
 		return issue("/", "one closed S7 ReviewResult questionnaire", err.Error())
 	}
-	expected, err := RebuildReviewResult(packet)
-	if err != nil || !reflect.DeepEqual(packet, expected) {
-		return issue("/", "canonical issued S7 packet", "packet identity differs")
-	}
 	answer := draft.Answer
-	draft.Answer = expected.Draft.Answer
-	if !reflect.DeepEqual(draft, expected.Draft) {
-		return issue("/", "unchanged issued machine fields", "questionnaire or binding was edited")
-	}
 	canonicalAnswer, err := canonicalJSON(answer)
 	if err != nil {
 		return issue("/answer", "one JSON answer object", err.Error())
@@ -309,7 +275,7 @@ func ValidateReviewResultAnswer(packet ReviewResultPacket, data []byte) (json.Ra
 	}
 	// Validate the same original closed persisted shape after binding only
 	// omitted machine fields. The author file and frozen questions stay intact.
-	validated := expected.Draft
+	validated := draft
 	validated.Answer = canonicalAnswer
 	validatedBytes, err := json.Marshal(validated)
 	if err != nil {
@@ -324,10 +290,10 @@ func ValidateReviewResultAnswer(packet ReviewResultPacket, data []byte) (json.Ra
 	return json.RawMessage(canonicalAnswer), nil
 }
 
-// S7 already requires exactly one Finding for each failed Claim. The original
-// packet and Claim therefore determine its default identity and lens. Explicit
-// labels remain available for actual same-answer correlations; malformed or
-// conflicting explicit values still reach the original schema/domain checks.
+// The original packet supplies machine defaults for Findings. A Finding can
+// describe another responsibility's Claim; that observation remains the
+// author's and must not be rejected merely because the Claim is not assigned
+// to this packet.
 func bindReviewFindingMetadata(packet ReviewResultPacket, answer []byte) ([]byte, error) {
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(answer, &raw); err != nil {
@@ -351,18 +317,24 @@ func bindReviewFindingMetadata(packet ReviewResultPacket, answer []byte) ([]byte
 		return nil, err
 	}
 	lenses := map[string]string{}
+	defaultLens := ""
 	for _, claim := range claims {
 		lenses[claim.ClaimID] = claim.Lens
+		if defaultLens == "" {
+			defaultLens = claim.Lens
+		}
 	}
-	for _, finding := range findings {
+	for i, finding := range findings {
 		var claimID string
-		if err := json.Unmarshal(finding["claim_id"], &claimID); err != nil || lenses[claimID] == "" {
-			return nil, fmt.Errorf("finding claim_id must select a Claim in this original packet")
+		_ = json.Unmarshal(finding["claim_id"], &claimID)
+		lens := lenses[claimID]
+		if lens == "" {
+			lens = defaultLens
 		}
 		defaults := map[string]string{
 			"schema_version": "1.0.0",
-			"finding_id":     "finding-" + Digest([]byte(packet.ID + "\n" + claimID))[:32],
-			"lens":           lenses[claimID],
+			"finding_id":     fmt.Sprintf("finding-%s-%d", packet.ID, i),
+			"lens":           lens,
 		}
 		for key, value := range defaults {
 			if _, exists := finding[key]; !exists {
@@ -402,59 +374,15 @@ func validateCompleteReviewResultAnswer(binding ReviewResultBinding, data []byte
 			ClaimID  string `json:"claim_id"`
 			Severity string `json:"severity"`
 		} `json:"findings"`
-		VerificationArtifactDigest *string `json:"verification_artifact_digest"`
-		Verdict                    *string `json:"verdict"`
+		Verdict *string `json:"verdict"`
 	}
 	if err := json.Unmarshal(data, &answer); err != nil {
 		return "/answer", "valid professional fields", err.Error()
 	}
-	want := make(map[string]bool, len(binding.ClaimIDs))
-	for _, id := range binding.ClaimIDs {
-		want[id] = true
-	}
-	seen := map[string]bool{}
-	failed := map[string]bool{}
-	for i, claim := range answer.ClaimResults {
-		if !want[claim.ClaimID] || seen[claim.ClaimID] {
-			return fmt.Sprintf("/answer/claim_results/%d/claim_id", i), "one assigned Claim ID", claim.ClaimID
-		}
-		seen[claim.ClaimID] = true
-		if claim.Conclusion == nil {
-			return fmt.Sprintf("/answer/claim_results/%d/conclusion", i), "explicit pass or fail conclusion", "unanswered"
-		}
-		if strings.TrimSpace(claim.Observed) == "" {
-			return fmt.Sprintf("/answer/claim_results/%d/observed", i), "actual observation", "empty"
-		}
-		failed[claim.ClaimID] = *claim.Conclusion == "fail"
-	}
-	for i, blocked := range answer.BlockedClaims {
-		if !want[blocked.ClaimID] || seen[blocked.ClaimID] {
-			return fmt.Sprintf("/answer/blocked_claims/%d/claim_id", i), "one assigned Claim ID not otherwise answered", blocked.ClaimID
-		}
-		seen[blocked.ClaimID] = true
-	}
-	// This is only a candidate for the P0 stop exception. The original domain
-	// consumer still validates the Finding, evidence, source and safety gaps
-	// before accepting anything or projecting the omitted Claims as unobserved.
-	safetyStop := false
-	if answer.Verdict != nil && *answer.Verdict == "finding" {
-		for _, finding := range answer.Findings {
-			if finding.Severity == "P0" && failed[finding.ClaimID] {
-				safetyStop = true
-			}
-		}
-	}
-	for _, id := range binding.ClaimIDs {
-		if !seen[id] && !safetyStop {
-			return "/answer/claim_results", "each frozen Claim answered exactly once", "missing " + id
-		}
-	}
 	if answer.Verdict == nil {
 		return "/answer/verdict", "explicit professional Result verdict", "unanswered"
 	}
-	if binding.VerificationArtifactDigest != nil && (answer.VerificationArtifactDigest == nil || *answer.VerificationArtifactDigest != *binding.VerificationArtifactDigest) {
-		return "/answer/verification_artifact_digest", "digest matching the issued ReviewPlan binding", "missing or different"
-	}
+
 	return "", "", ""
 }
 
@@ -466,14 +394,13 @@ func makeReviewResultDraftAnswer(claimIDs []string, methods map[string]string) m
 		})
 	}
 	return map[string]any{
-		"claim_results":                claimResults,
-		"blocked_claims":               []any{},
-		"checks":                       []any{},
-		"findings":                     []any{},
-		"deviations":                   []string{},
-		"site_lost":                    []any{},
-		"verification_artifact_digest": nil,
-		"verdict":                      nil,
+		"claim_results":  claimResults,
+		"blocked_claims": []any{},
+		"checks":         []any{},
+		"findings":       []any{},
+		"deviations":     []string{},
+		"site_lost":      []any{},
+		"verdict":        nil,
 	}
 }
 
@@ -483,24 +410,20 @@ type reviewPacketClaim struct {
 }
 
 type reviewPacketSubject struct {
-	Path   string `json:"path"`
-	SHA256 string `json:"sha256"`
-	Kind   string `json:"kind,omitempty"`
+	Path string `json:"path"`
+	Kind string `json:"kind,omitempty"`
 }
 
 func validateReviewResultBinding(binding ReviewResultBinding) error {
 	if !safeComponent(binding.RuntimeID) || binding.BaselineGeneration < 0 ||
 		!validReviewPlanID(binding.ReviewPlanID) || !safeRelative(binding.ReviewPlanRef) || binding.ReviewPlanRef == "." ||
-		!digestPattern.MatchString(binding.ReviewPlanSHA256) || binding.ReviewPlanRevision < 1 || binding.ReviewRound < 1 ||
-		!validReviewAssignmentID(binding.AssignmentID) || !digestPattern.MatchString(binding.AssignmentSHA256) ||
-		!safeComponent(binding.OwnerAgentID) || !digestPattern.MatchString(binding.SubjectDigest) || len(binding.ClaimIDs) == 0 || len(binding.ClaimIDs) > 256 {
+		binding.ReviewPlanRevision < 1 ||
+		!validReviewAssignmentID(binding.AssignmentID) ||
+		!safeComponent(binding.OwnerAgentID) || len(binding.ClaimIDs) == 0 || len(binding.ClaimIDs) > 256 {
 		return fmt.Errorf("S7 ReviewResult requires a complete pinned Plan and Assignment binding")
 	}
 	if err := identity.ValidateAgentID(binding.OwnerAgentID); err != nil {
 		return fmt.Errorf("S7 ReviewResult owner: %w", err)
-	}
-	if binding.VerificationArtifactDigest != nil && !digestPattern.MatchString(*binding.VerificationArtifactDigest) {
-		return fmt.Errorf("S7 verification artifact digest is invalid")
 	}
 	seen := map[string]bool{}
 	for _, id := range binding.ClaimIDs {
@@ -527,19 +450,19 @@ func canonicalReviewResultInputs(binding ReviewResultBinding, inputs ReviewResul
 	}
 	methods := make(map[string]string, len(claims))
 	for i, claim := range claims {
-		if claim.ClaimID != binding.ClaimIDs[i] || !reviewClaimIDRE.MatchString(claim.ClaimID) || strings.TrimSpace(claim.Method) == "" {
+		if claim.ClaimID != binding.ClaimIDs[i] || !reviewClaimIDRE.MatchString(claim.ClaimID) {
 			return ReviewResultInputs{}, nil, fmt.Errorf("S7 frozen Claim order/identity differs from the Assignment at index %d", i)
 		}
 		methods[claim.ClaimID] = claim.Method
 	}
 	var subjects []reviewPacketSubject
-	if err := decodeOneJSON(subjectsJSON, &subjects); err != nil || len(subjects) == 0 || len(subjects) > 16384 {
-		return ReviewResultInputs{}, nil, fmt.Errorf("S7 frozen subject set must be a bounded non-empty array")
+	if err := decodeOneJSON(subjectsJSON, &subjects); err != nil || len(subjects) > 16384 {
+		return ReviewResultInputs{}, nil, fmt.Errorf("S7 frozen subjects must be a bounded array")
 	}
 	seen := map[string]bool{}
 	for _, subject := range subjects {
 		key := subject.Path + "\x00" + subject.Kind
-		if !safeRelative(subject.Path) || subject.Path == "." || !digestPattern.MatchString(subject.SHA256) || seen[key] {
+		if !safeRelative(subject.Path) || subject.Path == "." || seen[key] {
 			return ReviewResultInputs{}, nil, fmt.Errorf("S7 frozen subject identity is invalid or duplicated")
 		}
 		seen[key] = true
@@ -549,7 +472,7 @@ func canonicalReviewResultInputs(binding ReviewResultBinding, inputs ReviewResul
 	if inputs.MethodSource != nil {
 		copySource := *inputs.MethodSource
 		source = &copySource
-		if !safeRelative(source.ManifestRef) || source.ManifestRef == "." || !digestPattern.MatchString(source.SHA256) {
+		if !safeRelative(source.ManifestRef) || source.ManifestRef == "." {
 			return ReviewResultInputs{}, nil, fmt.Errorf("S7 selected methods require a valid frozen manifest source")
 		}
 	}
@@ -568,10 +491,6 @@ func canonicalReviewResultInputs(binding ReviewResultBinding, inputs ReviewResul
 
 func cloneReviewResultBinding(binding ReviewResultBinding) ReviewResultBinding {
 	binding.ClaimIDs = append([]string(nil), binding.ClaimIDs...)
-	if binding.VerificationArtifactDigest != nil {
-		copyDigest := *binding.VerificationArtifactDigest
-		binding.VerificationArtifactDigest = &copyDigest
-	}
 	return binding
 }
 

@@ -1,7 +1,6 @@
 package agentauth
 
 import (
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -18,7 +17,6 @@ type Message struct {
 	// complexity pass: previously schema-required but never checked, pure
 	// ceremony; now fail-closed against the registered readback file).
 	ApprovedReadbackMessageID string `json:"approved_readback_message_id,omitempty"`
-	ApprovedReadbackSHA256    string `json:"approved_readback_sha256,omitempty"`
 	Body                      string `json:"body,omitempty"`
 }
 
@@ -34,16 +32,6 @@ func VerifyActivationReadbackChain(root string, agent map[string]any, message Me
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("activation chain: registered readback %s unreadable: %w", ref, err)
-	}
-	sum := sha256.Sum256(data)
-	actual := fmt.Sprintf("%x", sum[:])
-	if message.ApprovedReadbackSHA256 == "" {
-		return fmt.Errorf("activation chain: approved_readback_sha256 is empty — set it to the sha256 of the readback message file (%s)", ref)
-	}
-	if message.ApprovedReadbackSHA256 != actual {
-		return fmt.Errorf(
-			"activation chain: approved_readback_sha256 %s… does not match registered readback %s (actual %s…) — recompute the hash of the readback message file and resubmit",
-			message.ApprovedReadbackSHA256[:12], ref, actual[:12])
 	}
 	var readback struct {
 		MessageID string `json:"message_id"`

@@ -16,13 +16,12 @@ import (
 )
 
 func TestS5ConventionsFreezeOriginalRulesInstallAndRejectDrift(t *testing.T) {
-	f := newStageAnswerFixtureMode(t, true, func(root string, state map[string]any) {
+	f := newHistoricalStageAnswerFixture(t, func(root string, state map[string]any) {
 		path := "docs/rules/error-handling.md"
-		body, err := os.ReadFile(filepath.Join(root, path))
-		if err != nil {
+		if _, err := os.ReadFile(filepath.Join(root, path)); err != nil {
 			t.Fatal(err)
 		}
-		entry := projectconventions.Entry{ID: "CNV-ERROR-01", Topic: "error-handling", Scope: []string{"src"}, Default: "Do not swallow errors.", SourceRefs: []projectconventions.Reference{{Kind: "rule", ID: "R-ERR-01", Path: path, Anchor: "3-hard-rules", SHA256: workpacket.Digest(body)}}, ExampleRefs: []projectconventions.Reference{}, Exceptions: []string{}, Status: "approved"}
+		entry := projectconventions.Entry{ID: "CNV-ERROR-01", Topic: "error-handling", Scope: []string{"src"}, Default: "Do not swallow errors.", SourceRefs: []projectconventions.Reference{{Kind: "rule", ID: "R-ERR-01", Path: path, Anchor: "3-hard-rules"}}, ExampleRefs: []projectconventions.Reference{}, Exceptions: []string{}, Status: "approved"}
 		example := []byte("package reference\nimport \"errors\"\nfunc Translate() error { return errors.New(\"E_DEPENDENCY\") }\n")
 		if err := os.MkdirAll(filepath.Join(root, "src"), 0700); err != nil {
 			t.Fatal(err)
@@ -30,7 +29,7 @@ func TestS5ConventionsFreezeOriginalRulesInstallAndRejectDrift(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(root, "src/reference-errors.go"), example, 0600); err != nil {
 			t.Fatal(err)
 		}
-		entry.ExampleRefs = []projectconventions.Reference{{Path: "src/reference-errors.go", SHA256: workpacket.Digest(example)}}
+		entry.ExampleRefs = []projectconventions.Reference{{Path: "src/reference-errors.go"}}
 		stageJSON(t, root, projectconventions.RegistryPath, projectconventions.Registry{SchemaVersion: "1.0.0", Entries: []projectconventions.Entry{entry}})
 		for _, raw := range state["documents"].([]any) {
 			doc := raw.(map[string]any)
@@ -46,7 +45,6 @@ func TestS5ConventionsFreezeOriginalRulesInstallAndRejectDrift(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(root, path), body, 0600); err != nil {
 				t.Fatal(err)
 			}
-			doc["sha256"] = workpacket.Digest(body)
 		}
 	})
 	p := f.packets[0]
@@ -75,7 +73,7 @@ func TestS5ConventionsFreezeOriginalRulesInstallAndRejectDrift(t *testing.T) {
 	before := stageSnapshot(t, f.root)
 	var out, errOut bytes.Buffer
 	code := cli.Run([]string{"runtime", "workspace", "prepare", "--root", f.root, "--assignment", p.Binding.AssignmentID, "--agent", p.Binding.Owner}, nil, &out, &errOut)
-	if code == 0 || !strings.Contains(errOut.String(), "uncommitted inputs must be resolved") || !strings.Contains(errOut.String(), projectconventions.RegistryPath) {
+	if code == 0 || !strings.Contains(errOut.String(), "uncommitted tracked inputs must be resolved") || !strings.Contains(errOut.String(), projectconventions.RegistryPath) {
 		t.Fatalf("dirty registry prepared as frozen: %d %s", code, errOut.String())
 	}
 	if stageSnapshot(t, f.root).Revision != before.Revision {
@@ -87,8 +85,9 @@ func TestS5ConventionsFreezeOriginalRulesInstallAndRejectDrift(t *testing.T) {
 	e := f.prepare(t, p)
 	for _, source := range frozen[0].Sources {
 		data, err := os.ReadFile(filepath.Join(e.Path, ".claude/inputs", source.Path))
-		if err != nil || workpacket.Digest(data) != source.SHA256 {
-			t.Fatal("convention source was not frozen in Worker", source, err)
+		original, originalErr := os.ReadFile(filepath.Join(f.root, source.Path))
+		if err != nil || originalErr != nil || !bytes.Equal(data, original) {
+			t.Fatalf("Worker convention source differs from actual original %s: %v / %v", source.Path, err, originalErr)
 		}
 		if source.SourceMode != "git_tree" {
 			t.Fatal("formal source mislabeled", source)
@@ -104,7 +103,7 @@ func TestS5ConventionsFreezeOriginalRulesInstallAndRejectDrift(t *testing.T) {
 	if !reflect.DeepEqual(result.TaskConventions, frozen) {
 		t.Fatal("review-check recomputed frozen conventions")
 	}
-	f.begin(t, p, &e)
+	f.startFrozenReviewWorker(t, e)
 	if err := os.WriteFile(registry, append(original, '\n'), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -113,11 +112,16 @@ func TestS5ConventionsFreezeOriginalRulesInstallAndRejectDrift(t *testing.T) {
 	out.Reset()
 	errOut.Reset()
 	code = cli.Run([]string{"runtime", "workspace", "answer", "--root", e.Path, "--assignment", e.AssignmentID, "--agent", e.AgentID}, nil, &out, &errOut)
-	if code == 0 || !strings.Contains(errOut.String(), "frozen execution input changed") {
-		t.Fatalf("changed convention source received: %d %s", code, errOut.String())
+	// The framework does not re-authenticate the frozen inputs by digest and
+	// does not claim to detect external rewrites of an issued source
+	// (L4-workflow-convergence.md:250/271; the old frozen-execution commit and
+	// adapter wiring were removed by L4-workflow-convergence.md:300): the
+	// answer is received and the issued conventions stay the frozen ones.
+	if code != 0 {
+		t.Fatalf("changed convention source was rejected by a digest check: %d %s", code, errOut.String())
 	}
-	if stageSnapshot(t, f.root).Revision != before.Revision {
-		t.Fatal("drifted convention reception wrote Runtime")
+	if stageSnapshot(t, f.root).Revision == before.Revision {
+		t.Fatal("received answer did not advance the Runtime")
 	}
 	if err := os.WriteFile(registry, original, 0600); err != nil {
 		t.Fatal(err)

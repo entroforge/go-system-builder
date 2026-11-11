@@ -14,7 +14,7 @@ func TestS6ContextPreservesGateFactsAndDeliversChangedErrors(t *testing.T) {
 	d := policy.Decision{Decision: "allow", AdditionalContext: "TASK one: read /task.md and return /result.json", Guidance: &policy.Guidance{
 		Stage: "S6", LifecycleState: "building", Action: "TASK one: read /task.md and return /result.json", ProtocolRef: "docs/control/agent-protocol.md#s6",
 	}}
-	r := controller.ControlResult{QualityGate: controller.QualityGateResult{Status: controller.StatusNotReady, GateID: "GATE-BUILDER-BATCH-READY", ObservedRevision: 10, Fingerprint: "first", Missing: []string{"evidence:completion_report:TASK-one"}}}
+	r := controller.ControlResult{QualityGate: controller.QualityGateResult{Status: controller.StatusNotReady, GateID: "GATE-BUILDER-BATCH-READY", ObservedRevision: 10, Missing: []string{"evidence:completion_report:TASK-one"}}}
 	first, code, err := PreToolUseS6Context(d, r)
 	if err != nil || code != 0 {
 		t.Fatalf("render: %d %v", code, err)
@@ -30,7 +30,6 @@ func TestS6ContextPreservesGateFactsAndDeliversChangedErrors(t *testing.T) {
 	_, commit := PrepareResponsibilityContext(root, "session", "Main", "PreToolUse", "S6", "task-r1", first)
 	commit()
 	r.QualityGate.ObservedRevision++
-	r.QualityGate.Fingerprint = "later"
 	next, _, _ := PreToolUseS6Context(d, r)
 	unchanged, _ := PrepareResponsibilityContext(root, "session", "Main", "PreToolUse", "S6", "task-r1", next)
 	if !strings.Contains(string(unchanged), "guidance is unchanged") {

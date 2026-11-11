@@ -1,14 +1,16 @@
 package runtime
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/entroforge/go-system-builder/internal/packetbody"
 	"github.com/entroforge/go-system-builder/internal/workpacket"
 )
+
+var errCheckpointPublicationOccupied = errors.New("checkpoint publication path occupied")
 
 func packetBodyReferences(state map[string]any) ([]packetbody.Reference, error) {
 	entities, _ := state["entities"].(map[string]any)
@@ -30,7 +32,15 @@ func packetBodyReferences(state map[string]any) ([]packetbody.Reference, error) 
 }
 
 func checkpointBodyPath(dir string, ref packetbody.Reference) string {
-	return dir + "/packet-bodies/" + ref.SHA256 + ".json"
+	if strings.HasPrefix(ref.Path, packetbody.Directory) {
+		return dir + "/packet-bodies/" + strings.TrimPrefix(ref.Path, packetbody.Directory)
+	}
+	return dir + "/packet-bodies/alternate-root/" + strings.TrimPrefix(ref.Path, ".claude/")
+}
+
+// CheckpointPacketBodyPath is the saved location of an already-issued body.
+func CheckpointPacketBodyPath(dir string, ref packetbody.Reference) string {
+	return checkpointBodyPath(dir, ref)
 }
 
 // Each retained checkpoint owns complete immutable copies of its referenced
@@ -48,15 +58,12 @@ func (s *Store) publishCheckpointPacketBodies(state map[string]any, dir string) 
 		if err != nil {
 			return fmt.Errorf("checkpoint original packet body %s: %w", ref.Path, err)
 		}
-		if err := packetbody.Verify(ref, data); err != nil {
-			return err
-		}
-		copy, err := workpacket.PublishBounded(s.root, checkpointBodyPath(dir, ref), data, packetbody.Limit)
+		created, err := workpacket.PublishNewBounded(s.root, checkpointBodyPath(dir, ref), data, packetbody.Limit)
 		if err != nil {
 			return err
 		}
-		if !bytes.Equal(copy, data) {
-			return errors.New("immutable checkpoint packet body conflict")
+		if !created {
+			return errCheckpointPublicationOccupied
 		}
 	}
 	return nil
@@ -73,9 +80,6 @@ func readCheckpointPacketBodies(root, dir string, state map[string]any) (map[str
 		if err != nil {
 			return nil, fmt.Errorf("checkpoint packet body %s unavailable: %w", ref.Path, err)
 		}
-		if err := packetbody.Verify(ref, data); err != nil {
-			return nil, err
-		}
 		bodies[ref.Path] = data
 	}
 	return bodies, nil
@@ -90,33 +94,42 @@ func withCheckpointPacketBodies(ctx context.Context, bodies map[string][]byte) c
 		if !ok {
 			return nil, fmt.Errorf("checkpoint has no original packet body %s", ref.Path)
 		}
-		return data, packetbody.Verify(ref, data)
+		return data, nil
 	})
 }
 
-// RestoreCheckpointPacketBodies republishes independently verified exact
-// checkpoint bodies before the original recovery Writer installs references.
-// It does not change Runtime, journal, issuance or professional reception.
+// RestoreCheckpointPacketBodies publishes the checkpoint's original bodies
+// at newly owned paths and updates the candidate's references before review.
 func RestoreCheckpointPacketBodies(ctx context.Context, root string, pair CheckpointPair) error {
-	refs, err := packetBodyReferences(pair.State)
-	if err != nil {
-		return err
-	}
-	for _, ref := range refs {
+	entities, _ := pair.State["entities"].(map[string]any)
+	rows, _ := entities["work_packets"].([]any)
+	published := map[string]packetbody.Reference{}
+	for _, raw := range rows {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		data := pair.PacketBodies[ref.Path]
-		if err := packetbody.Verify(ref, data); err != nil {
-			return err
-		}
-		existing, err := workpacket.PublishBounded(root, ref.Path, data, packetbody.Limit)
+		row, _ := raw.(map[string]any)
+		ref, external, err := packetbody.ReferenceFromIndex(row)
 		if err != nil {
 			return err
 		}
-		if !bytes.Equal(existing, data) {
-			return fmt.Errorf("original packet body restore conflict: %s", ref.Path)
+		if !external {
+			continue
 		}
+		actual, ok := published[ref.Path]
+		if !ok {
+			data, exists := pair.PacketBodies[ref.Path]
+			if !exists {
+				return fmt.Errorf("checkpoint has no original packet body %s", ref.Path)
+			}
+			packetID, _ := row["packet_id"].(string)
+			actual, err = packetbody.PublishOriginal(ctx, root, packetID, data)
+			if err != nil {
+				return err
+			}
+			published[ref.Path] = actual
+		}
+		row["body_ref"] = map[string]any{"format": actual.Format, "path": actual.Path}
 	}
 	return nil
 }

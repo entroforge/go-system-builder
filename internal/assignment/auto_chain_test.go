@@ -11,7 +11,6 @@ import (
 
 	"github.com/entroforge/go-system-builder/internal/assignment"
 	"github.com/entroforge/go-system-builder/internal/schema"
-	"github.com/entroforge/go-system-builder/internal/transition"
 )
 
 // planCheckpointWorkgroupState builds a minimal runtime + a copy of the
@@ -196,7 +195,7 @@ func TestAutoAdvanceToWorkingChainsPlanCheckpointAgent(t *testing.T) {
 		t.Fatalf("register workgroup: %v", err)
 	}
 
-	planPath, _ := writeAutoChainPlanReport(t, filepath.Dir(statePath), 6)
+	planPath := writeAutoChainPlanReport(t, filepath.Dir(statePath), 6)
 
 	outcome, err := assignment.AutoAdvanceToWorking(assignment.AutoChainInput{
 		Root:             root,
@@ -271,7 +270,7 @@ func TestAutoAdvanceToWorkingSkipsPlanApprovalRequired(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("register workgroup: %v", err)
 	}
-	planPath, _ := writeAutoChainPlanReport(t, filepath.Dir(statePath), 6)
+	planPath := writeAutoChainPlanReport(t, filepath.Dir(statePath), 6)
 	outcome, err := assignment.AutoAdvanceToWorking(assignment.AutoChainInput{
 		Root:             root,
 		StatePath:        statePath,
@@ -310,7 +309,7 @@ func TestAgentBeginFallbackMatchesAutoChain(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("register workgroup: %v", err)
 	}
-	planPath, _ := writeAutoChainPlanReport(t, filepath.Dir(statePath), 6)
+	planPath := writeAutoChainPlanReport(t, filepath.Dir(statePath), 6)
 	snap, outcome, err := assignment.AgentBegin(root, statePath, journalPath, assignment.AgentBeginRequest{
 		ExpectedRevision: -1,
 		AgentID:          agentID,
@@ -347,7 +346,7 @@ func stateAfterAutoChain(t *testing.T, statePath string) map[string]any {
 // task_id, runtime_id, and team_id match the auto-chain test fixtures
 // (which use the delivery-manifest's first agent: agent-ver-req-gap on
 // TASK-012 under REQ-002).
-func writeAutoChainPlanReport(t *testing.T, dir string, revision int) (string, string) {
+func writeAutoChainPlanReport(t *testing.T, dir string, revision int) string {
 	t.Helper()
 	message := map[string]any{
 		"schema_version": "1.0.0", "message_type": "plan_report",
@@ -374,11 +373,7 @@ func writeAutoChainPlanReport(t *testing.T, dir string, revision int) (string, s
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	fileBytes, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return path, transition.SHA256(fileBytes)
+	return path
 }
 
 // Reference schema loader (kept for parity with the production path).
@@ -433,7 +428,7 @@ func TestAgentBeginSynthesizesEnvelopeForLegacyAgent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	planPath, _ := writeAutoChainPlanReport(t, filepath.Dir(statePath), 6)
+	planPath := writeAutoChainPlanReport(t, filepath.Dir(statePath), 6)
 	// The shared fixture pins TASK-012/workgroup-delivery-round-1; rebind the
 	// plan to this test's task/team.
 	planData, err := os.ReadFile(planPath)
@@ -492,7 +487,7 @@ func TestAgentBeginResumesMidChainAfterFailure(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("register workgroup: %v", err)
 	}
-	planPath, _ := writeAutoChainPlanReport(t, filepath.Dir(statePath), 6)
+	planPath := writeAutoChainPlanReport(t, filepath.Dir(statePath), 6)
 	planData, err := os.ReadFile(planPath)
 	if err != nil {
 		t.Fatal(err)

@@ -28,12 +28,11 @@
   "properties": {
     "workspace": {
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "main_root",
         "common_dir",
         "integration_branch",
-        "bound_head",
         "binding_version",
         "executions"
       ],
@@ -50,10 +49,6 @@
           "type": "string",
           "minLength": 1
         },
-        "bound_head": {
-          "type": "string",
-          "minLength": 1
-        },
         "binding_version": {
           "const": 1
         },
@@ -61,7 +56,7 @@
           "type": "object",
           "additionalProperties": {
             "type": "object",
-            "additionalProperties": false,
+            "additionalProperties": true,
             "dependentRequired": {
               "work_packet_id": [
                 "purpose",
@@ -120,11 +115,6 @@
                     "anyOf": [
                       {
                         "required": [
-                          "bootstrap_sha256"
-                        ]
-                      },
-                      {
-                        "required": [
                           "platform_session_id"
                         ]
                       }
@@ -140,7 +130,6 @@
               "worktree_path",
               "branch",
               "target_branch",
-              "base_commit",
               "baseline_generation",
               "execution_generation",
               "status",
@@ -187,10 +176,6 @@
                 "type": "string",
                 "minLength": 1
               },
-              "base_commit": {
-                "type": "string",
-                "minLength": 1
-              },
               "baseline_generation": {
                 "type": "integer",
                 "minimum": 0
@@ -222,8 +207,7 @@
               "inputs": {
                 "type": "object",
                 "additionalProperties": {
-                  "type": "string",
-                  "pattern": "^[a-f0-9]{64}$"
+                  "type": "string"
                 }
               },
               "platform_session_id": {
@@ -237,17 +221,9 @@
                   "main"
                 ]
               },
-              "bootstrap_sha256": {
-                "type": "string",
-                "pattern": "^[a-f0-9]{64}$"
-              },
               "delivery_ref": {
                 "type": "string",
                 "minLength": 1
-              },
-              "delivery_sha256": {
-                "type": "string",
-                "pattern": "^[a-f0-9]{64}$"
               },
               "rework_ref": {
                 "type": "string",
@@ -268,7 +244,7 @@
               },
               "assignment_record": {
                 "type": "object",
-                "additionalProperties": false,
+                "additionalProperties": true,
                 "required": [
                   "runtime_id",
                   "baseline_generation",
@@ -294,10 +270,6 @@
                   }
                 }
               },
-              "assignment_record_sha256": {
-                "type": "string",
-                "pattern": "^[a-f0-9]{64}$"
-              },
               "worker_checks": {
                 "type": "array",
                 "maxItems": 64,
@@ -310,7 +282,7 @@
                 "maxItems": 1024,
                 "items": {
                   "type": "object",
-                  "additionalProperties": false,
+                  "additionalProperties": true,
                   "required": [
                     "worker_check_index",
                     "receipt"
@@ -351,7 +323,7 @@
       "pattern": "^loop-[A-Za-z0-9._-]+$"
     },
     "definition": {
-      "$ref": "#/$defs/fingerprintedReference"
+      "$ref": "#/$defs/frameworkReference"
     },
     "revision": {
       "type": "integer",
@@ -487,20 +459,17 @@
           "maxItems": 128,
           "items": {
             "type": "object",
-            "additionalProperties": false,
+            "additionalProperties": true,
             "required": [
               "contract",
               "runtime_id",
               "baseline_generation",
               "project_root",
               "development_branch",
-              "start_commit",
               "transition_event_id",
               "transition_after_revision",
               "transition_sequence",
-              "task_set",
-              "task_set_sha256",
-              "receipt_sha256"
+              "task_set"
             ],
             "properties": {
               "contract": {
@@ -522,10 +491,6 @@
                 "type": "string",
                 "minLength": 1
               },
-              "start_commit": {
-                "type": "string",
-                "pattern": "^([0-9a-f]{40}|[0-9a-f]{64})$"
-              },
               "transition_event_id": {
                 "type": "string",
                 "minLength": 1
@@ -543,12 +508,11 @@
                 "minItems": 1,
                 "items": {
                   "type": "object",
-                  "additionalProperties": false,
+                  "additionalProperties": true,
                   "required": [
                     "task_id",
                     "path",
-                    "version",
-                    "sha256"
+                    "version"
                   ],
                   "properties": {
                     "task_id": {
@@ -562,21 +526,9 @@
                     "version": {
                       "type": "string",
                       "minLength": 1
-                    },
-                    "sha256": {
-                      "type": "string",
-                      "pattern": "^[0-9a-f]{64}$"
                     }
                   }
                 }
-              },
-              "task_set_sha256": {
-                "type": "string",
-                "pattern": "^[0-9a-f]{64}$"
-              },
-              "receipt_sha256": {
-                "type": "string",
-                "pattern": "^[0-9a-f]{64}$"
               }
             }
           }
@@ -585,11 +537,8 @@
     },
     "review": {
       "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "round",
-        "clean_round"
-      ],
+      "additionalProperties": true,
+      "required": [],
       "properties": {
         "round": {
           "type": "integer",
@@ -607,11 +556,10 @@
             "object",
             "null"
           ],
-          "description": "The transition that opened the active S7 round. TR-012 entries carry the exact repair handoff and change_impact evidence references used to freeze the post-repair baseline.",
-          "additionalProperties": false,
+          "description": "Original S7 entry relationship. Historical entries retain round; new entries persist system-owned plan_id before preparing the original questionnaire. No numeric ordering or count is implied.",
+          "additionalProperties": true,
           "required": [
             "transition_id",
-            "round",
             "baseline_generation",
             "change_impact_ref"
           ],
@@ -642,50 +590,34 @@
               ],
               "minLength": 1
             },
-            "repair_handoff_sha256": {
-              "type": [
-                "string",
-                "null"
-              ],
-              "pattern": "^[a-f0-9]{64}$"
-            },
-            "implementation_baseline_digest": {
-              "type": [
-                "string",
-                "null"
-              ],
-              "pattern": "^[a-f0-9]{64}$"
-            },
+
             "review_plan_seed_ref": {
               "type": [
                 "string",
                 "null"
               ]
             },
-            "review_plan_seed_sha256": {
-              "type": [
-                "string",
-                "null"
-              ],
-              "pattern": "^[a-f0-9]{64}$"
+
+            "plan_id": {
+              "type": "string",
+              "minLength": 1,
+              "description": "System-owned original ReviewPlan identity saved with the S7 entry transaction. It locates the original responsibility and is not an author field or quality gate."
             }
           }
         },
         "plan": {
-          "description": "The registered S7 ReviewPlan pointer (L3-S7 §3.2). Claim/assignment content lives in the pinned plan file; the runtime holds identity, hash and status under CAS.",
+          "description": "The original S7 ReviewPlan pointer. Professional content remains in its plan file; Runtime retains identity, path and status. Legacy machine fields are data only.",
           "oneOf": [
             {
               "type": "null"
             },
             {
               "type": "object",
-              "additionalProperties": false,
+              "additionalProperties": true,
               "required": [
                 "plan_id",
                 "path",
-                "sha256",
                 "revision",
-                "review_round",
                 "status",
                 "e2e_coverage_state",
                 "submitted_at"
@@ -697,10 +629,7 @@
                 "path": {
                   "type": "string"
                 },
-                "sha256": {
-                  "type": "string",
-                  "pattern": "^[a-f0-9]{64}$"
-                },
+
                 "revision": {
                   "type": "integer",
                   "minimum": 1
@@ -722,6 +651,7 @@
                 },
                 "e2e_coverage_state": {
                   "enum": [
+                    "",
                     "cold_start",
                     "regression_available",
                     "not_applicable"
@@ -733,14 +663,7 @@
                     "null"
                   ]
                 },
-                "verification_artifact_digest": {
-                  "type": [
-                    "string",
-                    "null"
-                  ],
-                  "pattern": "^[a-f0-9]{64}$",
-                  "description": "sha256 over the workspace's relative-path:file-hash lines at plan registration (E2E cold_start only); the seal/clean close recomputes and rejects drift."
-                },
+
                 "submitted_at": {
                   "type": "string"
                 }
@@ -763,6 +686,7 @@
             "properties": {
               "lens": {
                 "enum": [
+                  "",
                   "delivery",
                   "qa",
                   "e2e"
@@ -770,6 +694,7 @@
               },
               "applicability": {
                 "enum": [
+                  "",
                   "required",
                   "not_applicable"
                 ]
@@ -807,7 +732,7 @@
           "type": "object",
           "additionalProperties": {
             "type": "object",
-            "additionalProperties": false,
+            "additionalProperties": true,
             "required": [
               "lens",
               "claim_ids",
@@ -856,19 +781,13 @@
                   },
                   {
                     "type": "object",
-                    "additionalProperties": false,
+                    "additionalProperties": true,
                     "dependentRequired": {
                       "packet_id": [
-                        "packet_sha256",
-                        "execution_root"
-                      ],
-                      "packet_sha256": [
-                        "packet_id",
                         "execution_root"
                       ],
                       "execution_root": [
-                        "packet_id",
-                        "packet_sha256"
+                        "packet_id"
                       ]
                     },
                     "required": [
@@ -878,19 +797,11 @@
                       "baseline_generation",
                       "review_plan_id",
                       "review_plan_ref",
-                      "review_plan_sha256",
                       "review_plan_revision",
-                      "review_round",
                       "assignment_id",
                       "assignment_revision",
-                      "assignment_sha256",
                       "producer_agent_id",
-                      "subject_digest",
-                      "verification_artifact_digest",
-                      "answer_sha256",
-                      "effective_answer_sha256",
                       "result_ref",
-                      "result_sha256",
                       "event_id",
                       "idempotency_key",
                       "accepted_after_revision",
@@ -920,10 +831,7 @@
                         "type": "string",
                         "minLength": 1
                       },
-                      "review_plan_sha256": {
-                        "type": "string",
-                        "pattern": "^[a-f0-9]{64}$"
-                      },
+
                       "review_plan_revision": {
                         "type": "integer",
                         "minimum": 1
@@ -940,41 +848,17 @@
                         "type": "integer",
                         "minimum": 1
                       },
-                      "assignment_sha256": {
-                        "type": "string",
-                        "pattern": "^[a-f0-9]{64}$"
-                      },
+
                       "producer_agent_id": {
                         "type": "string",
                         "minLength": 1
                       },
-                      "subject_digest": {
-                        "type": "string",
-                        "pattern": "^[a-f0-9]{64}$"
-                      },
-                      "verification_artifact_digest": {
-                        "type": [
-                          "string",
-                          "null"
-                        ],
-                        "pattern": "^[a-f0-9]{64}$"
-                      },
-                      "answer_sha256": {
-                        "type": "string",
-                        "pattern": "^[a-f0-9]{64}$"
-                      },
-                      "effective_answer_sha256": {
-                        "type": "string",
-                        "pattern": "^[a-f0-9]{64}$"
-                      },
+
                       "packet_id": {
                         "type": "string",
-                        "pattern": "^packet-[a-f0-9]{64}$"
+                        "pattern": "^\\S+$"
                       },
-                      "packet_sha256": {
-                        "type": "string",
-                        "pattern": "^[a-f0-9]{64}$"
-                      },
+
                       "execution_root": {
                         "type": "string",
                         "minLength": 1
@@ -983,10 +867,7 @@
                         "type": "string",
                         "minLength": 1
                       },
-                      "result_sha256": {
-                        "type": "string",
-                        "pattern": "^[a-f0-9]{64}$"
-                      },
+
                       "event_id": {
                         "type": "string",
                         "minLength": 1
@@ -1028,14 +909,7 @@
                 ],
                 "description": "UTC timestamp at which the Assignment entered the explicit S7 blocker state."
               },
-              "artifact_digest": {
-                "type": [
-                  "string",
-                  "null"
-                ],
-                "pattern": "^[a-f0-9]{64}$",
-                "description": "The verification workspace digest the consumed E2E result ran against (L3-S7 §10.1.6)."
-              },
+
               "resource_locks": {
                 "type": [
                   "array",
@@ -1058,65 +932,6 @@
             }
           }
         },
-        "observation_batch": {
-          "description": "The sealed S7 -> S8 handoff pointer (L3-S7 §3.7); null while the round is still discovering.",
-          "oneOf": [
-            {
-              "type": "null"
-            },
-            {
-              "type": "object",
-              "additionalProperties": false,
-              "required": [
-                "batch_id",
-                "path",
-                "sha256",
-                "finding_ids",
-                "drain_policy",
-                "sealed_at"
-              ],
-              "properties": {
-                "batch_id": {
-                  "type": "string"
-                },
-                "path": {
-                  "type": "string"
-                },
-                "sha256": {
-                  "type": "string",
-                  "pattern": "^[a-f0-9]{64}$"
-                },
-                "finding_ids": {
-                  "type": "array",
-                  "items": {
-                    "type": "string"
-                  }
-                },
-                "drain_policy": {
-                  "enum": [
-                    "complete_required_claims",
-                    "immediate_stop"
-                  ]
-                },
-                "sealed_at": {
-                  "type": "string"
-                }
-              }
-            }
-          ]
-        },
-        "investigation_baseline_drift": {
-          "description": "RC-18 S8-H3: the latest baseline-digest drift warning from investigation Case revisions, or null while the Case baseline matches the frozen ReviewPlan subjects. Read-only projection for `runtime investigation status`; the Case artifact's pinned baseline_digest is never rewritten.",
-          "oneOf": [
-            {
-              "type": "null"
-            },
-            {
-              "type": "string",
-              "minLength": 1
-            }
-          ]
-        },
         "investigation": {
           "description": "The S8 InvestigationCase intake pointer. The Case artifact is the authority; this runtime field is only its CAS-pinned identity and status projection.",
           "oneOf": [
@@ -1125,11 +940,10 @@
             },
             {
               "type": "object",
-              "additionalProperties": false,
+              "additionalProperties": true,
               "required": [
                 "case_id",
                 "path",
-                "sha256",
                 "revision",
                 "status",
                 "source_finding_ids",
@@ -1144,10 +958,7 @@
                   "type": "string",
                   "minLength": 1
                 },
-                "sha256": {
-                  "type": "string",
-                  "pattern": "^[a-f0-9]{64}$"
-                },
+
                 "revision": {
                   "type": "integer",
                   "minimum": 1
@@ -1209,10 +1020,6 @@
                     "minLength": 1
                   }
                 },
-                "observation_batch_id": {
-                  "type": "string",
-                  "minLength": 1
-                },
                 "updated_at": {
                   "type": "string",
                   "minLength": 1
@@ -1221,10 +1028,7 @@
                   "type": "string",
                   "minLength": 1
                 },
-                "repair_contract_sha256": {
-                  "type": "string",
-                  "pattern": "^[a-f0-9]{64}$"
-                },
+
                 "canonical_case_id": {
                   "type": [
                     "string",
@@ -1238,13 +1042,6 @@
                     "null"
                   ],
                   "minLength": 1
-                },
-                "canonical_case_sha256": {
-                  "type": [
-                    "string",
-                    "null"
-                  ],
-                  "pattern": "^[a-f0-9]{64}$"
                 }
               }
             }
@@ -1258,21 +1055,23 @@
             },
             {
               "type": "object",
-              "additionalProperties": false,
+              "additionalProperties": true,
               "required": [
                 "session_id",
                 "case_id",
                 "contract_id",
                 "contract_ref",
-                "contract_sha256",
                 "path",
-                "sha256",
                 "revision",
                 "status",
                 "updated_at",
                 "next_action"
               ],
               "properties": {
+                "questionnaire_root": {
+                  "type": "string",
+                  "minLength": 1
+                },
                 "session_id": {
                   "type": "string",
                   "pattern": "^repair-session-[A-Za-z0-9._-]+$"
@@ -1289,18 +1088,12 @@
                   "type": "string",
                   "minLength": 1
                 },
-                "contract_sha256": {
-                  "type": "string",
-                  "pattern": "^[a-f0-9]{64}$"
-                },
+
                 "path": {
                   "type": "string",
                   "minLength": 1
                 },
-                "sha256": {
-                  "type": "string",
-                  "pattern": "^[a-f0-9]{64}$"
-                },
+
                 "revision": {
                   "type": "integer",
                   "minimum": 1
@@ -1325,43 +1118,26 @@
                     "null"
                   ]
                 },
-                "plan_sha256": {
-                  "type": [
-                    "string",
-                    "null"
-                  ],
-                  "pattern": "^[a-f0-9]{64}$"
-                },
+
                 "plan_report_ref": {
                   "type": [
                     "string",
                     "null"
                   ]
                 },
-                "plan_report_sha256": {
-                  "type": [
-                    "string",
-                    "null"
-                  ],
-                  "pattern": "^[a-f0-9]{64}$"
-                },
+
                 "plan_report_refs": {
                   "type": "array",
                   "items": {
                     "type": "object",
-                    "additionalProperties": false,
+                    "additionalProperties": true,
                     "required": [
-                      "path",
-                      "sha256"
+                      "path"
                     ],
                     "properties": {
                       "path": {
                         "type": "string",
                         "minLength": 1
-                      },
-                      "sha256": {
-                        "type": "string",
-                        "pattern": "^[a-f0-9]{64}$"
                       }
                     }
                   },
@@ -1387,30 +1163,19 @@
                     "null"
                   ]
                 },
-                "result_sha256": {
-                  "type": [
-                    "string",
-                    "null"
-                  ],
-                  "pattern": "^[a-f0-9]{64}$"
-                },
+
                 "result_refs": {
                   "type": "array",
                   "items": {
                     "type": "object",
-                    "additionalProperties": false,
+                    "additionalProperties": true,
                     "required": [
-                      "path",
-                      "sha256"
+                      "path"
                     ],
                     "properties": {
                       "path": {
                         "type": "string",
                         "minLength": 1
-                      },
-                      "sha256": {
-                        "type": "string",
-                        "pattern": "^[a-f0-9]{64}$"
                       }
                     }
                   },
@@ -1422,26 +1187,14 @@
                     "null"
                   ]
                 },
-                "changeset_sha256": {
-                  "type": [
-                    "string",
-                    "null"
-                  ],
-                  "pattern": "^[a-f0-9]{64}$"
-                },
+
                 "impact_ref": {
                   "type": [
                     "string",
                     "null"
                   ]
                 },
-                "impact_sha256": {
-                  "type": [
-                    "string",
-                    "null"
-                  ],
-                  "pattern": "^[a-f0-9]{64}$"
-                },
+
                 "targeted_reverification_refs": {
                   "type": "array",
                   "items": {
@@ -1454,19 +1207,21 @@
                   "type": "array",
                   "items": {
                     "type": "object",
-                    "additionalProperties": false,
+                    "additionalProperties": true,
                     "required": [
-                      "path",
-                      "sha256"
+                      "path"
                     ],
                     "properties": {
                       "path": {
                         "type": "string",
                         "minLength": 1
                       },
-                      "sha256": {
-                        "type": "string",
-                        "pattern": "^[a-f0-9]{64}$"
+
+                      "performing_assignment_id": {
+                        "type": "string"
+                      },
+                      "result": {
+                        "type": "string"
                       }
                     }
                   },
@@ -1478,13 +1233,7 @@
                     "null"
                   ]
                 },
-                "handoff_sha256": {
-                  "type": [
-                    "string",
-                    "null"
-                  ],
-                  "pattern": "^[a-f0-9]{64}$"
-                },
+
                 "failure_route": {
                   "type": [
                     "string",
@@ -1526,28 +1275,7 @@
                     "null"
                   ]
                 },
-                "review_plan_seed_sha256": {
-                  "type": [
-                    "string",
-                    "null"
-                  ],
-                  "pattern": "^[a-f0-9]{64}$"
-                },
-                "implementation_baseline_digest": {
-                  "type": [
-                    "string",
-                    "null"
-                  ],
-                  "pattern": "^[a-f0-9]{64}$"
-                },
-                "authority_fingerprint": {
-                  "description": "RC-09 (S9-4): repository baseline digest captured when each RepairSession opened, keyed by session id. Repair commits re-verify the live digest against the pinned fingerprint and fail stale on drift.",
-                  "type": "object",
-                  "additionalProperties": {
-                    "type": "string",
-                    "pattern": "^[a-f0-9]{64}$"
-                  }
-                },
+
                 "required_reverification_ids": {
                   "description": "RC-09 (S9-6): targeted reverification ids the ChangeImpact declared as mandatory. Repair handoff is blocked until every id resolves to a committed targeted_reverification artifact.",
                   "type": "array",
@@ -1583,18 +1311,15 @@
           "additionalProperties": false,
           "required": [
             "max_attempts_per_bug",
-            "max_same_contract_failures",
-            "max_full_review_rounds"
+            "max_same_contract_failures"
           ],
           "properties": {
             "bound_policy": {
               "type": "object",
-              "additionalProperties": false,
+              "additionalProperties": true,
               "required": [
                 "path",
-                "sha256",
                 "approved_by",
-                "req_sha256",
                 "runtime_id",
                 "baseline_generation"
               ],
@@ -1603,18 +1328,12 @@
                   "type": "string",
                   "minLength": 1
                 },
-                "sha256": {
-                  "type": "string",
-                  "pattern": "^[a-f0-9]{64}$"
-                },
+
                 "approved_by": {
                   "type": "string",
                   "minLength": 1
                 },
-                "req_sha256": {
-                  "type": "string",
-                  "pattern": "^[a-f0-9]{64}$"
-                },
+
                 "runtime_id": {
                   "type": "string",
                   "minLength": 1
@@ -1643,81 +1362,14 @@
               "default": 2
             },
             "max_investigation_reentries": {
-              "description": "Maximum consecutive S8 investigate_more route registrations; does not limit actual investigation work. Absent legacy values use the independent S8 default, never the S7 review-round limit.",
+              "description": "Legacy numeric configuration retained for reading issued Runtime data. It does not establish a user constraint, remaining allowance or automatic approval requirement.",
               "type": "integer",
-              "minimum": 1,
-              "default": 5
+              "minimum": 1
             },
             "max_full_review_rounds": {
               "type": "integer",
               "minimum": 1,
-              "default": 5
-            },
-            "last_budget_decision": {
-              "type": [
-                "object",
-                "null"
-              ],
-              "additionalProperties": false,
-              "required": [
-                "decision",
-                "evidence_id",
-                "evidence_path",
-                "review_round",
-                "previous_max_full_review_rounds",
-                "new_max_full_review_rounds",
-                "authorized_by",
-                "reason",
-                "decided_at",
-                "committed_revision"
-              ],
-              "properties": {
-                "decision": {
-                  "enum": [
-                    "increase_budget",
-                    "return_to_governance"
-                  ]
-                },
-                "evidence_id": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "evidence_path": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "review_round": {
-                  "type": "integer",
-                  "minimum": 1
-                },
-                "previous_max_full_review_rounds": {
-                  "type": "integer",
-                  "minimum": 1
-                },
-                "new_max_full_review_rounds": {
-                  "type": [
-                    "integer",
-                    "null"
-                  ],
-                  "minimum": 1
-                },
-                "authorized_by": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "reason": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "decided_at": {
-                  "type": "string",
-                  "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?Z$"
-                },
-                "committed_revision": {
-                  "type": "integer",
-                  "minimum": 1
-                }
-              }
+              "description": "Legacy numeric configuration retained for reading issued Runtime data. It does not establish a user constraint, remaining allowance or automatic approval requirement."
             }
           }
         },
@@ -1765,7 +1417,7 @@
       ],
       "properties": {
         "policy_ref": {
-          "$ref": "#/$defs/fingerprintedReference"
+          "$ref": "#/$defs/frameworkReference"
         },
         "mode": {
           "enum": [
@@ -2112,13 +1764,12 @@
         },
         "quality_gate": {
           "type": "object",
-          "additionalProperties": false,
+          "additionalProperties": true,
           "required": [
             "status",
             "gate_id",
             "candidate_transition",
             "observed_revision",
-            "fingerprint",
             "missing",
             "evidence_refs",
             "transition_committed",
@@ -2144,9 +1795,7 @@
               "type": "integer",
               "minimum": 0
             },
-            "fingerprint": {
-              "type": "string"
-            },
+
             "missing": {
               "type": "array",
               "items": {
@@ -2171,11 +1820,10 @@
     },
     "changeRecord": {
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "id",
         "req_ref",
-        "req_sha256",
         "summary",
         "class",
         "risk",
@@ -2196,10 +1844,7 @@
           "type": "string",
           "minLength": 1
         },
-        "req_sha256": {
-          "type": "string",
-          "pattern": "^[a-f0-9]{64}$"
-        },
+
         "summary": {
           "type": "string",
           "minLength": 1
@@ -2442,28 +2087,24 @@
       "additionalProperties": false,
       "required": [
         "branch",
-        "base_sha",
         "integration_target"
       ],
       "properties": {
         "branch": {
           "type": "string"
         },
-        "base_sha": {
-          "type": "string"
-        },
+        "base_sha": {},
         "integration_target": {
           "type": "string"
         }
       }
     },
-    "fingerprintedReference": {
+    "frameworkReference": {
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "path",
-        "version",
-        "sha256"
+        "version"
       ],
       "properties": {
         "path": {
@@ -2473,20 +2114,15 @@
         "version": {
           "type": "string",
           "minLength": 1
-        },
-        "sha256": {
-          "type": "string",
-          "pattern": "^[a-f0-9]{64}$"
         }
       }
     },
     "boundReq": {
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "path",
         "version",
-        "sha256",
         "id",
         "status",
         "approved_by",
@@ -2499,8 +2135,7 @@
           "required": [
             "project_root",
             "dev_branch",
-            "release_upstream",
-            "bound_commit"
+            "release_upstream"
           ],
           "properties": {
             "project_root": {
@@ -2514,10 +2149,6 @@
             "release_upstream": {
               "type": "string",
               "minLength": 1
-            },
-            "bound_commit": {
-              "type": "string",
-              "minLength": 1
             }
           }
         },
@@ -2529,10 +2160,7 @@
           "type": "string",
           "minLength": 1
         },
-        "sha256": {
-          "type": "string",
-          "pattern": "^[a-f0-9]{64}$"
-        },
+
         "id": {
           "type": "string",
           "pattern": "^REQ-[0-9]{3,}$"
@@ -2568,7 +2196,7 @@
     },
     "bindingReceipt": {
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "event_id",
         "transition_id",
@@ -2577,8 +2205,6 @@
         "occurred_at",
         "source_runtime_id",
         "source_revision",
-        "source_state_sha256",
-        "source_journal_sha256",
         "target_runtime_id",
         "target_revision"
       ],
@@ -2611,14 +2237,6 @@
           "type": "integer",
           "minimum": 0
         },
-        "source_state_sha256": {
-          "type": "string",
-          "pattern": "^[a-f0-9]{64}$"
-        },
-        "source_journal_sha256": {
-          "type": "string",
-          "pattern": "^[a-f0-9]{64}$"
-        },
         "target_runtime_id": {
           "type": "string",
           "pattern": "^loop-REQ-[0-9]{3,}$"
@@ -2631,13 +2249,12 @@
     },
     "documentReference": {
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "id",
         "kind",
         "path",
         "version",
-        "sha256",
         "status",
         "generation"
       ],
@@ -2673,10 +2290,7 @@
           "type": "string",
           "minLength": 1
         },
-        "sha256": {
-          "type": "string",
-          "pattern": "^[a-f0-9]{64}$"
-        },
+
         "status": {
           "type": "string",
           "minLength": 1
@@ -2831,13 +2445,12 @@
         },
         "context_binding": {
           "type": "object",
-          "additionalProperties": false,
+          "additionalProperties": true,
           "required": [
             "version",
             "generation",
             "context_ref",
             "profile_version",
-            "profile_sha256",
             "mode"
           ],
           "properties": {
@@ -2850,19 +2463,14 @@
             },
             "context_ref": {
               "type": "object",
-              "additionalProperties": false,
+              "additionalProperties": true,
               "required": [
-                "path",
-                "sha256"
+                "path"
               ],
               "properties": {
                 "path": {
                   "type": "string",
                   "minLength": 1
-                },
-                "sha256": {
-                  "type": "string",
-                  "pattern": "^[a-f0-9]{64}$"
                 }
               }
             },
@@ -2870,10 +2478,7 @@
               "type": "string",
               "minLength": 1
             },
-            "profile_sha256": {
-              "type": "string",
-              "pattern": "^[a-f0-9]{64}$"
-            },
+
             "mode": {
               "enum": [
                 "shadow",
@@ -2904,19 +2509,12 @@
               "checkout",
               "source_branch",
               "target_branch",
-              "source_head",
-              "profile_digest",
-              "record_sha256",
-              "native_context_sha256",
-              "source_snapshot_sha256",
               "check_index",
               "record",
               "baseline_generation",
               "execution_generation",
               "native_context_generation",
-              "tool_receipt",
-              "activation_ref",
-              "activation_sha256"
+              "tool_receipt"
             ],
             "properties": {
               "command": {
@@ -2951,26 +2549,6 @@
                 "type": "string",
                 "minLength": 1
               },
-              "source_head": {
-                "type": "string",
-                "minLength": 1
-              },
-              "profile_digest": {
-                "type": "string",
-                "pattern": "^[a-f0-9]{64}$"
-              },
-              "record_sha256": {
-                "type": "string",
-                "pattern": "^[a-f0-9]{64}$"
-              },
-              "native_context_sha256": {
-                "type": "string",
-                "pattern": "^[a-f0-9]{64}$"
-              },
-              "source_snapshot_sha256": {
-                "type": "string",
-                "pattern": "^[a-f0-9]{64}$"
-              },
               "check_index": {
                 "type": "integer",
                 "minimum": 0,
@@ -2996,10 +2574,6 @@
               "activation_ref": {
                 "type": "string",
                 "minLength": 1
-              },
-              "activation_sha256": {
-                "type": "string",
-                "pattern": "^[a-f0-9]{64}$"
               }
             }
           }
@@ -3009,46 +2583,29 @@
           "maxItems": 1024,
           "items": {
             "type": "object",
-            "additionalProperties": false,
+            "additionalProperties": true,
             "required": [
               "record",
-              "record_sha256",
               "submission_key",
-              "answer_digest",
-              "tool_closure_digest",
               "result_ref",
-              "result_sha256",
               "result_revision"
             ],
             "properties": {
               "record": {
                 "$ref": "#/$defs/s6_record_reference"
               },
-              "record_sha256": {
-                "type": "string",
-                "pattern": "^[a-f0-9]{64}$"
-              },
+
               "submission_key": {
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 1024
               },
-              "answer_digest": {
-                "type": "string",
-                "pattern": "^[a-f0-9]{64}$"
-              },
-              "tool_closure_digest": {
-                "type": "string",
-                "pattern": "^(|[a-f0-9]{64})$"
-              },
+
               "result_ref": {
                 "type": "string",
                 "minLength": 1
               },
-              "result_sha256": {
-                "type": "string",
-                "pattern": "^[a-f0-9]{64}$"
-              },
+
               "result_revision": {
                 "type": "integer",
                 "minimum": 1
@@ -3060,12 +2617,11 @@
     },
     "task": {
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "id",
         "state",
         "path",
-        "sha256",
         "owner_agent_ids"
       ],
       "properties": {
@@ -3089,10 +2645,7 @@
           "type": "string",
           "minLength": 1
         },
-        "sha256": {
-          "type": "string",
-          "pattern": "^[a-f0-9]{64}$"
-        },
+
         "owner_agent_ids": {
           "type": "array",
           "uniqueItems": true,
@@ -3132,18 +2685,16 @@
     },
     "findingEntity": {
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "finding_id",
         "path",
-        "sha256",
         "claim_id",
         "assignment_id",
         "lens",
         "severity",
         "observation_mode",
         "original_finder",
-        "review_round",
         "created_at"
       ],
       "properties": {
@@ -3155,10 +2706,7 @@
           "type": "string",
           "minLength": 1
         },
-        "sha256": {
-          "type": "string",
-          "pattern": "^[a-f0-9]{64}$"
-        },
+
         "claim_id": {
           "type": "string"
         },
@@ -3197,24 +2745,29 @@
           "type": "string"
         },
         "review_round": {
-          "type": "integer",
+          "type": [
+            "integer",
+            "null"
+          ],
           "minimum": 1
         },
         "created_at": {
           "type": "string"
+        },
+        "review_plan_id": {
+          "type": "string",
+          "minLength": 1
         }
       }
     },
     "findingSupplementEntity": {
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "supplement_id",
         "supplements_finding_id",
         "author",
         "path",
-        "sha256",
-        "review_round",
         "baseline_generation",
         "created_at",
         "appended_at"
@@ -3242,12 +2795,12 @@
           "type": "string",
           "minLength": 1
         },
-        "sha256": {
-          "type": "string",
-          "pattern": "^[a-f0-9]{64}$"
-        },
+
         "review_round": {
-          "type": "integer",
+          "type": [
+            "integer",
+            "null"
+          ],
           "minimum": 1
         },
         "baseline_generation": {
@@ -3267,6 +2820,10 @@
         },
         "appended_at": {
           "type": "string"
+        },
+        "review_plan_id": {
+          "type": "string",
+          "minLength": 1
         }
       }
     },
@@ -3377,7 +2934,7 @@
     },
     "team": {
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "dependentRequired": {
         "packet_stage_entry": [
           "packet_generation"
@@ -3393,8 +2950,7 @@
         "status",
         "manifest_ref",
         "responsibility_ids",
-        "agent_ids",
-        "review_round"
+        "agent_ids"
       ],
       "properties": {
         "packet_stage_entry": {
@@ -3437,10 +2993,7 @@
           "type": "string",
           "minLength": 1
         },
-        "manifest_sha256": {
-          "type": "string",
-          "pattern": "^[a-f0-9]{64}$"
-        },
+
         "responsibility_ids": {
           "type": "array",
           "uniqueItems": true,
@@ -3455,19 +3008,12 @@
           "items": {
             "type": "string"
           }
-        },
-        "review_round": {
-          "type": [
-            "integer",
-            "null"
-          ],
-          "minimum": 1
         }
       }
     },
     "evidence": {
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "allOf": [
         {
           "if": {
@@ -3537,17 +3083,13 @@
             "properties": {
               "id": {
                 "type": "string",
-                "pattern": "^\\.claude/evidence/[A-Za-z0-9][A-Za-z0-9._-]*/g[1-9][0-9]*/S9/blockers/packet-[a-f0-9]{64}/[a-f0-9]{64}\\.json$"
+                "pattern": "^\\.claude/evidence(-alt-[1-9][0-9]*)?/.+\\.json$"
               },
               "path": {
                 "type": "string",
-                "pattern": "^\\.claude/evidence/[A-Za-z0-9][A-Za-z0-9._-]*/g[1-9][0-9]*/S9/blockers/packet-[a-f0-9]{64}/[a-f0-9]{64}\\.json$"
+                "pattern": "^\\.claude/evidence(-alt-[1-9][0-9]*)?/.+\\.json$"
               },
               "baseline_generation": {
-                "type": "integer",
-                "minimum": 1
-              },
-              "review_round": {
                 "type": "integer",
                 "minimum": 1
               },
@@ -3591,17 +3133,13 @@
             "properties": {
               "id": {
                 "type": "string",
-                "pattern": "^\\.claude/evidence/[A-Za-z0-9][A-Za-z0-9._-]*/g[1-9][0-9]*/S9/blocker-messages/packet-[a-f0-9]{64}/[a-f0-9]{64}\\.json$"
+                "pattern": "^\\.claude/evidence(-alt-[1-9][0-9]*)?/.+\\.json$"
               },
               "path": {
                 "type": "string",
-                "pattern": "^\\.claude/evidence/[A-Za-z0-9][A-Za-z0-9._-]*/g[1-9][0-9]*/S9/blocker-messages/packet-[a-f0-9]{64}/[a-f0-9]{64}\\.json$"
+                "pattern": "^\\.claude/evidence(-alt-[1-9][0-9]*)?/.+\\.json$"
               },
               "baseline_generation": {
-                "type": "integer",
-                "minimum": 1
-              },
-              "review_round": {
                 "type": "integer",
                 "minimum": 1
               },
@@ -3634,10 +3172,8 @@
         "id",
         "kind",
         "path",
-        "sha256",
         "status",
         "baseline_generation",
-        "review_round",
         "produced_by",
         "invalidated_by",
         "invalidation_rule",
@@ -3677,7 +3213,6 @@
             "review_result",
             "finding",
             "finding_supplement",
-            "observation_batch",
             "review_blocker",
             "repair_result_blocker",
             "repair_result_resolution"
@@ -3687,10 +3222,7 @@
           "type": "string",
           "minLength": 1
         },
-        "sha256": {
-          "type": "string",
-          "pattern": "^[a-f0-9]{64}$"
-        },
+
         "status": {
           "enum": [
             "valid",
@@ -3701,13 +3233,6 @@
         "baseline_generation": {
           "type": "integer",
           "minimum": 0
-        },
-        "review_round": {
-          "type": [
-            "integer",
-            "null"
-          ],
-          "minimum": 1
         },
         "produced_by": {
           "type": "array",
@@ -3764,6 +3289,10 @@
           "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?Z$"
         },
         "dimension": {
+          "type": "string",
+          "minLength": 1
+        },
+        "review_plan_id": {
           "type": "string",
           "minLength": 1
         }
@@ -3823,16 +3352,14 @@
     },
     "pause": {
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "from_state",
         "from_phase",
         "phase_revision",
         "baseline_generation",
-        "review_round",
         "reason",
         "required_human_action",
-        "document_fingerprints",
         "paused_at"
       ],
       "properties": {
@@ -3854,10 +3381,6 @@
           "type": "integer",
           "minimum": 0
         },
-        "review_round": {
-          "type": "integer",
-          "minimum": 0
-        },
         "reason": {
           "type": "string",
           "minLength": 1
@@ -3866,15 +3389,14 @@
           "type": "string",
           "minLength": 1
         },
-        "document_fingerprints": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/fingerprintedReference"
-          }
-        },
+
         "paused_at": {
           "type": "string",
           "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?Z$"
+        },
+        "review_plan_id": {
+          "type": "string",
+          "minLength": 1
         }
       }
     },
@@ -3983,11 +3505,10 @@
         },
         {
           "type": "object",
-          "additionalProperties": false,
+          "additionalProperties": true,
           "required": [
             "packet_id",
             "template_id",
-            "template_sha256",
             "binding",
             "view_path",
             "answer_path",
@@ -4000,10 +3521,6 @@
             },
             "template_id": {
               "const": "s2-design-v1"
-            },
-            "template_sha256": {
-              "type": "string",
-              "pattern": "^[a-f0-9]{64}$"
             },
             "binding": {
               "type": "object",
@@ -4037,12 +3554,11 @@
                 },
                 "requirement": {
                   "type": "object",
-                  "additionalProperties": false,
+                  "additionalProperties": true,
                   "required": [
                     "id",
                     "path",
-                    "version",
-                    "sha256"
+                    "version"
                   ],
                   "properties": {
                     "id": {
@@ -4056,10 +3572,6 @@
                     "version": {
                       "type": "string",
                       "minLength": 1
-                    },
-                    "sha256": {
-                      "type": "string",
-                      "pattern": "^[a-f0-9]{64}$"
                     }
                   }
                 }
@@ -4232,11 +3744,10 @@
         },
         {
           "type": "object",
-          "additionalProperties": false,
+          "additionalProperties": true,
           "required": [
             "packet_id",
             "template_id",
-            "template_sha256",
             "binding",
             "view_path",
             "answer_path",
@@ -4250,10 +3761,6 @@
             },
             "template_id": {
               "const": "s3-contract-v1"
-            },
-            "template_sha256": {
-              "type": "string",
-              "pattern": "^[a-f0-9]{64}$"
             },
             "binding": {
               "type": "object",
@@ -4287,12 +3794,11 @@
                 },
                 "requirement": {
                   "type": "object",
-                  "additionalProperties": false,
+                  "additionalProperties": true,
                   "required": [
                     "id",
                     "path",
-                    "version",
-                    "sha256"
+                    "version"
                   ],
                   "properties": {
                     "id": {
@@ -4306,10 +3812,6 @@
                     "version": {
                       "type": "string",
                       "minLength": 1
-                    },
-                    "sha256": {
-                      "type": "string",
-                      "pattern": "^[a-f0-9]{64}$"
                     }
                   }
                 }
@@ -4653,12 +4155,11 @@
                   "minItems": 1,
                   "items": {
                     "type": "object",
-                    "additionalProperties": false,
+                    "additionalProperties": true,
                     "required": [
                       "id",
                       "path",
-                      "version",
-                      "sha256"
+                      "version"
                     ],
                     "properties": {
                       "id": {
@@ -4672,10 +4173,6 @@
                       "version": {
                         "type": "string",
                         "minLength": 1
-                      },
-                      "sha256": {
-                        "type": "string",
-                        "pattern": "^[a-f0-9]{64}$"
                       }
                     }
                   }
@@ -4687,11 +4184,10 @@
                   ],
                   "items": {
                     "type": "object",
-                    "additionalProperties": false,
+                    "additionalProperties": true,
                     "required": [
                       "path",
-                      "version",
-                      "sha256"
+                      "version"
                     ],
                     "properties": {
                       "path": {
@@ -4700,10 +4196,6 @@
                       },
                       "version": {
                         "type": "string"
-                      },
-                      "sha256": {
-                        "type": "string",
-                        "pattern": "^[a-f0-9]{64}$"
                       }
                     }
                   }
@@ -4724,11 +4216,10 @@
         },
         {
           "type": "object",
-          "additionalProperties": false,
+          "additionalProperties": true,
           "required": [
             "packet_id",
             "template_id",
-            "template_sha256",
             "binding",
             "view_path",
             "answer_path",
@@ -4742,10 +4233,6 @@
             },
             "template_id": {
               "const": "s4-task-planning-v1"
-            },
-            "template_sha256": {
-              "type": "string",
-              "pattern": "^[a-f0-9]{64}$"
             },
             "binding": {
               "type": "object",
@@ -4779,12 +4266,11 @@
                 },
                 "requirement": {
                   "type": "object",
-                  "additionalProperties": false,
+                  "additionalProperties": true,
                   "required": [
                     "id",
                     "path",
-                    "version",
-                    "sha256"
+                    "version"
                   ],
                   "properties": {
                     "id": {
@@ -4798,10 +4284,6 @@
                     "version": {
                       "type": "string",
                       "minLength": 1
-                    },
-                    "sha256": {
-                      "type": "string",
-                      "pattern": "^[a-f0-9]{64}$"
                     }
                   }
                 }
@@ -5037,11 +4519,10 @@
                   ],
                   "items": {
                     "type": "object",
-                    "additionalProperties": false,
+                    "additionalProperties": true,
                     "required": [
                       "path",
-                      "version",
-                      "sha256"
+                      "version"
                     ],
                     "properties": {
                       "path": {
@@ -5050,10 +4531,6 @@
                       },
                       "version": {
                         "type": "string"
-                      },
-                      "sha256": {
-                        "type": "string",
-                        "pattern": "^[a-f0-9]{64}$"
                       }
                     }
                   }
@@ -5073,12 +4550,11 @@
                   "minItems": 1,
                   "items": {
                     "type": "object",
-                    "additionalProperties": false,
+                    "additionalProperties": true,
                     "required": [
                       "id",
                       "path",
-                      "version",
-                      "sha256"
+                      "version"
                     ],
                     "properties": {
                       "id": {
@@ -5092,10 +4568,6 @@
                       "version": {
                         "type": "string",
                         "minLength": 1
-                      },
-                      "sha256": {
-                        "type": "string",
-                        "pattern": "^[a-f0-9]{64}$"
                       }
                     }
                   }
@@ -5148,12 +4620,11 @@
         },
         {
           "type": "object",
-          "additionalProperties": false,
+          "additionalProperties": true,
           "required": [
             "submission_key",
             "packet_id",
             "owner",
-            "content_sha256",
             "evidence_id",
             "followup_event_id",
             "control_status",
@@ -5164,7 +4635,7 @@
           "properties": {
             "submission_key": {
               "type": "string",
-              "pattern": "^[a-f0-9]{64}$"
+              "pattern": "^\\S+$"
             },
             "packet_id": {
               "type": "string",
@@ -5173,17 +4644,13 @@
             "owner": {
               "const": "Main"
             },
-            "content_sha256": {
-              "type": "string",
-              "pattern": "^[a-f0-9]{64}$"
-            },
             "evidence_id": {
               "type": "string",
               "minLength": 1
             },
             "followup_event_id": {
               "type": "string",
-              "pattern": "^[a-f0-9]{64}$"
+              "pattern": "^\\S+$"
             },
             "control_status": {
               "enum": [
@@ -5213,7 +4680,7 @@
             },
             "superseded_by": {
               "type": "string",
-              "pattern": "^[a-f0-9]{64}$"
+              "pattern": "^\\S+$"
             }
           },
           "allOf": [
@@ -5271,12 +4738,11 @@
         },
         {
           "type": "object",
-          "additionalProperties": false,
+          "additionalProperties": true,
           "required": [
             "submission_key",
             "packet_id",
             "owner",
-            "content_sha256",
             "evidence_id",
             "followup_event_id",
             "control_status",
@@ -5287,7 +4753,7 @@
           "properties": {
             "submission_key": {
               "type": "string",
-              "pattern": "^[a-f0-9]{64}$"
+              "pattern": "^\\S+$"
             },
             "packet_id": {
               "type": "string",
@@ -5296,17 +4762,13 @@
             "owner": {
               "const": "Main"
             },
-            "content_sha256": {
-              "type": "string",
-              "pattern": "^[a-f0-9]{64}$"
-            },
             "evidence_id": {
               "type": "string",
               "minLength": 1
             },
             "followup_event_id": {
               "type": "string",
-              "pattern": "^[a-f0-9]{64}$"
+              "pattern": "^\\S+$"
             },
             "control_status": {
               "enum": [
@@ -5336,7 +4798,7 @@
             },
             "superseded_by": {
               "type": "string",
-              "pattern": "^[a-f0-9]{64}$"
+              "pattern": "^\\S+$"
             }
           },
           "allOf": [
@@ -5394,12 +4856,11 @@
         },
         {
           "type": "object",
-          "additionalProperties": false,
+          "additionalProperties": true,
           "required": [
             "submission_key",
             "packet_id",
             "owner",
-            "content_sha256",
             "evidence_id",
             "followup_event_id",
             "control_status",
@@ -5410,7 +4871,7 @@
           "properties": {
             "submission_key": {
               "type": "string",
-              "pattern": "^[a-f0-9]{64}$"
+              "pattern": "^\\S+$"
             },
             "packet_id": {
               "type": "string",
@@ -5419,17 +4880,13 @@
             "owner": {
               "const": "Main"
             },
-            "content_sha256": {
-              "type": "string",
-              "pattern": "^[a-f0-9]{64}$"
-            },
             "evidence_id": {
               "type": "string",
               "minLength": 1
             },
             "followup_event_id": {
               "type": "string",
-              "pattern": "^[a-f0-9]{64}$"
+              "pattern": "^\\S+$"
             },
             "control_status": {
               "enum": [
@@ -5459,7 +4916,7 @@
             },
             "superseded_by": {
               "type": "string",
-              "pattern": "^[a-f0-9]{64}$"
+              "pattern": "^\\S+$"
             }
           },
           "allOf": [
@@ -5519,25 +4976,20 @@
     },
     "check_profile_file_ref": {
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
-        "path",
-        "sha256"
+        "path"
       ],
       "properties": {
         "path": {
           "type": "string",
           "minLength": 1
-        },
-        "sha256": {
-          "type": "string",
-          "pattern": "^[a-f0-9]{64}$"
         }
       }
     },
     "check_profile": {
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "id",
         "version",
@@ -5591,7 +5043,7 @@
           "type": "array",
           "items": {
             "type": "object",
-            "additionalProperties": false,
+            "additionalProperties": true,
             "required": [
               "name",
               "value"
@@ -5648,14 +5100,11 @@
     },
     "tool_check_receipt": {
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "path",
-        "sha256",
-        "log_sha256",
         "checkout",
         "command",
-        "profile_digest",
         "binding"
       ],
       "properties": {
@@ -5663,14 +5112,7 @@
           "type": "string",
           "minLength": 1
         },
-        "sha256": {
-          "type": "string",
-          "pattern": "^[a-f0-9]{64}$"
-        },
-        "log_sha256": {
-          "type": "string",
-          "pattern": "^[a-f0-9]{64}$"
-        },
+
         "checkout": {
           "type": "string",
           "minLength": 1
@@ -5679,13 +5121,10 @@
           "type": "string",
           "minLength": 1
         },
-        "profile_digest": {
-          "type": "string",
-          "pattern": "^[a-f0-9]{64}$"
-        },
+
         "binding": {
           "type": "object",
-          "additionalProperties": false,
+          "additionalProperties": true,
           "required": [
             "runtime_id",
             "baseline_generation",
@@ -5724,11 +5163,10 @@
     },
     "workPacketS5": {
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "packet_id",
         "template_id",
-        "template_sha256",
         "binding",
         "inputs",
         "answer_path",
@@ -5743,20 +5181,15 @@
         "template_id": {
           "const": "s5-document-review-v1"
         },
-        "template_sha256": {
-          "type": "string",
-          "pattern": "^[a-f0-9]{64}$"
-        },
         "binding": {
           "type": "object",
-          "additionalProperties": false,
+          "additionalProperties": true,
           "required": [
             "runtime_id",
             "generation",
             "stage_entry",
             "owner",
             "assignment_id",
-            "assignment_sha256",
             "responsibility",
             "attempt"
           ],
@@ -5781,10 +5214,6 @@
               "type": "string",
               "minLength": 1
             },
-            "assignment_sha256": {
-              "type": "string",
-              "pattern": "^[a-f0-9]{64}$"
-            },
             "responsibility": {
               "enum": [
                 "DV-SPEC-CONSISTENCY",
@@ -5797,7 +5226,7 @@
             },
             "previous_submission_key": {
               "type": "string",
-              "pattern": "^[a-f0-9]{64}$"
+              "pattern": "^\\S+$"
             },
             "revision_reason": {
               "type": "string",
@@ -5851,12 +5280,11 @@
           "type": "array",
           "items": {
             "type": "object",
-            "additionalProperties": false,
+            "additionalProperties": true,
             "required": [
               "id",
               "path",
-              "version",
-              "sha256"
+              "version"
             ],
             "properties": {
               "id": {
@@ -5870,10 +5298,6 @@
               "version": {
                 "type": "string",
                 "minLength": 1
-              },
-              "sha256": {
-                "type": "string",
-                "pattern": "^[a-f0-9]{64}$"
               }
             }
           },
@@ -6085,20 +5509,15 @@
         },
         "task_analysis": {
           "type": "object",
-          "additionalProperties": false,
+          "additionalProperties": true,
           "required": [
             "path",
-            "sha256",
             "parser_version"
           ],
           "properties": {
             "path": {
               "type": "string",
-              "pattern": "^\\.claude/work-packets/analysis/[a-f0-9]{64}\\.json$"
-            },
-            "sha256": {
-              "type": "string",
-              "pattern": "^[a-f0-9]{64}$"
+              "pattern": "^\\.claude/work-packets/analysis/[^\\\\:]+\\.json$"
             },
             "parser_version": {
               "const": "1.0.0"
@@ -6109,12 +5528,11 @@
     },
     "submissionS5": {
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "submission_key",
         "packet_id",
         "owner",
-        "content_sha256",
         "evidence_id",
         "followup_event_id",
         "control_status",
@@ -6125,7 +5543,7 @@
       "properties": {
         "submission_key": {
           "type": "string",
-          "pattern": "^[a-f0-9]{64}$"
+          "pattern": "^\\S+$"
         },
         "packet_id": {
           "type": "string",
@@ -6135,17 +5553,13 @@
           "type": "string",
           "minLength": 1
         },
-        "content_sha256": {
-          "type": "string",
-          "pattern": "^[a-f0-9]{64}$"
-        },
         "evidence_id": {
           "type": "string",
           "minLength": 1
         },
         "followup_event_id": {
           "type": "string",
-          "pattern": "^[a-f0-9]{64}$"
+          "pattern": "^\\S+$"
         },
         "control_status": {
           "enum": [
@@ -6175,7 +5589,7 @@
         },
         "superseded_by": {
           "type": "string",
-          "pattern": "^[a-f0-9]{64}$"
+          "pattern": "^\\S+$"
         }
       },
       "allOf": [
@@ -6298,8 +5712,7 @@
             "kind",
             "id",
             "version",
-            "ref",
-            "sha256"
+            "ref"
           ]
         },
         "manifest": {
@@ -6321,8 +5734,7 @@
             "kind",
             "id",
             "version",
-            "ref",
-            "sha256"
+            "ref"
           ]
         },
         "agent_definition": {
@@ -6339,8 +5751,7 @@
           "required": [
             "kind",
             "id",
-            "ref",
-            "sha256"
+            "ref"
           ]
         },
         "team_id": {
@@ -6430,7 +5841,7 @@
           "items": {
             "$ref": "#/$defs/assignmentRecord/$defs/contextSource"
           },
-          "description": "Original hash-bound manifest/TASK/role inputs, declared document sources, authorized Skills and CheckProfile dependencies, plus actual frozen context sources resolved by the caller."
+          "description": "Original manifest/TASK/role inputs, declared document sources, authorized Skills and CheckProfile dependencies, plus actual context sources resolved by the caller."
         },
         "source_snapshots": {
           "type": "array",
@@ -6438,7 +5849,7 @@
           "items": {
             "$ref": "#/$defs/assignmentRecord/$defs/sourceSnapshot"
           },
-          "description": "Optional immutable content-addressed snapshots of exact original source bytes. Historical Records may omit this field."
+          "description": "Optional snapshots of original source bytes at their registered paths. Historical Records may omit this field."
         },
         "revision_issuance": {
           "$ref": "#/$defs/assignmentRecord/$defs/revisionIssuance",
@@ -6514,11 +5925,10 @@
         },
         "sourceReference": {
           "type": "object",
-          "additionalProperties": false,
+          "additionalProperties": true,
           "required": [
             "kind",
-            "ref",
-            "sha256"
+            "ref"
           ],
           "properties": {
             "kind": {
@@ -6536,10 +5946,6 @@
             "version": {
               "type": "string",
               "minLength": 1
-            },
-            "sha256": {
-              "type": "string",
-              "pattern": "^[a-f0-9]{64}$"
             }
           }
         },
@@ -6573,13 +5979,11 @@
         },
         "sourceSnapshot": {
           "type": "object",
-          "additionalProperties": false,
+          "additionalProperties": true,
           "required": [
             "source_ref",
             "source_kind",
-            "source_sha256",
-            "path",
-            "sha256"
+            "path"
           ],
           "properties": {
             "source_ref": {
@@ -6602,28 +6006,18 @@
                 "embedded_context_profile"
               ]
             },
-            "source_sha256": {
-              "type": "string",
-              "pattern": "^[a-f0-9]{64}$"
-            },
             "path": {
               "type": "string",
               "minLength": 1
-            },
-            "sha256": {
-              "type": "string",
-              "pattern": "^[a-f0-9]{64}$"
             }
           }
         },
         "revisionIssuance": {
           "type": "object",
-          "additionalProperties": false,
+          "additionalProperties": true,
           "required": [
             "intent_key",
-            "request_digest",
-            "previous_record",
-            "previous_record_sha256"
+            "previous_record"
           ],
           "properties": {
             "intent_key": {
@@ -6631,16 +6025,8 @@
               "minLength": 1,
               "maxLength": 1024
             },
-            "request_digest": {
-              "type": "string",
-              "pattern": "^[a-f0-9]{64}$"
-            },
             "previous_record": {
               "$ref": "#/$defs/assignmentRecord/$defs/recordReference"
-            },
-            "previous_record_sha256": {
-              "type": "string",
-              "pattern": "^[a-f0-9]{64}$"
             }
           }
         },
@@ -6668,19 +6054,14 @@
         },
         "checkProfileFileRef": {
           "type": "object",
-          "additionalProperties": false,
+          "additionalProperties": true,
           "required": [
-            "path",
-            "sha256"
+            "path"
           ],
           "properties": {
             "path": {
               "type": "string",
               "minLength": 1
-            },
-            "sha256": {
-              "type": "string",
-              "pattern": "^[a-f0-9]{64}$"
             }
           }
         },
@@ -6846,14 +6227,11 @@
     },
     "assignmentRevisionReceipt": {
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "intent_key",
-        "request_digest",
         "assignment_record",
-        "assignment_record_sha256",
         "previous_record",
-        "previous_record_sha256",
         "runtime_event_id",
         "runtime_commit_revision"
       ],
@@ -6863,23 +6241,11 @@
           "minLength": 1,
           "maxLength": 1024
         },
-        "request_digest": {
-          "type": "string",
-          "pattern": "^[a-f0-9]{64}$"
-        },
         "assignment_record": {
           "$ref": "#/$defs/s6_record_reference"
         },
-        "assignment_record_sha256": {
-          "type": "string",
-          "pattern": "^[a-f0-9]{64}$"
-        },
         "previous_record": {
           "$ref": "#/$defs/s6_record_reference"
-        },
-        "previous_record_sha256": {
-          "type": "string",
-          "pattern": "^[a-f0-9]{64}$"
         },
         "runtime_event_id": {
           "type": "string",
@@ -6929,7 +6295,7 @@
     },
     "s6_worker_check": {
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "index",
         "command",
@@ -6951,28 +6317,17 @@
     },
     "native_owned_tool_receipt": {
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "path",
-        "sha256",
-        "log_sha256",
         "checkout",
         "command",
-        "profile_digest",
         "binding"
       ],
       "properties": {
         "path": {
           "type": "string",
           "minLength": 1
-        },
-        "sha256": {
-          "type": "string",
-          "pattern": "^[a-f0-9]{64}$"
-        },
-        "log_sha256": {
-          "type": "string",
-          "pattern": "^[a-f0-9]{64}$"
         },
         "checkout": {
           "type": "string",
@@ -6982,13 +6337,9 @@
           "type": "string",
           "minLength": 1
         },
-        "profile_digest": {
-          "type": "string",
-          "pattern": "^[a-f0-9]{64}$"
-        },
         "binding": {
           "type": "object",
-          "additionalProperties": false,
+          "additionalProperties": true,
           "required": [
             "runtime_id",
             "baseline_generation",

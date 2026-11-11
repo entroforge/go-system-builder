@@ -1,69 +1,69 @@
 ---
 name: clean-round-evaluation
-description: Use when the S7 round nears its exit — inspect the machine CleanRound evaluation over the ReviewPlan's exact Claim set (read-only; the round consumer owns the write)
+description: Use when the current S7 review round reaches its original exit
 category: methodology
-version: 1.1.0
+version: 1.2.0
 ---
-# Clean Round Evaluation
+# S7 Round Exit
 
 ## Authority
-The CleanRound is machine-owned (`docs/control/agent-protocol.md` #s7, `docs/control/loop-definition.json` TR-009 / `clean_round_valid`): the round consumer registers the snapshot inside the final `runtime review-result submit`, and TR-009's guard recomputes the full conjunction at promotion time. This skill is the read-only inspection entry — nobody hand-writes a clean-round record or an aggregate PASS.
 
-An issued S7 professional answer is another input to that same original consumer.
-Its durable receipt can project only the submitting Reviewer's responsibility
-to `done`. Inspect the original complete Claim set and round facts before
-evaluating the whole round. A Reviewer whose responsibility is `done` does not
-wait for another Reviewer; the adapter never infers a professional verdict
-from green checks.
+The original S7 consumer and stage exit use accepted results and responsibility
+progress; see `docs/control/agent-protocol.md` #s7 and
+`docs/control/loop-definition.json` TR-008/TR-009. This Skill guides Main's
+professional coordination; it does not add an evidence gate.
 
 ## Entry Conditions
-- The Loop is in phase `verification.clean` (the consumer already closed the round), or `verification.running` with the final Claim Result about to land.
-- A ReviewPlan is registered for the current round and every required Claim has a consumed disposition (pass, or finding — finding rounds go to TR-008, never clean).
-- No in-flight change is pending.
+
+The current S7 ReviewPlan has reviewer responsibilities in progress or reaching
+their original handoff. Main uses the current work and accepted answers.
 
 ## Required Inputs
-| Input | Path / field | Why |
-|:---|:---|:---|
-| Team manifests | runtime `entities.teams[]` manifests | team completeness and responsibility coverage |
-| Dimension evidence | runtime `evidence[]` Delivery/QA/E2E results | PASS/N/A per responsibility |
-| Evidence validity | each evidence entry `status` and `review_round` | reject invalid or mixed-round evidence |
-| Open BUGs | runtime `entities.bugs[]` | no blocking BUG may remain open |
-| Frozen fingerprints | runtime artifact fingerprints for the round | detect mid-round change |
-| Baseline generation | runtime `baseline.generation` | must match across every record |
+
+The current ReviewPlan, the applicable original responsibilities, their accepted
+conclusions, and any actual unfinished work are sufficient for the original exit.
 
 ## Procedure
-1. Invoke `loop-harness s7 status --root .` for the claim-level board, then `loop-harness verification clean-round --root .` for the machine evaluation.
-2. Check `review_plan_clean`: the ReviewPlan belongs to the current round and closed clean (a plan that never closed cannot be promoted).
-3. Check `all_required_claims_pass`: every required Claim has a consumed pass Result; N/A Claims carry their plan-level disposition with source and rationale.
-4. Check `no_findings_current_round`: any current-round Finding forecloses the clean path — that round goes to S8 via TR-008.
-5. Check `no_invalidated_pass_evidence`: no current-round review evidence (result / finding / batch / snapshot) is invalid.
-6. Check `no_open_blocking_bugs`: no blocking BUG remains open; every BUG closed during the round has targeted re-verification evidence.
-7. Check `clean_round_snapshot_registered`: the machine snapshot exists as current-round evidence.
-8. All pass → let the hook commit TR-009 (`verification.clean` → `acceptance`). A correctable gap → produce the missing Claim Result via `runtime review-result submit`; an integrity conflict → the round is stale, start a new round.
-9. Do not compute a weighted score or partial PASS — the result is strictly `pass` or not.
+
+1. Main coordinates the independent responsibilities and gives each reviewer the
+   needed materials. Each reviewer performs assigned professional checks and saves
+   their own original answer. PreToolUse observes it; successful PostToolUse and
+   Stop provide fallback through the same consumer. No extra submission is needed.
+2. An accepted Finding goes to S8 with actual observations and outstanding
+   responsibilities. Main decides which other safe work may continue; dangerous
+   P0 work stops. Already dispatched reviewers can still deliver their original
+   answers after S8 begins.
+3. When applicable required responsibilities are complete and accepted conclusions
+   have no Finding, the original exit advances to S10. Main retains responsibility
+   for real coverage, independence and unfinished work. A green check count does
+   not itself establish an author's verdict.
+4. Environment blockers and unfinished work go to Main as stated; they do not
+   become PASS or a fabricated product Finding. Actual pause or human decisions
+   remain with their original authority.
+5. If transition or preparation fails, preserve accepted answers and continue the
+   specific unfinished system followup. A status command can diagnose a concrete
+   gap, but is not a normal prerequisite.
 
 ## Outputs
-- `clean_round_valid` evidence record (immutable) referenced by ID and hash, or
-- `clean_round_incomplete` with failed guard names, specific failing evidence/BUG/fingerprint, and required next actions.
+
+Original accepted conclusions, applicable responsibility progress, and the
+actual S8 or S10 handoff or its specific unfinished followup.
 
 ## Exit Conditions
-- The machine CleanRound exists and TR-009 promotes the round into acceptance, **or**
-- The board names the exact unproven Claim / integrity fact with its next action.
+
+The appropriate original handoff has advanced and prepared its next materials,
+or the concrete unfinished part has been reported to its responsible owner.
 
 ## Stop Conditions
-Stop immediately and surface to the human if any of:
-- Evidence mixes review rounds or baseline generations.
-- A required dimension is missing PASS or justified N/A.
-- Manifests are incomplete or team coverage is missing.
-- Required PASS evidence is `invalid` or `superseded`.
-- A blocking BUG is open.
-- A mid-round change invalidated the frozen fingerprint set.
+
+Stop unsafe work for a real P0 or other actual safety blocker. Report the original
+facts and missing conditions to Main; continue other safe assigned work where
+appropriate. Preserve real pause and human-decision boundaries.
 
 ## Non-Goals
-- Do not treat targeted re-verification as satisfying any guard.
-- Do not rewrite an existing clean-round record on later change — invalidate and require a new round.
-- Do not decide acceptance or release — that belongs to `acceptance-and-handoff`.
 
-## Inlined Methodology
-
-Machine CleanRound evaluation (`docs/control/agent-protocol.md` #s7) is a strict conjunction over the current ReviewPlan: the plan belongs to this round and closed clean; every required Claim has a consumed pass Result (plan-level N/A carries source and rationale — silence is not N/A); no current-round Finding exists; no current-round review evidence is invalid; no blocking BUG is open and every BUG closed during the round has targeted re-verification evidence; and the machine snapshot is registered as evidence. TR-009's `clean_round_valid` guard recomputes all of it at promotion. Targeted re-verification is performed by the original finding responsibility and may close a BUG but never creates a clean round. ACC and release audit reference the clean-round snapshot by ID and hash; later changes do not rewrite it — they invalidate it and require a new round. Nobody computes a weighted score or partial PASS: the result is strictly `pass` or not.
+Do not require an ObservationBatch, separate CleanRound snapshot, manifest or
+fingerprint proof, evidence revalidation, resave, submit, returned path or second
+Stop. Existing historical records remain usable when needed. S9 Targeted does not
+replace a new complete S7 round; S10 acceptance and S11 release remain separate
+professional and human decisions.

@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 
 	"github.com/entroforge/go-system-builder/internal/policy"
+	"github.com/entroforge/go-system-builder/internal/review"
 	"github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/submission"
 	"github.com/entroforge/go-system-builder/internal/workpacket"
@@ -18,10 +19,13 @@ func nativeS7AcceptedOutletContext(root string, snapshot runtime.Snapshot, packe
 
 func nativeS7AcceptedOutletForRequest(ctx context.Context, root string, snapshot runtime.Snapshot, packet workpacket.ReviewResultPacket) string {
 	state := snapshot.State
-	review := mapFieldCLI(state, "review")
-	plan := mapFieldCLI(review, "plan")
-	if packet.Binding.RuntimeID != state["runtime_id"] || packet.Binding.BaselineGeneration != tolerantInt(mapFieldCLI(state, "baseline")["generation"]) ||
-		packet.Binding.ReviewRound != tolerantInt(review["round"]) || packet.Binding.ReviewPlanID != stringValue(plan["plan_id"]) || packet.Binding.ReviewPlanRevision != tolerantInt(plan["revision"]) {
+	reviewState := mapFieldCLI(state, "review")
+	plan := mapFieldCLI(reviewState, "plan")
+	applies, err := review.IssuedResultAppliesToCurrent(root, state, packet, ctx)
+	if err != nil {
+		return " This original S7 Result is accepted; its relationship to the current responsibility is unknown: " + err.Error() + ". Main restores the original plan materials and continues the original outlet; the Reviewer need not resubmit."
+	}
+	if !applies {
 		return " This accepted S7 Result belongs to an earlier responsibility; preserve its history and follow the current round/stage."
 	}
 	diagnostic := submission.PlanningDiagnosticContext(ctx, root, state, "S7 acceptance continuation")
@@ -33,9 +37,19 @@ func nativeS7AcceptedOutletForRequest(ctx context.Context, root string, snapshot
 			return diagnostic + nativeS7RemainingOutletContext(root, state)
 		}
 		if plan["status"] == "clean" {
-			return diagnostic + " The machine CleanRound is recorded; Main follows the original continuation result, preserving accepted Reviewer answers. If the exit is still pending after resolving its cause, resume with `" + s7CaptureShellQuote(filepath.Join(root, ".claude/bin/loop-harness")) + " runtime review-continue --root " + s7CaptureShellQuote(root) + "`."
+			return diagnostic + " The original required S7 responsibilities report completion; Main follows the original continuation result, preserving accepted Reviewer answers. If the exit is still pending after resolving its cause, resume with `" + s7CaptureShellQuote(filepath.Join(root, ".claude/bin/loop-harness")) + " runtime review-continue --root " + s7CaptureShellQuote(root) + "`."
 		}
 		return diagnostic + nativeS7RemainingOutletContext(root, state)
+
+	case "bug_resolution":
+		rows := mapFieldCLI(reviewState, "assignments")
+		row, _ := rows[packet.Binding.AssignmentID].(map[string]any)
+		for _, finding := range review.RoundFindings(state) {
+			if finding["assignment_id"] == packet.Binding.AssignmentID {
+				return " This original S7 answer is accepted. Main receives the new Finding facts from " + stringValue(row["result_ref"]) + " and decides their effect on the current investigation or follow-up; existing approvals remain unchanged."
+			}
+		}
+		return " This late original S7 answer is accepted; preserve its recorded conclusion and current S8 work."
 	case "paused", "awaiting_human_release":
 		return diagnostic + nativeS7RemainingOutletContext(root, state)
 	}

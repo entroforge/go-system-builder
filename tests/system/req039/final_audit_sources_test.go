@@ -66,7 +66,7 @@ func TestPlanningDesignEvidenceUsesRegisteredDiskSource(t *testing.T) {
 	if tracked := strings.TrimSpace(runGitIn(t, root, "ls-files", "--", reviewPath)); tracked != "" {
 		t.Fatalf("fixture envelope was unexpectedly committed: %s", tracked)
 	}
-	_, qg := auditHook(t, root, root, "final-audit-template-untracked")
+	_, qg := auditMainHook(t, root, "final-audit-template-untracked")
 	if status := stringValueAudit(qg["status"]); status != "satisfied" && status != "advanced" {
 		t.Fatalf("registered disk design envelope must satisfy S2, status=%q qg=%v", status, qg)
 	}

@@ -66,15 +66,15 @@ func (s *readScope) lookup(kind, id string) (map[string]any, error) {
 }
 
 func (s *readScope) task(root string, row map[string]any) (map[string]json.RawMessage, error) {
-	ref, digest := stringField(row["path"]), stringField(row["sha256"])
-	key := root + "\x00" + ref + "\x00" + digest
+	ref := stringField(row["path"])
+	key := root + "\x00" + ref
 	if err := s.ctx.Err(); err != nil {
 		return nil, err
 	}
 	if fields, ok := s.tasks[key]; ok {
 		return fields, nil
 	}
-	data, err := s.read(root, ref, digest)
+	data, err := s.read(root, ref)
 	if err != nil {
 		return nil, fmt.Errorf("Targeted original TASK %s: %w", stringField(row["id"]), err)
 	}
@@ -100,11 +100,11 @@ func (s *readScope) task(root string, row map[string]any) (map[string]json.RawMe
 	return fields, nil
 }
 
-func (s *readScope) read(root, ref, digest string) ([]byte, error) {
+func (s *readScope) read(root, ref string) ([]byte, error) {
 	if err := s.ctx.Err(); err != nil {
 		return nil, err
 	}
-	key := root + "\x00" + ref + "\x00" + digest
+	key := root + "\x00" + ref
 	if data, ok := s.sources[key]; ok {
 		return data, nil
 	}
@@ -160,9 +160,6 @@ func (s *readScope) read(root, ref, digest string) ([]byte, error) {
 		return nil, err
 	}
 	data := out.Bytes()
-	if digest == "" || workpacket.Digest(data) != digest {
-		return nil, fmt.Errorf("original registered source digest differs: %s", ref)
-	}
 	if err := s.ctx.Err(); err != nil {
 		return nil, err
 	}

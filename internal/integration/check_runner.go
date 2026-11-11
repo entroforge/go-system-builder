@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"time"
 )
 
@@ -27,9 +26,6 @@ func CommandCheckRunner(ctx context.Context, root, command string) error {
 	defer cancel()
 	parent := ""
 	evidence, _ := ctx.Value(checkEvidenceKey{}).(checkEvidence)
-	if evidence.ToolReceipts != nil {
-		ctx = checkexec.WithReceiptCapture(ctx, func(ref checkexec.ToolReceipt) { *evidence.ToolReceipts = append(*evidence.ToolReceipts, ref) })
-	}
 	if evidence.Directory != "" {
 		parent = evidence.Directory
 		if err := os.MkdirAll(parent, 0700); err != nil {
@@ -47,7 +43,6 @@ func CommandCheckRunner(ctx context.Context, root, command string) error {
 	}
 	cmd := exec.CommandContext(ctx, "sh", "-c", command)
 	cmd.Dir = root
-	var profileObservation *checkexec.Observation
 	if p, ok := checkexec.CurrentProfile(ctx); ok {
 		env, err := p.CommandEnvironment()
 		if err != nil {
@@ -55,26 +50,11 @@ func CommandCheckRunner(ctx context.Context, root, command string) error {
 			return checkexec.New("capability_missing", "environment owner", command, err)
 		}
 		cmd.Env = env
-		observed, err := checkexec.ObserveProfile(ctx, root, p)
-		if err != nil {
-			log.Close()
-			return checkexec.New("capability_missing", "environment owner", command, err)
-		}
-		profileObservation = &observed
 	}
 	cmd.Stdout = log
 	cmd.Stderr = log
 	// Bound pipe cleanup even if a command leaves descendants behind.
 	cmd.WaitDelay = 2 * time.Second
-	// Record the tree before execution as well as after it; a trailing HEAD
-	// alone cannot identify what a command started testing.
-	readHead := func() string {
-		git := exec.CommandContext(ctx, "git", "rev-parse", "HEAD")
-		git.Dir = root
-		out, _ := git.Output()
-		return strings.TrimSpace(string(out))
-	}
-	beforeHead := readHead()
 	start := time.Now()
 	err = runCheckProcess(cmd)
 	closeErr := log.Close()
@@ -97,18 +77,6 @@ func CommandCheckRunner(ctx context.Context, root, command string) error {
 		kind = "diagnostic_io"
 		err = closeErr
 	}
-	afterHead := readHead()
-	if p, ok := checkexec.CurrentProfile(ctx); ok && err == nil {
-		after, observeErr := checkexec.ObserveProfile(ctx, root, p)
-		if observeErr != nil || after.SubjectDigest != profileObservation.SubjectDigest || after.EnvironmentDigest != profileObservation.EnvironmentDigest || after.RunnerDigest != profileObservation.RunnerDigest {
-			status, kind = "fail", "target_drift"
-			err = fmt.Errorf("profile tested inputs/environment/runner changed during execution")
-		}
-	}
-	if err == nil && beforeHead != "" && afterHead != beforeHead {
-		status, kind, exitCode = "fail", "target_drift", 0
-		err = fmt.Errorf("check target HEAD changed during execution")
-	}
 	// Intentionally do not dump the environment: commands may carry credentials.
 	settings := map[string]string{}
 	for _, key := range []string{"E2E_WORKERS", "E2E_RUNTIME_OWNER", "E2E_RUNTIME_SERVICES", "CI"} {
@@ -129,21 +97,10 @@ func CommandCheckRunner(ctx context.Context, root, command string) error {
 		failure.LogRef = logPath
 	}
 	binding, _ := checkexec.CurrentBinding(ctx)
-	receipt := map[string]any{"profile_observation": profileObservation, "check_binding": binding, "failure": failure, "command": command, "cwd": root, "head": afterHead, "head_before": beforeHead, "head_after": afterHead, "started_at": start.UTC(), "elapsed_ms": time.Since(start).Milliseconds(), "status": status, "failure_kind": kind, "exit_code": exitCode, "caller_settings": settings, "output": logPath}
+	receipt := map[string]any{"check_binding": binding, "failure": failure, "command": command, "cwd": root, "started_at": start.UTC(), "elapsed_ms": time.Since(start).Milliseconds(), "status": status, "failure_kind": kind, "exit_code": exitCode, "caller_settings": settings, "output": logPath}
 	data, _ := json.MarshalIndent(receipt, "", "  ")
-	if profileObservation != nil {
-		receipt["version"] = 2
-		sealed, sealErr := checkexec.SealReceipt(receipt, logPath)
-		if sealErr != nil {
-			return checkexec.New("diagnostic_io", "main", command, sealErr)
-		}
-		data = sealed
-	}
 	if writeErr := publishCheckReceipt(receiptPath, data); writeErr != nil {
 		return checkexec.New("diagnostic_io", "main", command, fmt.Errorf("persist check receipt: %w", writeErr))
-	}
-	if captureErr := checkexec.CaptureReceipt(ctx, receiptPath, root, data); captureErr != nil {
-		return checkexec.New("diagnostic_io", "main", command, captureErr)
 	}
 	if evidence.Receipts != nil {
 		*evidence.Receipts = append(*evidence.Receipts, receiptPath)
@@ -152,6 +109,15 @@ func CommandCheckRunner(ctx context.Context, root, command string) error {
 		failure.ReceiptRef = receiptPath
 		failure.LogRef = logPath
 		return fmt.Errorf("check %q failed (%s, exit=%d): %w; receipt=%s; log=%s", command, kind, exitCode, failure, receiptPath, logPath)
+	}
+	// A passed check that owns no evidence directory leaves nothing referring
+	// to its attempt files, so keeping them would accumulate one directory per
+	// check in the system temporary directory. An owned attempt directory
+	// stays, because the receipt is the canonical Main check artifact, and a
+	// failed check stays, because the failure above points at its receipt and
+	// log.
+	if parent == "" && evidence.Receipts == nil {
+		_ = os.RemoveAll(dir)
 	}
 	return nil
 }

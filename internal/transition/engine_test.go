@@ -18,7 +18,6 @@ func TestApplyStartsLockedREQAndProducesSchemaValidRuntime(t *testing.T) {
 	root := filepath.Join("..", "..")
 	statePath, journalPath := copyInactiveRuntime(t, root)
 	reqPath := "internal/transition/testdata/locked-req.md"
-	reqHash := reqFileHash(t, filepath.Join(root, reqPath))
 
 	next, err := applyFixture(root, statePath, journalPath, transition.Request{
 		TransitionID:     "TR-001",
@@ -32,7 +31,6 @@ func TestApplyStartsLockedREQAndProducesSchemaValidRuntime(t *testing.T) {
 			ID:         "REQ-002",
 			Path:       reqPath,
 			Version:    "v1.0.0",
-			SHA256:     reqHash,
 			ApprovedBy: "user",
 			ApprovedAt: "2026-06-22T00:00:00Z",
 		},
@@ -70,6 +68,9 @@ func TestApplyStartsLockedREQAndProducesSchemaValidRuntime(t *testing.T) {
 		t.Fatalf("unexpected runtime id: %v", state["runtime_id"])
 	}
 	bound := state["bound_req"].(map[string]any)
+	if _, exists := bound["sha256"]; exists {
+		t.Fatal("new REQ binding must not register a digest")
+	}
 	metadata := bound["metadata"].(map[string]any)
 	if metadata["ui_impact"] != "none" {
 		t.Fatalf("bound REQ must carry ui_impact, got %#v", bound)
@@ -114,7 +115,6 @@ func TestApplyAdvancesPlanningPhaseAndRejectsIllegalTopLevelJump(t *testing.T) {
 		},
 		REQ: &transition.LockedREQ{
 			ID: "REQ-002", Path: reqPath, Version: "v1.0.0",
-			SHA256:     reqFileHash(t, filepath.Join(root, reqPath)),
 			ApprovedBy: "user", ApprovedAt: "2026-06-22T00:00:00Z",
 		},
 	})
@@ -279,7 +279,7 @@ func startLockedREQ(t *testing.T, root, statePath, journalPath string) {
 	_, err := applyFixture(root, statePath, journalPath, transition.Request{
 		TransitionID: "TR-001", ExpectedRevision: 0, Actor: "user",
 		Evidence: map[string]string{"req_lock_record": "REQ-002#lock", "loop_authorization_record": "user:/loop REQ-002"},
-		REQ:      &transition.LockedREQ{ID: "REQ-002", Path: reqPath, Version: "v1.0.0", SHA256: reqFileHash(t, filepath.Join(root, reqPath)), ApprovedBy: "user", ApprovedAt: "2026-06-22T00:00:00Z"},
+		REQ:      &transition.LockedREQ{ID: "REQ-002", Path: reqPath, Version: "v1.0.0", ApprovedBy: "user", ApprovedAt: "2026-06-22T00:00:00Z"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -326,13 +326,12 @@ func addRuntimeEvidence(t *testing.T, root, statePath string, generation int, re
 		t.Fatal(err)
 	}
 	path := "internal/transition/testdata/locked-req.md"
-	hash := fileHash(t, filepath.Join(root, path))
 	items, _ := state["evidence"].([]any)
 	refs := make(map[string]string, len(kinds))
 	for i, requiredKind := range kinds {
 		id := fmt.Sprintf("evidence-%s-%d", strings.ReplaceAll(requiredKind, "_", "-"), i)
 		items = append(items, map[string]any{
-			"id": id, "kind": "human_decision", "path": path, "sha256": hash,
+			"id": id, "kind": "human_decision", "path": path,
 			"status": "valid", "baseline_generation": float64(generation), "review_round": reviewRound,
 			"produced_by": []any{"user"}, "invalidated_by": nil, "invalidation_rule": nil,
 			"invalidation_reason": nil, "responsibility_id": nil, "scope_refs": []any{},
@@ -466,24 +465,6 @@ func seedPlanningContracts(t *testing.T, root string, english bool) {
 		[]byte("# BE-TEST\n\n"+status("locked")+"\n> 版本：v1.0.0\n\n### 需求条款映射\n\n| REQ source_ref | Rule / CASE | 本合同条款 | 验收标准 |\n|---|---|---|---|\n| — | — | §1 | — |\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-}
-
-func reqFileHash(t *testing.T, path string) string {
-	t.Helper()
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return transition.REQSHA256(data)
-}
-
-func fileHash(t *testing.T, path string) string {
-	t.Helper()
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return transition.SHA256(data)
 }
 
 // TestParseUIImpactRejectsDriftedReflection verifies that a §C

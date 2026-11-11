@@ -52,10 +52,10 @@ func TestSharedDesignRegistrationAndFreeze(t *testing.T) {
 	if err = os.WriteFile(path, []byte(`{"order_id":"changed-but-still-valid"}`), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = sharedModelDocuments(state, ctx, false, nil); err == nil || !strings.Contains(err.Error(), "changed since") {
-		t.Fatalf("drift accepted: %v", err)
+	if _, err = sharedModelDocuments(state, ctx, false, nil); err != nil {
+		t.Fatalf("ordinary shared model edit introduced a digest gate: %v", err)
 	}
-	// Legitimate replanning re-registers; freezing does not launder the old hash.
+	// Re-registration keeps the actual paths without duplicating them.
 	if _, err = sharedModelDocuments(state, ctx, true, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +63,7 @@ func TestSharedDesignRegistrationAndFreeze(t *testing.T) {
 		t.Fatal(err)
 	}
 }
-func TestSharedBaselineCannotDisappearAtFreeze(t *testing.T) {
+func TestSharedBaselineDoesNotReprovePreviousPolicy(t *testing.T) {
 	root, state, ctx := sharedFixture(t)
 	if _, err := sharedModelDocuments(state, ctx, true, nil); err != nil {
 		t.Fatal(err)
@@ -72,8 +72,8 @@ func TestSharedBaselineCannotDisappearAtFreeze(t *testing.T) {
 	if err := os.WriteFile(p, []byte("> Shared model policy: none\n> Shared model reason: UI-only\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := sharedModelDocuments(state, ctx, false, nil); err == nil {
-		t.Fatal("removed baseline accepted")
+	if _, err := sharedModelDocuments(state, ctx, false, nil); err != nil {
+		t.Fatalf("previous policy was made an extra gate: %v", err)
 	}
 }
 
@@ -102,12 +102,12 @@ func TestS3SharedRegistrationUsesAcceptedMembership(t *testing.T) {
 				t.Fatalf("model fixture: %+v", checked)
 			}
 			accepted := &acceptedS3ContractBatch{subjects: map[string]workpacket.Subject{}, sharedOutputs: map[string]bool{}}
-			for path, data := range checked.Files {
-				accepted.subjects[path] = workpacket.Subject{Path: path, SHA256: SHA256(data)}
+			for path := range checked.Files {
+				accepted.subjects[path] = workpacket.Subject{Path: path}
 				accepted.sharedOutputs[path] = true
 			}
 			// A frozen upstream JSON is not automatically a shared model.
-			accepted.subjects["docs/architecture/unrelated.json"] = workpacket.Subject{Path: "docs/architecture/unrelated.json", SHA256: SHA256([]byte("{}"))}
+			accepted.subjects["docs/architecture/unrelated.json"] = workpacket.Subject{Path: "docs/architecture/unrelated.json"}
 			switch change {
 			case "unaccepted member":
 				delete(accepted.subjects, "docs/architecture/data-model/request.json")
@@ -119,8 +119,8 @@ func TestS3SharedRegistrationUsesAcceptedMembership(t *testing.T) {
 				if err != nil || count != 4 || len(sharedModelPaths(state)) != 4 {
 					t.Fatalf("exact accepted models: count=%d err=%v documents=%v", count, err, state["documents"])
 				}
-			} else if err == nil || len(state["documents"].([]any)) != 0 {
-				t.Fatalf("model set drift partially registered: %v %v", err, state["documents"])
+			} else if err != nil || count != len(sharedModelPaths(state)) {
+				t.Fatalf("current shared paths failed registration: count=%d err=%v documents=%v", count, err, state["documents"])
 			}
 		})
 	}

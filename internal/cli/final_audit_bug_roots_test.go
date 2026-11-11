@@ -47,8 +47,20 @@ func TestFinalAuditBugEventAnchorsDefaultRuntimePair(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(journal), `"transition_id":"BUG-LIFECYCLE"`) || !strings.Contains(string(journal), `"idempotency_key":"bug:BUG-900:bug_accepted:4"`) {
+	journalText := string(journal)
+	if !strings.Contains(journalText, `"transition_id":"BUG-LIFECYCLE"`) {
 		t.Fatalf("root journal missing bug lifecycle commit: %s", journal)
+	}
+	// The BUG lifecycle identity names the BUG, the operation and the BUG's own
+	// attempt count. It must not name a Runtime write count: the revision is an
+	// audit coordinate of the Writer, not part of the domain identity
+	// (L4-revision-usage.md:141「Runtime revision 只是审计坐标,不证明专业正确」).
+	if !strings.Contains(journalText, `"event_id":"evt-bug-BUG-900-bug_accepted-0"`) ||
+		!strings.Contains(journalText, `"idempotency_key":"runtime:bug:BUG-900:bug_accepted:0"`) {
+		t.Fatalf("root journal missing the named bug lifecycle identity: %s", journal)
+	}
+	if strings.Contains(journalText, `"idempotency_key":"runtime:bug:BUG-900:bug_accepted:5"`) {
+		t.Fatalf("bug lifecycle identity fell back to the Runtime write count: %s", journal)
 	}
 	if _, err := os.Stat(filepath.Join(outside, ".claude", "loop-state.json")); !os.IsNotExist(err) {
 		t.Fatalf("bug-event wrote a cwd-relative state pair: err=%v", err)

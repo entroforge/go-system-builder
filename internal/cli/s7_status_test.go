@@ -15,9 +15,9 @@ import (
 	"github.com/entroforge/go-system-builder/internal/schema"
 )
 
-// TestS7StatusIncludesMetricsSummary proves the read-only board appends the
-// L3-S7 §14.2 machine-collectible metrics section for the current round.
-func TestS7StatusIncludesMetricsSummary(t *testing.T) {
+// Old metrics remain readable in their original store, but the current
+// professional board does not expose numeric review statistics.
+func TestS7StatusOmitsLegacyRoundStatistics(t *testing.T) {
 	root := t.TempDir()
 
 	// Minimal runtime with a registered plan pointer (round 1).
@@ -43,8 +43,6 @@ func TestS7StatusIncludesMetricsSummary(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, subjectRel), subjectBytes, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	digestLines := subjectRel + ":" + fmt.Sprintf("%x", subjectSum[:])
-	digestSum := sha256.Sum256([]byte(digestLines))
 	planBytes, err := json.MarshalIndent(map[string]any{
 		"schema_version": "1.0.0",
 		"review_plan_id": "review-plan-cli-1",
@@ -80,9 +78,8 @@ func TestS7StatusIncludesMetricsSummary(t *testing.T) {
 			"e2e_coverage_state": "not_applicable",
 			"submitted_at":       "2026-08-20T00:00:00Z",
 		},
-		"claims":            map[string]any{},
-		"assignments":       map[string]any{},
-		"observation_batch": nil,
+		"claims":      map[string]any{},
+		"assignments": map[string]any{},
 	}
 	stateData, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
@@ -96,16 +93,10 @@ func TestS7StatusIncludesMetricsSummary(t *testing.T) {
 	}
 
 	// Metrics recorded by earlier runtime verbs.
-	if err := metrics.RecordS7RoundShape(root, 1, 2, 4, 1); err != nil {
-		t.Fatal(err)
-	}
 	if err := metrics.RecordS7ResultSubmit(root, "accepted"); err != nil {
 		t.Fatal(err)
 	}
 	if err := metrics.RecordS7ResultSubmit(root, "rejected"); err != nil {
-		t.Fatal(err)
-	}
-	if err := metrics.RecordS7ClaimLeadTime(root, 1, "claim-qa-1", 250); err != nil {
 		t.Fatal(err)
 	}
 
@@ -113,24 +104,19 @@ func TestS7StatusIncludesMetricsSummary(t *testing.T) {
 	if code := runS7Status(root, &out, false); code != 0 {
 		t.Fatalf("runS7Status exit = %d, output:\n%s", code, out.String())
 	}
-	for _, want := range []string{
-		"metrics (S7 §14.2 machine-collectible):",
-		fmt.Sprintf("subject_digest: %x", digestSum[:]),
-		`loop_s7_assignments{round="1"} 2`,
-		`loop_s7_claims{round="1"} 4`,
-		`loop_s7_result_submits_total{outcome="accepted"} 1`,
-		`loop_s7_result_submits_total{outcome="rejected"} 1`,
-		`loop_s7_claim_lead_time_ms{claim="r1:claim-qa-1"} count=1 sum_ms=250`,
-	} {
-		if !strings.Contains(out.String(), want) {
-			t.Fatalf("s7 status output lacks %q:\n%s", want, out.String())
+	if !strings.Contains(out.String(), "plan: review-plan-cli-1") || strings.Contains(out.String(), "subject_digest:") {
+		t.Fatalf("status must show the plan without digest registration: %s", out.String())
+	}
+	for _, oldStatistic := range []string{"metrics (S7", "loop_s7_", "round=", "round 1 of"} {
+		if strings.Contains(out.String(), oldStatistic) {
+			t.Fatalf("status exposed legacy round statistics %q: %s", oldStatistic, out.String())
 		}
 	}
 }
 
 func TestS7PacketStatusShowsPreparationAndDispatchGaps(t *testing.T) {
 	root := t.TempDir()
-	plan := &review.Plan{ReviewPlanID: "plan-current", ReviewRound: 2, BaselineGeneration: 1,
+	plan := &review.Plan{ReviewPlanID: "plan-current", BaselineGeneration: 1,
 		Assignments: []review.PlanAssignment{
 			{AssignmentID: "assignment-missing", ClaimIDs: []string{"claim-b"}},
 			{AssignmentID: "assignment-queued", ClaimIDs: []string{"claim-c"}},

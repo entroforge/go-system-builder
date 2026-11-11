@@ -46,6 +46,11 @@ func TestS1CurrentProjectionKeepsOriginalBindingResponsibility(t *testing.T) {
 func TestS1NormalFourAnswersDeriveOriginalMachineFacts(t *testing.T) {
 	root := initEntryQuestionnaireRoot(t, map[string]string{"REQ-098.md": lockedReqBody})
 	path := filepath.Join(root, ".claude/submissions/requirement-binding.md")
+	reqPath := filepath.Join(root, "docs/requirements/REQ-098.md")
+	reqBefore, err := os.ReadFile(reqPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	entryQuestionnaireHook(t, root, "SessionStart", path)
 	draft, err := os.ReadFile(path)
 	if err != nil {
@@ -54,7 +59,7 @@ func TestS1NormalFourAnswersDeriveOriginalMachineFacts(t *testing.T) {
 	// These are the only authored answers. No test-built SHA, identity,
 	// revision, timestamp or receipt is submitted on this normal path.
 	answers := map[string]string{
-		"Which requirement is selected?":            filepath.Join(root, "docs/requirements/REQ-098.md"),
+		"Which requirement is selected?":            reqPath,
 		"Who actually authorized this binding?":     "actual-test-human",
 		"Which development branch was selected?":    "feature/req",
 		"What is the explicit release destination?": "origin/main",
@@ -76,7 +81,8 @@ func TestS1NormalFourAnswersDeriveOriginalMachineFacts(t *testing.T) {
 	if questionCount != len(answers) {
 		t.Fatalf("binding draft has %d questions, want four: %s", questionCount, draft)
 	}
-	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o644); err != nil {
+	answer := []byte(strings.Join(lines, "\n"))
+	if err := os.WriteFile(path, answer, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	feedback := entryQuestionnaireHook(t, root, "PostToolUse", path)
@@ -85,17 +91,31 @@ func TestS1NormalFourAnswersDeriveOriginalMachineFacts(t *testing.T) {
 		t.Fatalf("four real choices did not reach original TR-001/S2: %s", feedback)
 	}
 	bound := state["bound_req"].(map[string]any)
-	if bound["sha256"] != sha256Hex([]byte(lockedReqBody)) || bound["approved_by"] != "actual-test-human" {
-		t.Fatalf("original receiver failed to derive actual source or retain real decision: %#v", bound)
+	if bound["id"] != "REQ-098" || bound["path"] != "docs/requirements/REQ-098.md" || bound["version"] != "v1.0.0" || bound["status"] != "locked" || bound["approved_by"] != "actual-test-human" {
+		t.Fatalf("original receiver failed to retain actual requirement or human decision: %#v", bound)
+	}
+	if _, exists := bound["sha256"]; exists {
+		t.Fatalf("original receiver registered a requirement digest: %#v", bound)
 	}
 	if _, err := time.Parse(time.RFC3339Nano, bound["approved_at"].(string)); err != nil {
 		t.Fatalf("original receiver did not generate its actual timestamp: %v", err)
 	}
 	workspace := bound["workspace"].(map[string]any)
-	if workspace["bound_commit"] == "" || workspace["dev_branch"] != "feature/req" || workspace["release_upstream"] != "origin/main" {
+	if workspace["project_root"] != root || workspace["dev_branch"] != "feature/req" || workspace["release_upstream"] != "origin/main" {
 		t.Fatalf("original receiver did not bind actual Git destinations/source: %#v", workspace)
 	}
-	if state["baseline"].(map[string]any)["generation"] != float64(1) || state["binding_receipt"] == nil {
+	if _, exists := workspace["bound_commit"]; exists {
+		t.Fatalf("original receiver registered a Git OID: %#v", workspace)
+	}
+	receipt, ok := state["binding_receipt"].(map[string]any)
+	eventID, _ := receipt["event_id"].(string)
+	if state["baseline"].(map[string]any)["generation"] != float64(1) || !ok || receipt["event"] != "req_bound" || receipt["transition_id"] != "TR-001" || receipt["source_runtime_id"] != "loop-inactive" || receipt["target_runtime_id"] != "loop-REQ-098" || eventID == "" {
 		t.Fatalf("original receiver did not generate generation/receipt: %#v", state)
+	}
+	if got, err := os.ReadFile(path); err != nil || !bytes.Equal(got, answer) {
+		t.Fatalf("original receiver changed the author's binding answer: %v", err)
+	}
+	if got, err := os.ReadFile(reqPath); err != nil || !bytes.Equal(got, reqBefore) {
+		t.Fatalf("original receiver changed the selected requirement: %v", err)
 	}
 }

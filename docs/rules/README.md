@@ -64,15 +64,14 @@ hashes and versions for this work. New decisions still follow the original
 architecture and change-control process.
 
 Existing `docs/rules/project-conventions.json` files retain their original
-source checks and frozen consumers. The empty template remains a compatibility
+original sources and frozen consumers. The empty template remains a compatibility
 asset; the current resolver has no first-save receiver that fills and persists
-missing source metadata. It must not refresh an old registry's fingerprints
-from today's bytes.
+missing source metadata. Historical machine fingerprints do not qualify a source.
 
 `tasks check --json` returns `task_conventions` selected for each TASK's declared
 write scope. A `declared_default` must match the original locked Rules index or
-the original registered locked document, its fixed hash/version, a real source
-section and fixed example hashes. Registry status alone proves no approval. An absent
+the original registered locked document and a real source section. Registry status
+alone proves no approval; source and example hashes are not required. An absent
 registry creates candidates only for API/error rules explicitly cited by the TASK.
 Candidate/conflict/stale/migration rows belong to the original Architect or rule
 owner; they never change business values, permission, coverage or stage gates.

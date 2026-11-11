@@ -50,6 +50,38 @@ func TestWorkspaceBindPersistsCurrentBranchAndRejectsDrift(t *testing.T) {
 	}
 }
 
+// G18 §1.3: a workspace operation's identity carries the responsibility (the
+// Runtime that owns the slot, the assignment slot, its owner and the
+// execution generation) and the intent (the operation). The same operation
+// retried keeps its identity, two different operations do not collide, and
+// two different responsibilities do not collide either. No Runtime write
+// count is encoded.
+func TestWorkspaceEventIdentitySeparatesIntentAndResponsibility(t *testing.T) {
+	eventID, key := workspaceEventIdentity("loop-REQ-1", "launch", "assign-1", "agent-1", 1, "session-1", "")
+	againEvent, againKey := workspaceEventIdentity("loop-REQ-1", "launch", "assign-1", "agent-1", 1, "session-1", "")
+	if eventID != againEvent || key != againKey {
+		t.Fatal("the same workspace operation must keep its identity")
+	}
+	otherEvent, otherKey := workspaceEventIdentity("loop-REQ-1", "rework", "assign-1", "agent-1", 1, "session-1", "")
+	if otherEvent == eventID || otherKey == key {
+		t.Fatal("two different workspace operations must not collide")
+	}
+	slotEvent, slotKey := workspaceEventIdentity("loop-REQ-1", "launch", "assign-2", "agent-1", 1, "session-1", "")
+	if slotEvent == eventID || slotKey == key {
+		t.Fatal("two different assignment slots must not collide")
+	}
+	_, runtimeKey := workspaceEventIdentity("loop-REQ-2", "launch", "assign-1", "agent-1", 1, "session-1", "")
+	if runtimeKey == key {
+		t.Fatal("two different Runtime responsibilities must not share one idempotency key")
+	}
+	if !strings.HasPrefix(eventID, "evt-workspace-") {
+		t.Fatalf("workspace event id must name its event domain: %s", eventID)
+	}
+	if !strings.HasPrefix(key, "runtime:workspace:loop-REQ-1:") {
+		t.Fatalf("workspace idempotency key must name its responsibility: %s", key)
+	}
+}
+
 func TestInitAndBindRejectWorkerWithoutCreatingRuntime(t *testing.T) {
 	for _, command := range []string{"init", "bind"} {
 		t.Run(command, func(t *testing.T) {
@@ -87,14 +119,10 @@ func bindFixtureWorkspace(t *testing.T, fix *runtimeFixture) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	head, err := runGit(t, fix.root, "rev-parse", "HEAD")
-	if err != nil {
-		t.Fatal(err)
-	}
 	bound, _ := fix.state["bound_req"].(map[string]any)
 	if bound == nil {
 		t.Fatal("fixture has no bound REQ")
 	}
-	bound["workspace"] = map[string]any{"project_root": fix.root, "dev_branch": strings.TrimSpace(string(branch)), "release_upstream": "main", "bound_commit": strings.TrimSpace(string(head))}
+	bound["workspace"] = map[string]any{"project_root": fix.root, "dev_branch": strings.TrimSpace(string(branch)), "release_upstream": "main"}
 	fix.persist(t)
 }

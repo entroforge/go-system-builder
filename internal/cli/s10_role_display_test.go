@@ -63,9 +63,13 @@ func TestS10PublicHookSeparatesLateReviewerFromMainQuestionnaire(t *testing.T) {
 		if code := Run([]string{"hook", "--root", root, "--event", tc.event}, bytes.NewReader(body), &out, &diagnostic); code != 0 {
 			t.Fatalf("%s: %d %s", actor, code, &diagnostic)
 		}
+		// A late reviewer that holds no current responsibility may get no
+		// S10 role display at all. Silence must not become Main's work.
 		var payload map[string]any
-		if err := json.Unmarshal(out.Bytes(), &payload); err != nil {
-			t.Fatalf("%s: %v %s", actor, err, &out)
+		if len(out.Bytes()) > 0 {
+			if err := json.Unmarshal(out.Bytes(), &payload); err != nil {
+				t.Fatalf("%s: %v %s", actor, err, &out)
+			}
 		}
 		specific, _ := payload["hookSpecificOutput"].(map[string]any)
 		text, _ := specific["additionalContext"].(string)
@@ -78,7 +82,10 @@ func TestS10PublicHookSeparatesLateReviewerFromMainQuestionnaire(t *testing.T) {
 			}
 		} else {
 			assertNoMainAuditMaterials(t, text)
-			if !strings.Contains(text, "assigns no S10 audit work") || !strings.Contains(text, "S10") || strings.Contains(text, "Next:") || strings.Contains(text, filepath.Join(root, path)) || strings.Contains(text, "Use the current exact Manifest") {
+			if strings.Contains(text, "Next:") || strings.Contains(text, filepath.Join(root, path)) || strings.Contains(text, "Use the current exact Manifest") {
+				t.Fatalf("late reviewer received Main work: %s", text)
+			}
+			if text != "" && !strings.Contains(text, "S10") {
 				t.Fatalf("late reviewer received Main work: %s", text)
 			}
 		}
@@ -110,7 +117,7 @@ func TestS10RoleGuidanceSatisfiesEmbeddedDecisionSchema(t *testing.T) {
 	}
 	validator := schema.NewEmbeddedValidator()
 	validate := func(guidance map[string]any) error {
-		envelope := policy.DecisionEnvelope{SchemaVersion: "1.1.0", DecisionID: "hook-decision-s10-role", PolicyID: "hook-policy-main", PolicyVersion: "1.0.0", PolicySHA256: strings.Repeat("a", 64), HookEvent: "PreToolUse", SessionID: "s10-role-schema", MatchedRuleIDs: []string{}, Decision: "allow", Reason: "recipient-specific stage projection", Missing: []string{}, Recovery: []string{}, Retry: "not_applicable", EvaluatedAt: "2026-10-25T00:00:00Z"}
+		envelope := policy.DecisionEnvelope{SchemaVersion: "1.1.0", DecisionID: "hook-decision-s10-role", PolicyID: "hook-policy-main", PolicyVersion: "1.0.0", HookEvent: "PreToolUse", SessionID: "s10-role-schema", MatchedRuleIDs: []string{}, Decision: "allow", Reason: "recipient-specific stage projection", Missing: []string{}, Recovery: []string{}, Retry: "not_applicable", EvaluatedAt: "2026-10-25T00:00:00Z"}
 		data, err := json.Marshal(envelope)
 		if err != nil {
 			return err

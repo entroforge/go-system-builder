@@ -2,38 +2,31 @@
   "handoff_id": "repair-handoff-example",
   "session": {
     "id": "repair-session-example",
-    "path": ".claude/evidence/repair/sessions/repair-session-example.json",
-    "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    "path": ".claude/evidence/repair/sessions/repair-session-example.json"
   },
   "plan": {
     "id": "repair-plan-example",
-    "path": ".claude/evidence/repair/plans/repair-plan-example.json",
-    "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    "path": ".claude/evidence/repair/plans/repair-plan-example.json"
   },
   "contract": {
-    "path": ".claude/evidence/repair/contracts/repair-contract-example.json",
-    "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    "path": ".claude/evidence/repair/contracts/repair-contract-example.json"
   },
   "result": {
     "id": "repair-result-example",
-    "path": ".claude/evidence/repair/results/repair-result-example.json",
-    "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    "path": ".claude/evidence/repair/results/repair-result-example.json"
   },
   "changeset": {
     "id": "repair-changeset-example",
-    "path": ".claude/evidence/repair/changesets/repair-changeset-example.json",
-    "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    "path": ".claude/evidence/repair/changesets/repair-changeset-example.json"
   },
   "change_impact": {
     "id": "impact-example",
-    "path": ".claude/evidence/repair/change-impact/impact-example.json",
-    "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    "path": ".claude/evidence/repair/change-impact/impact-example.json"
   },
   "targeted_reverifications": [
     {
       "id": "reverify-example",
-      "path": ".claude/evidence/repair/reverification/reverify-example.json",
-      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      "path": ".claude/evidence/repair/reverification/reverify-example.json"
     }
   ],
   "handed_off_by": "agent-repair-orchestrator-1",

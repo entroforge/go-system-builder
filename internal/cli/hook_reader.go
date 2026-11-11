@@ -19,14 +19,16 @@ import (
 
 type hookReaderKey struct{}
 type hookReader struct {
-	Kind        string
-	Actor       string
-	Owner       string
-	References  []string
-	Receipts    []string
-	Retired     bool
-	snapshot    runtime.Snapshot
-	snapshotErr error
+	Kind           string
+	Actor          string
+	Owner          string
+	References     []string
+	Receipts       []string
+	Retired        bool
+	S5Context      string
+	SelectionIssue string
+	snapshot       runtime.Snapshot
+	snapshotErr    error
 }
 
 // The fallback recognizes actual top-level platform events, never a directory
@@ -116,6 +118,9 @@ func resolveHookReader(root string, in policy.Input, supplied ...runtime.Snapsho
 		if err == nil {
 			reader.snapshot = snap
 			state := snap.State
+			if resolveS5HookResponsibility(root, in, reader, state) {
+				return reader
+			}
 			// The session resolver rejects retired execution authority. Its original
 			// session/path association remains useful for read-only responsibility
 			// feedback and must never turn a late Worker into a new Main.
@@ -151,7 +156,7 @@ func resolveHookReader(root string, in policy.Input, supplied ...runtime.Snapsho
 				if stringValue(row["superseded_by"]) != "" {
 					reader.Retired = true
 				}
-				if stringValue(row["content_sha256"]) != "" && stringValue(row["packet_id"]) != "" {
+				if stringValue(row["packet_id"]) != "" {
 					reader.Receipts = appendUnique(reader.Receipts, fmt.Sprintf("original answer %s is accepted; original control status=%s", row["packet_id"], stringValue(row["control_status"])))
 				}
 			}
@@ -201,7 +206,57 @@ func hookReaderObservation(root string, in policy.Input, out, diagnostic io.Writ
 		return false, 0
 	}
 	if reader.Kind != "Worker" {
+		// The observer identity only decides whether the Main Controller runs.
+		// It never decides whether this event is observed.
+		if in.Event == "PostToolUse" {
+			// A nested payload still reaches the original consumer, which selects
+			// its own exact registered path and issues a fail-closed receipt when
+			// that path has no current registration. The Main Controller is still
+			// not triggered by this route.
+			//
+			// This observer resolved no registered original responsibility for
+			// this event, so the payload keeps its own platform identity. An
+			// unresolved owner must not be written into the event as if the
+			// platform had named it. The original consumer compares that
+			// identity with the registered owner of the exact answer path it
+			// selects: an event that carries another agent's identity stays that
+			// agent's event and never completes the original owner's
+			// responsibility.
+			if handled, code := receiveSavedQuestionnaire(root, in, out, diagnostic); handled {
+				return true, code
+			}
+		}
+		if reader.Kind != "Helper" && hookReaderDelegationEvent(in) {
+			// A delegation is a top-level platform event. It continues on the
+			// ordinary observation path so the delegation preflight and its
+			// milestone are written as usual. The preflight is read-only
+			// guidance, not an implementation authorisation.
+			return false, 0
+		}
+		// This event belongs to neither Main nor a registered Worker. It must
+		// report the unknown attribution instead of succeeding silently.
+		issue := hookReaderUnknownAttribution(in, reader)
+		if reader.SelectionIssue != "" {
+			issue = reader.SelectionIssue + " " + issue
+		}
+		reader.SelectionIssue = issue
+		fmt.Fprintln(diagnostic, issue)
+		if hookReaderReturnEvent(in.Event) {
+			// The platform's return event carries the fact to the model. An
+			// ordinary tool event stays quiet in the model's face and keeps the
+			// fact in the operator diagnostic.
+			_ = json.NewEncoder(out).Encode(map[string]any{"hookSpecificOutput": map[string]any{"hookEventName": in.Event, "additionalContext": issue}})
+		}
 		return true, 0
+	}
+	if reader.SelectionIssue != "" {
+		if in.Event == "Stop" && !in.StopHookActive {
+			fmt.Fprintln(diagnostic, reader.SelectionIssue)
+			return true, 2
+		}
+		if in.Event != "SessionStart" && in.Event != "SubagentStart" {
+			return true, 0
+		}
 	}
 	if in.Event == "PostToolUse" {
 		// A registered top-level Worker session may omit the logical owner in the
@@ -213,7 +268,15 @@ func hookReaderObservation(root string, in policy.Input, out, diagnostic io.Writ
 		if handled, code := receiveSavedQuestionnaire(root, received, out, diagnostic); handled {
 			return true, code
 		}
-		return true, 0
+		if !reader.Retired && reader.Owner != "" && reader.Owner != "Main" {
+			if handled, code := runObservedQuestionnaireSavesForOwner(root, received, out, diagnostic, reader.Owner); handled {
+				return true, code
+			}
+		}
+		// The original consumer does not own this event. Do not discard it: the
+		// ordinary observation path still has to observe this Worker's progress
+		// and reach the remaining original-consumer route.
+		return false, 0
 	}
 	if !reader.Retired && (in.Event == "Stop" || hook.IsStopIdleEvent(in.Event)) {
 		// Keep original Worker completion gates, including separately launched
@@ -228,8 +291,15 @@ func hookReaderObservation(root string, in policy.Input, out, diagnostic io.Writ
 		}
 		feedback := func(decision policy.Decision) (bool, int) {
 			if isDenyingHookDecision(decision.Decision) {
-				fmt.Fprintln(diagnostic, hook.RenderStopBlockFeedback(decision, ""))
+				questionnaire := ""
+				if mapFieldCLI(reader.snapshot.State, "lifecycle")["state"] == "building" {
+					questionnaire = stageBuilderQuestionLifecycleContext(root, checked, reader.snapshot)
+				}
+				fmt.Fprintln(diagnostic, hook.RenderStopBlockFeedback(decision, questionnaire))
 				return true, 2
+			}
+			if decision.Decision == "warn" && decision.Reason != "" {
+				fmt.Fprintln(diagnostic, decision.Reason)
 			}
 			return true, 0
 		}
@@ -253,8 +323,11 @@ func hookReaderObservation(root string, in policy.Input, out, diagnostic io.Writ
 	if in.Event == "PreCompact" {
 		return true, 0
 	}
-	message, specialized := "", false
-	if !reader.Retired {
+	message, specialized := reader.S5Context, reader.S5Context != ""
+	if reader.SelectionIssue != "" {
+		message, specialized = reader.SelectionIssue, true
+	}
+	if !reader.Retired && !specialized {
 		observed := in
 		if observed.EffectiveAgentID() == "" {
 			observed.AgentID = reader.Owner
@@ -264,14 +337,24 @@ func hookReaderObservation(root string, in policy.Input, out, diagnostic io.Writ
 		// Plan references or receipts to an applicable professional projection.
 		message, specialized = s9PacketQuestionnaireLifecycleContext(root, observed, reader.snapshot)
 	}
+	if !reader.Retired && !specialized && (in.Event == "SessionStart" || in.Event == "SubagentStart") && mapFieldCLI(reader.snapshot.State, "lifecycle")["state"] == "building" {
+		observed := in
+		if observed.EffectiveAgentID() == "" {
+			observed.AgentID = reader.Owner
+		}
+		if loaded, err := hookctx.FromSnapshot(root, reader.Owner, reader.snapshot); err == nil && loaded != nil {
+			if own := assignmentContextLifecycle(root, observed, loaded.Assignments); own != "" {
+				message, specialized = own, true
+			}
+		}
+	}
 	if !specialized {
-		if len(reader.References) == 0 {
-			return true, 0
-		}
-		message = fmt.Sprintf("Original Worker responsibility for %s: %s. Continue only this original responsibility; the global stage does not assign Main's current work to this Worker.", reader.Owner, strings.Join(reader.References, ", "))
-		if reader.Retired {
-			message = fmt.Sprintf("Original Worker responsibility for %s is retired/superseded: %s. Preserve its original receipt and completed work; no new Main responsibility is assigned by the current stage.", reader.Owner, strings.Join(reader.References, ", "))
-		}
+		// The original Builder projection carries this Worker's exact private
+		// PLAN/Result paths and its fixed engineering read order. A Worker whose
+		// original responsibility is a native Assignment Record has no S5
+		// work-packet reference, so its own projection is produced before the
+		// reference check: a missing reference list never discards the event.
+		own := ""
 		if !reader.Retired && mapFieldCLI(reader.snapshot.State, "lifecycle")["state"] == "building" {
 			observed := in
 			if observed.EffectiveAgentID() == "" {
@@ -279,8 +362,20 @@ func hookReaderObservation(root string, in policy.Input, out, diagnostic io.Writ
 			}
 			// Reuse the original Builder projection, including the exact private
 			// PLAN/Result paths and its fixed engineering read order.
-			if own := stageBuilderQuestionLifecycleContext(root, observed, reader.snapshot); own != "" {
-				message = own
+			own = stageBuilderQuestionLifecycleContext(root, observed, reader.snapshot)
+		}
+		switch {
+		case own != "":
+			message = own
+		case len(reader.References) == 0:
+			// Nothing can be projected for this Worker on this event. Report the
+			// gap instead of returning success without any object.
+			fmt.Fprintf(diagnostic, "Original Worker responsibility for %s has no recorded reference on this %s event; Main inspects the original dispatch and restores the registration. No responsibility was inferred.\n", reader.Owner, in.Event)
+			return true, 0
+		default:
+			message = fmt.Sprintf("Original Worker responsibility for %s: %s. Continue only this original responsibility; the global stage does not assign Main's current work to this Worker.", reader.Owner, strings.Join(reader.References, ", "))
+			if reader.Retired {
+				message = fmt.Sprintf("Original Worker responsibility for %s is retired/superseded: %s. Preserve its original receipt and completed work; no new Main responsibility is assigned by the current stage.", reader.Owner, strings.Join(reader.References, ", "))
 			}
 		}
 		if len(reader.Receipts) > 0 {
@@ -296,4 +391,125 @@ func hookReaderObservation(root string, in policy.Input, out, diagnostic io.Writ
 	}
 	commit()
 	return true, 0
+}
+
+// hookReaderDelegationEvent reports a platform delegation. Its audience is the
+// top-level platform observer, so an unclassified observer still sees the
+// read-only delegation preflight instead of a swallowed event.
+func hookReaderDelegationEvent(in policy.Input) bool {
+	if in.Event != "PreToolUse" {
+		return false
+	}
+	return in.ToolName == "Agent" || in.ToolName == "Task" || in.ToolName == "SubagentHandback"
+}
+
+// hookReaderReturnEvent reports the platform events that carry a professional
+// return. The unknown attribution belongs to the model on those events; an
+// ordinary tool event stays quiet in the model's face.
+//
+// TeammateIdle is a platform housekeeping notification, not the acting agent's
+// own return: the new native flow does not start or close a responsibility on
+// it, and an earlier unassociated event stays neutral in the model's face. The
+// fact remains in the operator diagnostic.
+func hookReaderReturnEvent(event string) bool {
+	switch event {
+	case "Stop", "SubagentStop":
+		return true
+	}
+	return false
+}
+
+// hookReaderUnknownAttribution reports an event that belongs to neither Main
+// nor a registered Worker. It names the event, the platform identity facts the
+// payload actually carried, the registration fact that is missing, and the
+// original responsibility coordinates the control plane really records for that
+// identity. It never guesses an owner and never compares a revision, hash,
+// digest or round to decide the attribution.
+func hookReaderUnknownAttribution(in policy.Input, reader *hookReader) string {
+	actor := in.EffectiveAgentID()
+	identity := "no platform agent identity in this payload"
+	switch {
+	case in.AgentID != "" && in.TeammateName != "":
+		identity = "agent_id=" + in.AgentID + ", teammate_name=" + in.TeammateName
+	case in.AgentID != "":
+		identity = "agent_id=" + in.AgentID
+	case in.TeammateName != "":
+		identity = "teammate_name=" + in.TeammateName
+	}
+	if in.SessionID != "" {
+		identity += ", session_id=" + in.SessionID
+	}
+	if in.CWD != "" {
+		identity += ", cwd=" + in.CWD
+	}
+	missing := "no registered Agent " + fmt.Sprintf("%q", actor) + " in the current Runtime and no current Assignment record for it"
+	if actor == "" {
+		missing = "no platform agent identity, no registered Agent and no current Assignment record for this event"
+	}
+	message := fmt.Sprintf("%s event cannot be attributed to Main or a registered Worker: observer kind %s; platform identity carried: %s. Missing registration facts: %s.", in.Event, reader.Kind, identity, missing)
+	coordinates := hookReaderOriginalCoordinates(reader, actor)
+	if len(coordinates) > 0 {
+		message += " Original responsibility coordinates recorded for " + actor + ": " + strings.Join(coordinates, "; ") + "."
+	} else {
+		message += " No original responsibility coordinate is recorded for " + actor + " in the current Runtime."
+	}
+	message += " Main owns the original completion and integration of that responsibility; no owner, task or answer path was inferred from this event."
+	return message
+}
+
+// hookReaderOriginalCoordinates projects only registered ownership facts: the
+// TASK rows the actor owns and the evidence rows the actor produced. Every row
+// is matched by its recorded owner, never by role, recency or a unique
+// candidate.
+func hookReaderOriginalCoordinates(reader *hookReader, actor string) []string {
+	if actor == "" || reader.snapshot.State == nil {
+		return nil
+	}
+	var coordinates []string
+	entities := mapFieldCLI(reader.snapshot.State, "entities")
+	for _, row := range objectSliceAny(entities["tasks"]) {
+		if !hookReaderRecordedOwner(row["owner_agent_ids"], actor) {
+			continue
+		}
+		id := stringValue(row["id"])
+		if id == "" {
+			continue
+		}
+		coordinate := "TASK " + id
+		if path := stringValue(row["path"]); path != "" {
+			coordinate += " at " + path
+		}
+		coordinates = appendUnique(coordinates, coordinate)
+	}
+	for _, row := range objectSliceAny(entities["evidence"]) {
+		if !hookReaderRecordedOwner(row["produced_by"], actor) {
+			continue
+		}
+		id := stringValue(row["id"])
+		if id == "" {
+			continue
+		}
+		coordinate := stringValue(row["kind"]) + " evidence " + id
+		if path := stringValue(row["path"]); path != "" {
+			coordinate += " at " + path
+		}
+		coordinates = appendUnique(coordinates, coordinate)
+	}
+	return coordinates
+}
+
+// hookReaderRecordedOwner reports whether a registered owner list contains the
+// exact platform actor.
+func hookReaderRecordedOwner(value any, actor string) bool {
+	switch raw := value.(type) {
+	case string:
+		return raw == actor
+	case []any:
+		for _, item := range raw {
+			if stringValue(item) == actor {
+				return true
+			}
+		}
+	}
+	return false
 }

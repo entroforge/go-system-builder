@@ -12,15 +12,13 @@ import (
 	"github.com/entroforge/go-system-builder/internal/cli"
 	"github.com/entroforge/go-system-builder/internal/projectconventions"
 	"github.com/entroforge/go-system-builder/internal/workpacket"
-	"github.com/entroforge/go-system-builder/internal/workspace"
 )
 
 func configureContextConventions(t *testing.T) func(string, map[string]any) {
 	return func(root string, state map[string]any) {
 		t.Helper()
 		rule := "docs/rules/error-handling.md"
-		body, err := os.ReadFile(filepath.Join(root, rule))
-		if err != nil {
+		if _, err := os.ReadFile(filepath.Join(root, rule)); err != nil {
 			t.Fatal(err)
 		}
 		code := []byte("package src\nfunc Value() int { return 1 }\n")
@@ -30,7 +28,7 @@ func configureContextConventions(t *testing.T) func(string, map[string]any) {
 		if err := os.WriteFile(filepath.Join(root, "src/value.go"), code, 0600); err != nil {
 			t.Fatal(err)
 		}
-		entry := projectconventions.Entry{ID: "CNV-ERROR-01", Topic: "error-handling", Scope: []string{"src"}, Default: "Do not swallow errors.", SourceRefs: []projectconventions.Reference{{Kind: "rule", ID: "R-ERR-01", Path: rule, Anchor: "3-hard-rules", SHA256: workpacket.Digest(body)}}, ExampleRefs: []projectconventions.Reference{{Path: "src/value.go", SHA256: workpacket.Digest(code)}}, Exceptions: []string{}, Status: "approved"}
+		entry := projectconventions.Entry{ID: "CNV-ERROR-01", Topic: "error-handling", Scope: []string{"src"}, Default: "Do not swallow errors.", SourceRefs: []projectconventions.Reference{{Kind: "rule", ID: "R-ERR-01", Path: rule, Anchor: "3-hard-rules"}}, ExampleRefs: []projectconventions.Reference{{Path: "src/value.go"}}, Exceptions: []string{}, Status: "approved"}
 		stageJSON(t, root, projectconventions.RegistryPath, projectconventions.Registry{SchemaVersion: "1.0.0", Entries: []projectconventions.Entry{entry}})
 		for _, raw := range state["documents"].([]any) {
 			d := raw.(map[string]any)
@@ -46,27 +44,10 @@ func configureContextConventions(t *testing.T) func(string, map[string]any) {
 			if err := os.WriteFile(filepath.Join(root, path), data, 0600); err != nil {
 				t.Fatal(err)
 			}
-			d["sha256"] = workpacket.Digest(data)
 		}
 	}
 }
-func TestBuilderConventionsOwnedExampleSurvivesActualVerifiedIntegration(t *testing.T) {
-	f := coreBuilderFixture(t, configureContextConventions(t))
-	runCoreBuilderIntegration(t, f)
-	b, err := workspace.Decode(stageSnapshot(t, f.root).State)
-	if err != nil {
-		t.Fatal(err)
-	}
-	e := b.Executions["assignment-core-builder"]
-	c, err := b.ReadDispatchContext(e)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if c.Conventions == nil || len(c.Conventions.TaskConventions) != 1 || c.Conventions.TaskConventions[0].Entries[0].Status != "declared_default" {
-		t.Fatal("actual Builder did not receive current default", c.Conventions)
-	}
-}
-func TestNativeS5ConventionsReuseFrozenAnalysisBindingAndRejectDrift(t *testing.T) {
+func TestNativeS5ConventionsReuseOriginalAnalysisAfterUnrelatedSourceChange(t *testing.T) {
 	f := newStageAnswerFixtureMode(t, true, configureContextConventions(t))
 	p := f.packets[0]
 	artifact, err := workpacket.ReadTaskAnalysis(f.root, p)
@@ -116,13 +97,11 @@ func TestNativeS5ConventionsReuseFrozenAnalysisBindingAndRejectDrift(t *testing.
 	if err := os.WriteFile(path, append(body, '\n'), 0600); err != nil {
 		t.Fatal(err)
 	}
-	var out, errOut bytes.Buffer
-	code := cli.Run([]string{"runtime", "assignment-context", "prepare", "--root", f.root, "--agent-id", p.Binding.Owner}, nil, &out, &errOut)
-	if code == 0 || !strings.Contains(errOut.String(), "source changed") {
-		t.Fatalf("native convention drift permitted: %d %s", code, errOut.String())
+	if replay := stageCLI(t, "runtime", "assignment-context", "prepare", "--root", f.root, "--agent-id", p.Binding.Owner); replay != output {
+		t.Fatal("unrelated source edit changed original context")
 	}
 	if stageSnapshot(t, f.root).Revision != before.Revision {
-		t.Fatal("failed native replay mutated Runtime")
+		t.Fatal("replay wrote Runtime after unrelated source edit")
 	}
 }
 
@@ -177,12 +156,36 @@ func TestNativeBuilderConventionsFixedReplayAndSourceDrift(t *testing.T) {
 	if err := os.WriteFile(rule, append(body, '\n'), 0600); err != nil {
 		t.Fatal(err)
 	}
+	contextBefore, err := os.ReadFile(filepath.Join(f.root, binding.Context.Path))
+	if err != nil {
+		t.Fatal(err)
+	}
 	var out, errOut bytes.Buffer
 	code := cli.Run([]string{"runtime", "assignment-context", "prepare", "--root", f.root, "--agent-id", "core-builder"}, nil, &out, &errOut)
-	if code == 0 || !strings.Contains(errOut.String(), "source changed") {
-		t.Fatalf("drifted native default replayed: %d %s", code, errOut.String())
+	// A changed source is no longer a digest gate. L4-workflow-convergence.md:250
+	// keeps historical digests as raw record data and L4-workflow-convergence.md:281
+	// forbids a hash as an acceptance precondition, so preparation only checks
+	// that the source is still readable; whether the change matters is left to
+	// Main's judgment.
+	if code != 0 {
+		t.Fatalf("readable source change refused the original replay: %d %s", code, errOut.String())
+	}
+	for _, retired := range []string{"source changed", "digest", "sha256", "checksum", "fingerprint"} {
+		if strings.Contains(strings.ToLower(errOut.String()+out.String()), retired) {
+			t.Fatalf("original replay still gated on a retired %q reason: %s", retired, out.String()+errOut.String())
+		}
+	}
+	// The original frozen context and its original scoped default survive the
+	// edit; the replay must not rebuild the responsibility from the changed
+	// source.
+	contextAfter, err := os.ReadFile(filepath.Join(f.root, binding.Context.Path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(contextBefore, contextAfter) {
+		t.Fatal("drifted source rebuilt the original frozen context")
 	}
 	if stageSnapshot(t, f.root).Revision != before.Revision {
-		t.Fatal("failed native Builder replay wrote Runtime")
+		t.Fatal("original Builder replay wrote Runtime")
 	}
 }

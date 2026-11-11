@@ -1,8 +1,8 @@
 package cli
 
 import (
-	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/entroforge/go-system-builder/internal/fileview"
@@ -38,7 +38,7 @@ func contextConventions(root string, state map[string]any, a hookctx.AssignmentC
 			return nil, nil
 		}
 		b := &projectconventions.Bundle{ResolverVersion: artifact.ConventionsResolverVersion}
-		if err := json.Unmarshal(artifact.TaskConventions, &b.TaskConventions); err != nil {
+		if err := projectconventions.DecodeProjections(artifact.TaskConventions, &b.TaskConventions); err != nil {
 			return nil, err
 		}
 		return b, nil
@@ -58,7 +58,7 @@ func contextConventions(root string, state map[string]any, a hookctx.AssignmentC
 	approved := []projectconventions.Reference{}
 	paths := []string{}
 	for _, document := range documents {
-		ref := projectconventions.Reference{ID: document.Reference.ID, Path: document.Reference.Path, Version: document.Reference.Version, SHA256: document.Reference.SHA256}
+		ref := projectconventions.Reference{ID: document.Reference.ID, Path: document.Reference.Path, Version: document.Reference.Version}
 		approved = append(approved, ref)
 		if document.Kind == "task" && document.Reference.ID == a.TaskID {
 			paths = append(paths, ref.Path)
@@ -104,7 +104,7 @@ func verifyConventionView(root string, state map[string]any, b *projectconventio
 	registered := []projectconventions.Reference{}
 	for _, document := range documents {
 		ref := document.Reference
-		registered = append(registered, projectconventions.Reference{ID: ref.ID, Path: ref.Path, Version: ref.Version, SHA256: ref.SHA256})
+		registered = append(registered, projectconventions.Reference{ID: ref.ID, Path: ref.Path, Version: ref.Version})
 		if document.Kind == "task" {
 			tasks[ref.Path] = true
 		}
@@ -120,7 +120,7 @@ func verifyConventionView(root string, state map[string]any, b *projectconventio
 				}
 				found := false
 				for _, current := range registered {
-					if current.ID == ref.ID && current.Path == ref.Path && current.Version == ref.Version && current.SHA256 == ref.SHA256 {
+					if current.ID == ref.ID && current.Path == ref.Path && current.Version == ref.Version {
 						found = true
 					}
 				}
@@ -134,13 +134,33 @@ func verifyConventionView(root string, state map[string]any, b *projectconventio
 	if err != nil {
 		return err
 	}
-	for path, hash := range sources {
-		data, err := files.ReadFile(path)
-		if err != nil || workpacket.Digest(data) != hash {
-			return fmt.Errorf("convention source differs from original committed authority: %s", path)
+	for path := range sources {
+		if _, err := files.ReadFile(path); err != nil {
+			return fmt.Errorf("convention source is unavailable: %s", path)
 		}
 	}
 	return files.Verify()
+}
+
+// verifyDeclaredSources proves that every source path a fixed context declared
+// still exists and is readable under the authoritative source root. It judges
+// existence and readability only: the content of a source is never
+// re-authenticated here, so an edited installed source stays accepted. The
+// check is independent of the conventions bundle, so a context that carries no
+// conventions still verifies its declared sources instead of skipping the
+// verification altogether.
+func verifyDeclaredSources(root string, inputs map[string]string) error {
+	paths := make([]string, 0, len(inputs))
+	for path := range inputs {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	for _, path := range paths {
+		if _, err := workpacket.ReadFile(root, path, 8<<20); err != nil {
+			return fmt.Errorf("convention source is unavailable: %s", path)
+		}
+	}
+	return nil
 }
 func mergeConventionInputs(root string, b *projectconventions.Bundle, inputs map[string]string) error {
 	if b == nil {
@@ -148,21 +168,17 @@ func mergeConventionInputs(root string, b *projectconventions.Bundle, inputs map
 	}
 	tasks := map[string]bool{}
 	for _, row := range b.TaskConventions {
-		tasks[row.TaskRef] = inputs[row.TaskRef] != ""
+		_, tasks[row.TaskRef] = inputs[row.TaskRef]
 	}
 	sources, err := b.Sources(tasks)
 	if err != nil {
 		return err
 	}
-	for path, hash := range sources {
-		if old, ok := inputs[path]; ok && old != hash {
-			return fmt.Errorf("convention source differs from original frozen input: %s", path)
+	for path := range sources {
+		if _, err := workpacket.ReadFile(root, path, 8<<20); err != nil {
+			return fmt.Errorf("convention source is unavailable: %s", path)
 		}
-		data, err := workpacket.ReadFile(root, path, 8<<20)
-		if err != nil || workpacket.Digest(data) != hash {
-			return fmt.Errorf("convention source is unavailable or changed: %s", path)
-		}
-		inputs[path] = hash
+		inputs[path] = path
 	}
 	return b.ValidateInputs(inputs)
 }

@@ -1,9 +1,7 @@
 package semantic_test
 
 import (
-	"crypto/sha256"
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -11,7 +9,7 @@ import (
 	"github.com/entroforge/go-system-builder/internal/semantic"
 )
 
-func TestValidateRuntimeReachabilityAcceptsRawCRLFREQFingerprint(t *testing.T) {
+func TestValidateRuntimeReachabilityIgnoresHistoricalDigests(t *testing.T) {
 	root := t.TempDir()
 	reqPath := filepath.Join(root, "docs", "requirements", "REQ-CRLF.md")
 	if err := os.MkdirAll(filepath.Dir(reqPath), 0o755); err != nil {
@@ -21,12 +19,13 @@ func TestValidateRuntimeReachabilityAcceptsRawCRLFREQFingerprint(t *testing.T) {
 	if err := os.WriteFile(reqPath, req, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	rawDigest := sha256.Sum256(req)
 	state := map[string]any{
 		"bound_req": map[string]any{
 			"path":   "docs/requirements/REQ-CRLF.md",
-			"sha256": fmt.Sprintf("%x", rawDigest),
+			"sha256": "obsolete-nonstandard",
 		},
+		"documents": []any{map[string]any{"id": "REQ-CRLF", "path": "docs/requirements/REQ-CRLF.md", "sha256": "wrong"}},
+		"evidence":  []any{map[string]any{"id": "E-1", "path": "docs/requirements/REQ-CRLF.md", "sha256": "wrong"}},
 	}
 	stateData, err := json.Marshal(state)
 	if err != nil {
@@ -40,6 +39,12 @@ func TestValidateRuntimeReachabilityAcceptsRawCRLFREQFingerprint(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := semantic.ValidateRuntimeReachability(root); err != nil {
-		t.Fatalf("raw-byte CRLF bound REQ fingerprint should validate: %v", err)
+		t.Fatalf("existing source must not require historical digests: %v", err)
+	}
+	if err := os.Remove(reqPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := semantic.ValidateRuntimeReachability(root); err == nil {
+		t.Fatal("missing original source must still be reported")
 	}
 }

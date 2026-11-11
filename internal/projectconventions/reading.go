@@ -1,7 +1,6 @@
 package projectconventions
 
 import (
-	"crypto/sha256"
 	"fmt"
 	"path/filepath"
 	"regexp"
@@ -9,9 +8,6 @@ import (
 	"unicode"
 )
 
-var digestPattern = regexp.MustCompile(`^[a-f0-9]{64}$`)
-
-func digest(data []byte) string { return fmt.Sprintf("%x", sha256.Sum256(data)) }
 func safePath(path string, scope bool) bool {
 	if path == "." {
 		return scope

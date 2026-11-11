@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 )
@@ -31,6 +30,7 @@ func s9SeedRegistrationFixture(t *testing.T) (string, string, string, string, []
 	if err := json.Unmarshal(planData, &planBody); err != nil {
 		t.Fatal(err)
 	}
+	state["review"].(map[string]any)["round_entry"].(map[string]any)["plan_id"] = planBody["review_plan_id"]
 	planBody["review_round"] = 2
 	planBody["change_impact"] = map[string]any{"source_refs": []string{"ev-impact-1"}}
 	planBody["coverage_inventory"] = []any{map[string]any{
@@ -56,7 +56,7 @@ func s9SeedRegistrationFixture(t *testing.T) (string, string, string, string, []
 		"schema_version": "1.0.0", "record_type": "change_impact", "impact_id": "impact-BUG-001-attempt-1",
 		"runtime_id": "loop-REQ-TEST", "req_id": "REQ-001", "baseline_generation": 1,
 		"source_bug_ids": []string{"BUG-001"}, "change_types": []string{"implementation"},
-		"changed_artifacts": []any{map[string]any{"id": "handler", "path": "internal/example/service.go", "sha256": sha256Of([]byte("fixture baseline"))}},
+		"changed_artifacts": []any{map[string]any{"id": "handler", "path": "internal/example/service.go"}},
 		"decisions": []any{map[string]any{
 			"source_id": "handler", "target_id": "evidence-verification", "relation": "implements repair",
 			"rule_id": "IM-IMPLEMENTATION-MODULE", "decision": "invalidate", "responsibility_id": "VER-MODULE-COMPLETE",
@@ -79,7 +79,7 @@ func s9SeedRegistrationFixture(t *testing.T) (string, string, string, string, []
 	}
 	state["evidence"] = []any{map[string]any{
 		"id": "ev-impact-1", "kind": "change_impact", "path": impactRel,
-		"sha256": sha256Of(impactBytes), "status": "valid", "baseline_generation": 1,
+		"status": "valid", "baseline_generation": 1,
 		"review_round": nil, "produced_by": []any{"orchestrator"}, "invalidated_by": nil,
 		"invalidation_rule": nil, "invalidation_reason": nil, "responsibility_id": "orchestrator", "scope_refs": []any{},
 	}}
@@ -117,11 +117,11 @@ func s9SeedRegistrationFixture(t *testing.T) (string, string, string, string, []
 	if err := os.WriteFile(seedPath, seedData, 0644); err != nil {
 		t.Fatal(err)
 	}
-	if err := ApplyRegisteredPlanProjection(state, seed, seedRef, sha256Of(seedData), 2, ws, "", time.Now()); err != nil {
+	if err := ApplyRegisteredPlanProjection(state, seed, seedRef, ws, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	entry := state["review"].(map[string]any)["round_entry"].(map[string]any)
-	entry["review_plan_seed_ref"], entry["review_plan_seed_sha256"] = seedRef, sha256Of(seedData)
+	entry["review_plan_seed_ref"] = seedRef
 	statePath, journalPath = writeState(t, root, state)
 	return root, statePath, journalPath, planPath, seedData
 }
@@ -133,7 +133,7 @@ func TestS9SeedFirstProfessionalRegistrationCanChooseGenuineNA(t *testing.T) {
 		t.Fatalf("original first professional registration cannot resolve seed cold_start to N/A: %v", err)
 	}
 	ptr := PlanPointerFromState(snapshot.State)
-	if currentReviewRound(snapshot.State) != 2 || ptr.Revision != 1 || ptr.E2ECoverageState != "not_applicable" || ptr.VerificationArtifactWorkspace != "" {
+	if ptr.Revision != 1 || ptr.E2ECoverageState != "not_applicable" || ptr.VerificationArtifactWorkspace != "" {
 		t.Fatalf("wrong first professional projection: %+v", ptr)
 	}
 	seedAfter, err := os.ReadFile(filepath.Join(root, ".claude/review/repair/s7-seeds/original.json"))
@@ -146,7 +146,7 @@ func TestS9SeedFirstProfessionalRegistrationCanChooseGenuineNA(t *testing.T) {
 }
 
 func TestS9SeedRegistrationCannotReplaceStartedOrUnboundPlan(t *testing.T) {
-	for _, test := range []string{"dispatched", "queued owner", "result", "missing assignment", "wrong seed hash", "wrong entry", "revision two", "different id", "drifted seed", "drifted product"} {
+	for _, test := range []string{"dispatched", "queued owner", "result", "missing assignment", "revision two", "different id"} {
 		t.Run(test, func(t *testing.T) {
 			root, statePath, journalPath, planPath, _ := s9SeedRegistrationFixture(t)
 			data, _ := os.ReadFile(statePath)
@@ -154,7 +154,6 @@ func TestS9SeedRegistrationCannotReplaceStartedOrUnboundPlan(t *testing.T) {
 			_ = json.Unmarshal(data, &state)
 			rev := state["review"].(map[string]any)
 			ptr := rev["plan"].(map[string]any)
-			entry := rev["round_entry"].(map[string]any)
 			assignments := rev["assignments"].(map[string]any)
 			row := assignments["assignment-qa-1"].(map[string]any)
 			switch test {
@@ -168,10 +167,6 @@ func TestS9SeedRegistrationCannotReplaceStartedOrUnboundPlan(t *testing.T) {
 				row["result_ref"] = ".claude/evidence/accepted.json"
 			case "missing assignment":
 				delete(assignments, "assignment-qa-1")
-			case "wrong seed hash":
-				entry["review_plan_seed_sha256"] = strings.Repeat("a", 64)
-			case "wrong entry":
-				entry["transition_id"] = "TR-006"
 			case "revision two":
 				ptr["revision"] = 2
 			case "different id":
@@ -181,10 +176,6 @@ func TestS9SeedRegistrationCannotReplaceStartedOrUnboundPlan(t *testing.T) {
 				p["review_plan_id"] = "another-plan"
 				d, _ = json.Marshal(p)
 				_ = os.WriteFile(planPath, d, 0644)
-			case "drifted seed":
-				_ = os.WriteFile(filepath.Join(root, ".claude/review/repair/s7-seeds/original.json"), []byte("changed"), 0644)
-			case "drifted product":
-				_ = os.WriteFile(filepath.Join(root, "internal/example/service.go"), []byte("changed"), 0644)
 			}
 			before, _ := json.Marshal(state)
 			_ = os.WriteFile(statePath, before, 0644)

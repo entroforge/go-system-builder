@@ -40,6 +40,13 @@ func runInstall(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(err)
 	}
+	info, err := os.Lstat(source)
+	if err != nil {
+		return fail(fmt.Errorf("release source: %w", err))
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return fail(fmt.Errorf("release source must be a real directory"))
+	}
 	root, err := filepath.Abs(*rootArg)
 	if err != nil {
 		return fail(err)
@@ -59,9 +66,6 @@ func runInstall(args []string, stdout, stderr io.Writer) int {
 			return fail(fmt.Errorf("target is not empty; existing projects and active Runtime upgrades are not supported; keep the matching previous release"))
 		}
 	} else if !os.IsNotExist(err) {
-		return fail(err)
-	}
-	if err := verifyInstallManifest(source); err != nil {
 		return fail(err)
 	}
 	if err := releasegraph.ValidateStagedRelease(source); err != nil {
@@ -161,9 +165,6 @@ func runInstall(args []string, stdout, stderr io.Writer) int {
 		return fail(err)
 	}
 	if err := semantic.ValidateManualAgreement(stage); err != nil {
-		return fail(err)
-	}
-	if err := recordInstalledManifest(source, stage); err != nil {
 		return fail(err)
 	}
 	// Remove only an empty target; a concurrent writer makes this fail safely.

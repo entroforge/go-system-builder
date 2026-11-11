@@ -23,16 +23,13 @@ func readS8ListenerCase(root string, state map[string]any) (map[string]any, erro
 	if pointer == nil {
 		return nil, nil
 	}
-	ref, sha := stringValue(pointer["path"]), stringValue(pointer["sha256"])
-	if ref == "" || sha == "" {
-		return nil, fmt.Errorf("current Case path or SHA is unavailable")
+	ref := stringValue(pointer["path"])
+	if ref == "" {
+		return nil, fmt.Errorf("current Case path is unavailable")
 	}
 	data, err := workpacket.ReadFile(root, ref, 20<<20)
 	if err != nil {
 		return nil, err
-	}
-	if workpacket.Digest(data) != sha {
-		return nil, fmt.Errorf("current Case %s differs from its recorded SHA", ref)
 	}
 	if err := workpacket.ValidateUniqueJSON(data); err != nil {
 		return nil, err
@@ -50,7 +47,6 @@ func readS8ListenerCase(root string, state map[string]any) (map[string]any, erro
 func s8ListenerPackets(state, document map[string]any, owner string) ([]workpacket.HypothesisResultPacket, error) {
 	entities, _ := state["entities"].(map[string]any)
 	baseline, _ := state["baseline"].(map[string]any)
-	review, _ := state["review"].(map[string]any)
 	var packets []workpacket.HypothesisResultPacket
 	seen := map[string]bool{}
 	for _, row := range objectSliceAny(entities["work_packets"]) {
@@ -58,9 +54,11 @@ func s8ListenerPackets(state, document map[string]any, owner string) ([]workpack
 			continue
 		}
 		binding, _ := row["binding"].(map[string]any)
-		if owner != "" && binding["owner_agent_id"] != owner || binding["runtime_id"] != state["runtime_id"] ||
-			tolerantInt(binding["baseline_generation"]) != tolerantInt(baseline["generation"]) ||
-			tolerantInt(binding["review_round"]) != tolerantInt(review["round"]) || document == nil || binding["case_id"] != document["case_id"] {
+		if owner != "" && binding["owner_agent_id"] != owner || binding["runtime_id"] != state["runtime_id"] {
+			continue
+		}
+		isCurrent := document != nil && binding["case_id"] == document["case_id"]
+		if isCurrent && tolerantInt(binding["baseline_generation"]) != tolerantInt(baseline["generation"]) {
 			continue
 		}
 		data, err := json.Marshal(row)
@@ -71,7 +69,7 @@ func s8ListenerPackets(state, document map[string]any, owner string) ([]workpack
 		if err := json.Unmarshal(data, &packet); err != nil {
 			return nil, err
 		}
-		if _, accepted := s8ListenerReceipt(document, packet); !accepted {
+		if _, accepted := s8ListenerReceipt(document, packet); isCurrent && !accepted {
 			current := false
 			for _, question := range objectSliceAny(document["hypotheses"]) {
 				if question["hypothesis_id"] == packet.Binding.HypothesisID && question["assignment_id"] == packet.Binding.AssignmentID {
@@ -82,7 +80,7 @@ func s8ListenerPackets(state, document map[string]any, owner string) ([]workpack
 				continue
 			}
 		}
-		slot := packet.Binding.OwnerAgentID + "/" + packet.Binding.AssignmentID
+		slot := packet.Binding.CaseID + "/" + packet.Binding.OwnerAgentID + "/" + packet.Binding.AssignmentID
 		if seen[slot] || packet.ID == "" || packet.AnswerPath == "" || packet.ViewPath == "" {
 			return nil, fmt.Errorf("current S8 questionnaire identity is missing or ambiguous")
 		}
@@ -93,7 +91,17 @@ func s8ListenerPackets(state, document map[string]any, owner string) ([]workpack
 }
 
 func s8ListenerReceipt(document map[string]any, packet workpacket.HypothesisResultPacket) (runtime.HypothesisResultReceipt, bool) {
-	for _, row := range objectSliceAny(document["hypothesis_results"]) {
+	if len(packet.LateResults) > 0 {
+		late := packet.LateResults[len(packet.LateResults)-1]
+		var answer workpacket.HypothesisResultAnswer
+		if json.Unmarshal(late.Answer, &answer) == nil && answer.Result != nil {
+			return runtime.HypothesisResultReceipt{PacketID: packet.ID, OwnerAgentID: packet.Binding.OwnerAgentID, AssignmentID: packet.Binding.AssignmentID,
+				ExecutionRoot: late.ExecutionRoot, Result: *answer.Result, Answer: late.Answer}, true
+		}
+	}
+	rows := objectSliceAny(document["hypothesis_results"])
+	for i := len(rows) - 1; i >= 0; i-- {
+		row := rows[i]
 		raw, _ := row["receipt"].(map[string]any)
 		if raw["packet_id"] != packet.ID {
 			continue
@@ -103,14 +111,15 @@ func s8ListenerReceipt(document map[string]any, packet workpacket.HypothesisResu
 			return runtime.HypothesisResultReceipt{}, false
 		}
 		var receipt runtime.HypothesisResultReceipt
-		if json.Unmarshal(data, &receipt) != nil {
+		if runtime.DecodeOriginalHypothesisResultReceipt(data, &receipt) != nil {
 			return receipt, false
 		}
+		receipt.Result = stringValue(row["result"])
 		b := packet.Binding
 		return receipt, receipt.Contract == "s8-hypothesis-result-receipt-v1" && receipt.PacketID == packet.ID &&
-			receipt.RuntimeID == b.RuntimeID && receipt.BaselineGeneration == b.BaselineGeneration && receipt.ReviewRound == b.ReviewRound &&
+			receipt.RuntimeID == b.RuntimeID && receipt.BaselineGeneration == b.BaselineGeneration &&
 			receipt.OwnerAgentID == b.OwnerAgentID && receipt.AssignmentID == b.AssignmentID && receipt.TeamID == b.TeamID && receipt.TaskID == b.TaskID &&
-			receipt.SuccessorCaseRef != "" && receipt.SuccessorCaseRevision > b.CaseRevision && len(receipt.AnswerSHA256) == 64 && receipt.ExecutionRoot != ""
+			receipt.SuccessorCaseRef != "" && receipt.SuccessorCaseRevision > b.CaseRevision && receipt.ExecutionRoot != ""
 	}
 	return runtime.HypothesisResultReceipt{}, false
 }
@@ -171,7 +180,7 @@ func s8HypothesisQuestionnaireContext(ctx context.Context, root string, request 
 			// The original receipt retains the actual answer source after a
 			// Worker ends; no live execution or authoring file is required.
 			answer = filepath.Join(receipt.ExecutionRoot, filepath.FromSlash(packet.AnswerPath))
-			lines = append(lines, fmt.Sprintf("S8 Investigator %s assignment=%s: questionnaire: %s. The current Case records your HypothesisResult accepted; work_complete=true. Main owns remaining Case results, routing and approval; do not repeat this answer.", packet.Binding.OwnerAgentID, packet.Binding.AssignmentID, answer))
+			lines = append(lines, fmt.Sprintf("S8 Investigator %s assignment=%s: questionnaire: %s. The current Case records your HypothesisResult accepted; work_complete=true for this delivery. The conclusion does not determine your Agent/Task progress or complete the Case. Main owns unknowns, remaining results, routing and approval; continue genuine unfinished work on its original responsibility without repeating the old answer.", packet.Binding.OwnerAgentID, packet.Binding.AssignmentID, answer))
 			continue
 		}
 		if pathErr != nil {
@@ -183,9 +192,9 @@ func s8HypothesisQuestionnaireContext(ctx context.Context, root string, request 
 			missing = " Questionnaire preparation is pending; the next Main tool listener must restore this original view/answer without replacing professional work."
 		}
 		if main {
-			lines = append(lines, fmt.Sprintf("S8 Investigator %s assignment=%s: Main carries exact question %s and private questionnaire answer %s into native Agent. Investigator performs the actual discriminator without product writes, saves the original HypothesisResult and returns its reference; SubagentStop invokes the original Case consumer. No opaque ID lookup, workspace launcher or generic activation is required.%s", packet.Binding.OwnerAgentID, packet.Binding.AssignmentID, view, answer, missing))
+			lines = append(lines, fmt.Sprintf("S8 Investigator %s assignment=%s: Main carries exact question %s and private questionnaire answer %s into native Agent. Investigator performs the actual discriminator without product writes, saves the original HypothesisResult; Natural Pre, successful Post and SubagentStop observe the original answer and invoke the original Case consumer. No opaque ID lookup, workspace launcher or generic activation is required.%s", packet.Binding.OwnerAgentID, packet.Binding.AssignmentID, view, answer, missing))
 		} else {
-			lines = append(lines, fmt.Sprintf("S8 Investigator %s assignment=%s: read the exact issued question %s; questionnaire: %s. Complete the professional HypothesisResult and save it through the original Case consumer.%s", packet.Binding.OwnerAgentID, packet.Binding.AssignmentID, view, answer, missing))
+			lines = append(lines, fmt.Sprintf("S8 Investigator %s assignment=%s: read the exact issued question %s; questionnaire: %s. Perform the actual discriminator and save the professional HypothesisResult at this original path. Natural Pre, successful Post and SubagentStop call the original Case consumer; no submit or return-reference action is required.%s", packet.Binding.OwnerAgentID, packet.Binding.AssignmentID, view, answer, missing))
 		}
 	}
 	if !main && len(lines) == 0 {
@@ -211,6 +220,9 @@ func s8QuestionnairesNeedPreparation(root string, state, document map[string]any
 		return false
 	}
 	for _, packet := range packets {
+		if document == nil || packet.Binding.CaseID != document["case_id"] {
+			continue
+		}
 		if _, accepted := s8ListenerReceipt(document, packet); accepted {
 			continue
 		}
@@ -266,13 +278,12 @@ func s8ListenerDiagnosticPaths(root string, state map[string]any, owner string) 
 	}
 	entities, _ := state["entities"].(map[string]any)
 	baseline, _ := state["baseline"].(map[string]any)
-	review, _ := state["review"].(map[string]any)
 	pointer := investigationPointer(state)
 	for _, row := range objectSliceAny(entities["work_packets"]) {
 		binding, _ := row["binding"].(map[string]any)
 		if row["template_id"] != "s8-hypothesis-result-v1" || owner != "" && binding["owner_agent_id"] != owner ||
 			binding["runtime_id"] != state["runtime_id"] || tolerantInt(binding["baseline_generation"]) != tolerantInt(baseline["generation"]) ||
-			tolerantInt(binding["review_round"]) != tolerantInt(review["round"]) || pointer == nil || binding["case_id"] != pointer["case_id"] {
+			pointer == nil || binding["case_id"] != pointer["case_id"] {
 			continue
 		}
 		answer := stringValue(row["answer_path"])

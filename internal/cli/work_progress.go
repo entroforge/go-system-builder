@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/entroforge/go-system-builder/internal/filelock"
 	"github.com/entroforge/go-system-builder/internal/fileview"
 	"github.com/entroforge/go-system-builder/internal/hook"
 	"github.com/entroforge/go-system-builder/internal/hookctx"
@@ -25,6 +24,36 @@ const progressSourceProjectionByteLimit int64 = 4 << 20
 
 func progressText(v any) string { s, _ := v.(string); return s }
 func progressJSON(v any) string { b, _ := json.Marshal(v); return string(b) }
+
+// progressFileStamp is a file's own length and modification time. It states
+// that an ordinary file changed; it never authenticates the bytes.
+func progressFileStamp(path string) string {
+	info, err := os.Stat(path)
+	if err != nil {
+		return "missing"
+	}
+	return fmt.Sprintf("%d:%d", info.Size(), info.ModTime().UnixNano())
+}
+
+// progressBranchRefStamp is the bound development branch's own ref record:
+// its length and modification time. The commit layer records the commit
+// change in that ref, so the observation needs no Git object ID, content
+// digest or source summary (L3-S4-task-split.md §10.2).
+func progressBranchRefStamp(root string, state map[string]any) string {
+	ref, err := fileview.DevelopmentRef(state)
+	if err != nil {
+		return "unknown"
+	}
+	branch := strings.TrimPrefix(ref, "refs/heads/")
+	if branch == "" {
+		return "unknown"
+	}
+	gitDir := filepath.Join(root, ".git")
+	if info, err := os.Stat(gitDir); err != nil || !info.IsDir() {
+		return "unknown"
+	}
+	return progressFileStamp(filepath.Join(gitDir, "refs", "heads", filepath.FromSlash(branch)))
+}
 
 func applyResponsibilityProgress(f *hook.ProgressFacts, responsibility hook.ResponsibilityFacts) bool {
 	if responsibility.ConsumerPending {
@@ -60,19 +89,14 @@ func addProgressSource(sources map[string]string, remaining *int64, sourceRoot, 
 		return "", fmt.Errorf("read necessary source within the %d-byte aggregate projection budget: %w", progressSourceProjectionByteLimit, err)
 	}
 	*remaining -= int64(len(data))
-	digest := workpacket.Digest(data)
-	sources[path] = digest
-	return digest, nil
+	sources[path] = "present"
+	return "present", nil
 }
 
 func projectProgressSourceInputs(sources map[string]string, remaining *int64, sourceRoot string, refs []workpacket.Reference) error {
 	for _, ref := range refs {
-		digest, err := addProgressSource(sources, remaining, sourceRoot, ref.Path)
-		if err != nil {
+		if _, err := addProgressSource(sources, remaining, sourceRoot, ref.Path); err != nil {
 			return err
-		}
-		if digest != ref.SHA256 {
-			return fmt.Errorf("necessary source differs from issued binding")
 		}
 	}
 	return nil
@@ -228,24 +252,47 @@ func observeWorkProgress(root string, request policy.Input, stderr io.Writer) (*
 	return notice, known && facts.Known && !facts.Waiting && planning, changed
 }
 
+// projectWorkProgress projects the original responsibility coordinates of the
+// current actor: the authoritative root, the original responsibility, its
+// declared source range and the actual answer. Product bytes, historical
+// sources and Git identities are not proof of progress. If the platform actor
+// cannot be matched unambiguously, the diagnostic is unknown.
 func projectWorkProgress(root string, request policy.Input, snap runtime.Snapshot) (hook.ProgressFacts, *workspace.Execution, error) {
 	f := hook.ProgressFacts{Session: request.SessionID, Sources: map[string]string{}}
-	if reader, ok := contextForHook(request).Value(hookReaderKey{}).(*hookReader); ok && reader.Kind != "Main" && reader.Kind != "Worker" {
-		return f, nil, nil
-	}
 	life, _ := snap.State["lifecycle"].(map[string]any)
 	if life["state"] == "inactive" || life["state"] == "paused" || snap.State["bound_req"] == nil {
 		return f, nil, nil
 	}
-	if runtime.PacketEnabled(snap.State) && life["state"] == "bug_resolution" && s9ProfessionalPhase(progressText(life["phase"])) {
-		// S9 professional listeners and saved-answer consumers own its actual
-		// progress. This optional legacy sampler has no S9 typed-packet or
-		// native-actor coverage; unknown telemetry is not missing work.
+	// An observer that is neither Main nor a registered Worker owns no
+	// responsibility here. Its observations stay unknown.
+	if reader, ok := contextForHook(request).Value(hookReaderKey{}).(*hookReader); ok && reader.Kind != "Main" && reader.Kind != "Worker" {
 		return f, nil, nil
 	}
-	originalEntities, _ := snap.State["entities"].(map[string]any)
+	// S9 professional listeners and saved-answer consumers own the S9 progress.
+	// This optional sampler has no S9 typed-packet or native-actor coverage;
+	// unknown telemetry is not missing work.
+	if runtime.PacketEnabled(snap.State) && life["state"] == "bug_resolution" && s9ProfessionalPhase(progressText(life["phase"])) {
+		return f, nil, nil
+	}
+	owner := request.EffectiveAgentID()
+	if owner == "" {
+		owner = "Main"
+	}
+	entities, _ := snap.State["entities"].(map[string]any)
+	rows, _ := entities["agents"].([]any)
+	matches := 0
+	for _, raw := range rows {
+		row, _ := raw.(map[string]any)
+		if row["id"] == owner {
+			matches++
+		}
+	}
+	if matches > 1 {
+		// An ambiguous platform actor is unknown, never a confident projection.
+		return f, nil, nil
+	}
 	for _, key := range []string{"agents", "tasks", "teams"} {
-		if rows, ok := originalEntities[key].([]any); ok && len(rows) > 32 {
+		if rows, ok := entities[key].([]any); ok && len(rows) > 32 {
 			return f, nil, fmt.Errorf("current context coverage exceeds thirty-two %s", key)
 		}
 	}
@@ -260,11 +307,10 @@ func projectWorkProgress(root string, request policy.Input, snap runtime.Snapsho
 		}
 		return f, nil, err
 	}
-	owner := request.EffectiveAgentID()
-	if owner == "" {
-		owner = "Main"
+	if owner != "Main" && matches == 0 {
+		// An unregistered actor has no original responsibility here.
+		return f, nil, nil
 	}
-	f.Owner = owner
 	b, err := workspace.Decode(snap.State)
 	if err != nil {
 		return f, nil, err
@@ -297,266 +343,57 @@ func projectWorkProgress(root string, request policy.Input, snap runtime.Snapsho
 		actualRoot = execution.Path
 	}
 	if request.CWD == "" || filepath.Clean(request.CWD) != filepath.Clean(actualRoot) || (owner != "Main" && loaded.PolicyContext.Agent == nil) {
-		return f, execution, fmt.Errorf("registered owner/execution directory unavailable")
+		return f, nil, fmt.Errorf("registered owner/execution directory unavailable")
 	}
-	f.Binding = progressJSON([]any{snap.State["runtime_id"], workspace.Generation(snap.State), life["state"], life["phase"], life["phase_revision"], owner})
-	f.RecoveryOwner = "Main"
+	// The responsibility is resolved. Only now may the facts stand.
+	f.Owner, f.RecoveryOwner = owner, "Main"
+	f.Binding = progressJSON([]any{snap.State["runtime_id"], life["state"], life["phase"], life["phase_revision"], owner})
 	f.Known = true
+	remaining := progressSourceProjectionByteLimit
+	semantic := map[string]any{}
 	if owner == "Main" && life["state"] == "planning" && (life["phase"] == "contracts" || life["phase"] == "tasks") {
-		// These professional inputs are read from the bound Git tree. Observe its
-		// commit and the disk answer, without rerunning checks or walking sources.
+		// Main observes the current planning answer and the committed source it
+		// belongs to. Neither observation computes or records a digest, a content
+		// hash or a Git object ID (L3-S4-task-split.md §10.2: "Hook 不计算、登记或
+		// 校验来源摘要、内容散列或 Git 对象 ID"): the answer's own length and
+		// modification time are its change signal, and the bound branch's own ref
+		// is where the commit layer records the commit change.
 		catalog, err := transition.LoadCatalog(root)
 		if err != nil {
-			return f, execution, err
+			return f, nil, err
 		}
 		for _, rule := range catalog.Definition.FileSources {
 			if rule.Source == "disk" && (rule.Path == "." || rule.Path == "docs" || strings.HasPrefix(rule.Path, "docs/")) {
+				// A disk override of the professional source is observed
+				// conservatively: the original observer keeps its own contract
+				// instead of adding a source qualification rule here.
 				f.Known = false
-				return f, execution, nil
+				return f, nil, nil
 			}
 		}
-		ref, err := fileview.DevelopmentRef(snap.State)
-		if err != nil {
-			return f, execution, err
+		row, rowErr := registeredPlanningRow(snap.State)
+		if rowErr != nil {
+			return f, nil, rowErr
 		}
-		files, err := fileview.New(root, "refs/heads/"+strings.TrimPrefix(ref, "refs/heads/"), catalog.Definition.FileSources)
-		if err != nil {
-			return f, execution, err
+		if row != nil {
+			if answerPath := progressText(row["answer_path"]); answerPath != "" {
+				semantic["answer"] = answerPath + "|" + progressFileStamp(filepath.Join(root, filepath.FromSlash(answerPath)))
+			}
 		}
-		source, err := files.Source("docs")
-		if err != nil || source != "git_tree" {
-			f.Known = false
-			return f, execution, nil
-		}
-		row, err := registeredPlanningRow(snap.State)
-		if err != nil {
-			return f, execution, err
-		}
-		if row == nil {
-			f.Semantic = progressJSON([]any{"missing_packet", files.Commit})
-			return f, execution, nil
-		}
-		path := progressText(row["answer_path"])
-		if path == "" {
-			f.Semantic = progressJSON([]any{"missing_answer", files.Commit})
-			return f, execution, nil
-		}
-
-		data, err := workpacket.ReadFile(root, path, 256<<10)
-		answer := "missing"
-		if err == nil {
-			answer = workpacket.Digest(data)
-		} else if !os.IsNotExist(err) {
-			return f, execution, err
-		}
-		f.Binding += path
-		f.Semantic = progressJSON([]any{answer, files.Commit})
-		// Keep an already accepted answer on its original continuation path.
-		_, accepted, err := runtime.FindSubmission(snap.State, progressText(row["packet_id"]))
-		if err != nil {
-			return f, execution, err
-		}
-		f.Waiting = accepted
-		return f, execution, nil
+		semantic["source"] = progressBranchRefStamp(root, snap.State)
 	}
-	if owner != "Main" && loaded.PolicyContext.Agent != nil && loaded.PolicyContext.Agent.ID == owner {
-		agent := loaded.PolicyContext.Agent
-		assignment := hook.AssignmentForAgent(loaded.Assignments, owner)
-		packetReceived := loaded.PolicyContext.PacketMode && submission.CompletedOwner(root, owner)
-		responsibility := hook.CurrentResponsibility(root, snap, agent, assignment, packetReceived)
-		f.Binding += progressJSON([]any{responsibility.CurrentResponsibility, responsibility.AssignmentID})
-		f.Semantic = progressJSON([]any{responsibility.Status, responsibility.DeliveryRecorded, responsibility.ConsumerPending, responsibility.NextAction})
-		if applyResponsibilityProgress(&f, responsibility) {
-			return f, execution, nil
-		}
-	}
-	remaining := progressSourceProjectionByteLimit
-	addSource := func(sourceRoot, ref string) error {
-		cleanRef, _, _ := strings.Cut(ref, "#")
-		if sourceRoot == root && (cleanRef == ".claude/loop-state.json" || cleanRef == ".claude/loop-events.jsonl") {
-			return nil
-		}
-		_, err := addProgressSource(f.Sources, &remaining, sourceRoot, ref)
-		return err
-	}
-	entities, _ := snap.State["entities"].(map[string]any)
-	packets, _ := entities["work_packets"].([]any)
-	var current *workpacket.Packet
-	for _, raw := range packets {
-		row, _ := raw.(map[string]any)
-		// FindWorkPacket is the original S5 lookup, not a decoder for the
-		// S7/S8/S9 typed packets retained in this shared history. Their original
-		// consumers own those responsibilities; optional sampling does not
-		// reclassify an unsupported type as missing professional work.
-		if row["template_id"] != "s5-document-review-v1" {
-			continue
-		}
-		p, ok, err := runtime.FindWorkPacket(snap.State, progressText(row["packet_id"]))
-		if err != nil || !ok {
-			return f, execution, fmt.Errorf("issued responsibility unavailable")
-		}
-		if p.Binding.Generation != workspace.Generation(snap.State) || p.Binding.RuntimeID != workspace.RuntimeID(snap.State) || progressJSON(p.Binding.StageEntry) != progressJSON(life["phase_revision"]) {
-			continue
-		}
-		reception, accepted, err := runtime.FindSubmission(snap.State, p.ID)
-		if err != nil {
-			return f, execution, err
-		}
-		if reception.RevisionPacketID != "" {
-			continue
-		}
-		if owner == "Main" && life["state"] == "document_verification" && !accepted {
-			f.Waiting = true
-		}
-		if p.Binding.Owner == owner && life["state"] == "document_verification" {
-			if current != nil {
-				return f, execution, fmt.Errorf("multiple current packets require a responsibility selector")
-			}
-			copy := p
-			current = &copy
-			f.Complete, f.Waiting = accepted, accepted
-		}
-	}
-	semantic := map[string]any{}
-	if current != nil && f.Complete {
-		record, _, err := runtime.FindSubmission(snap.State, current.ID)
-		if err != nil {
-			return f, execution, err
-		}
-		found := false
-		if rows, ok := snap.State["evidence"].([]any); ok {
-			for _, raw := range rows {
-				row, _ := raw.(map[string]any)
-				if row["id"] != record.EvidenceID {
-					continue
-				}
-				data, err := workpacket.ReadFile(root, progressText(row["path"]), 1<<20)
-				if err != nil || workpacket.Digest(data) != row["sha256"] {
-					return f, execution, fmt.Errorf("received domain evidence unavailable")
-				}
-				semantic["receipt"] = []any{record.Key, record.ContentHash, row["sha256"], record.ControlStatus}
-				found = true
-				break
-			}
-		}
-		if !found {
-			return f, execution, fmt.Errorf("received domain reference unavailable")
-		}
-	}
-	if current != nil {
-		f.Binding += current.ID
-		f.Gap = "complete original " + current.Binding.Responsibility + " answer and receive its domain receipt"
-		f.RecoveryOwner = owner
-		answerRoot, answerRef, sourceRoot := root, current.AnswerPath, root
-		if execution != nil {
-			paths, err := b.WorkerSubmissionPaths(*execution)
-			if err != nil {
-				return f, execution, err
-			}
-			answerRoot, answerRef = execution.Path, paths.Answer
-			sourceRoot = filepath.Join(execution.Path, ".claude/inputs")
-		}
-		if data, err := workpacket.ReadFile(answerRoot, answerRef, 256<<10); err == nil {
-			var draft workpacket.Draft
-			if json.Unmarshal(data, &draft) == nil {
-				semantic["answer"] = draft.Answer
-			} else {
-				semantic["answer"] = workpacket.Digest(data)
-			}
-			_, issues := workpacket.ValidateAnswer(*current, data)
-			if len(issues) > 0 {
-				f.Gap = issues[0].Pointer + ": " + issues[0].Expected
-			} else if !f.Complete {
-				f.Gap = "receive the original complete answer through its issued Save adapter"
-				f.RecoveryOwner = "Main"
-			}
-		} else if !os.IsNotExist(err) {
-			return f, execution, err
-		}
-		if err := projectProgressSourceInputs(f.Sources, &remaining, sourceRoot, current.Inputs); err != nil {
-			return f, execution, err
-		}
-	} else if owner != "Main" {
-		var own *hookctx.AssignmentContext
-		for _, a := range loaded.Assignments {
-			if a.OwnerAgentID == owner {
-				if own != nil {
-					return f, execution, fmt.Errorf("multiple assignments require an original selector")
-				}
-				copy := a
-				own = &copy
-			}
-		}
-		if own == nil {
-			f.Known = false
-			return f, execution, nil
-		}
-		f.Binding += own.AssignmentID
-		f.Gap = "satisfy original Assignment closing contract and receive delivery"
-		f.Waiting = loaded.PolicyContext.Agent.LifecycleActivity() == "queued" || loaded.PolicyContext.Agent.LifecycleActivity() == "blocked"
-		switch own.ReportStatus {
-		case "reported", "verified", "acknowledged", "cleanup_pending", "complete":
-			f.Waiting = true
-		}
-		semantic["assignment"] = []any{own.State, own.ReportStatus, own.CompletionRef, own.CompletionAckRef, loaded.PolicyContext.Agent.State, loaded.PolicyContext.Agent.PlanReportedRef}
-		for _, ref := range own.ReadPaths {
-			sourceRoot := root
-			if execution != nil {
-				sourceRoot = filepath.Join(execution.Path, ".claude/inputs")
-			}
-			if err := addSource(sourceRoot, ref); err != nil {
-				return f, execution, err
-			}
-		}
-		for _, ref := range []string{loaded.PolicyContext.Agent.PlanReportedRef, own.CompletionRef} {
-			if ref != "" {
-				digest, err := progressProfessionalArtifact(root, ref)
-				if err != nil {
-					return f, execution, err
-				}
-				semantic[ref] = digest
-			}
-		}
-		if execution != nil {
-			f.Binding += progressJSON([]any{execution.Path, execution.Generation, execution.BaseCommit})
-			paths, err := b.WorkerSubmissionPaths(*execution)
-			if err != nil {
-				return f, execution, err
-			}
-			for _, ref := range []string{paths.Plan, paths.Completion, paths.RepairResult} {
-				digest, err := progressProfessionalArtifact(execution.Path, ref)
-				if err != nil {
-					return f, execution, err
-				}
-				semantic["local:"+ref] = digest
-			}
-			code, err := progressOwnedCode(execution.Path, execution.WritePaths, &remaining)
-			if err != nil {
-				return f, execution, err
-			}
-			semantic["owned_code"] = code
-			running, err := progressCheckRunning(root, *execution)
-			if err != nil {
-				return f, execution, err
-			}
-			f.Running = running
-		}
-	} else {
+	if owner == "Main" {
+		// Main observes the current milestone: the missing professional fact and
+		// the declared necessary read range.
 		milestone, _ := snap.State["milestone"].(map[string]any)
 		if milestone == nil || milestone["lifecycle_state"] != life["state"] {
+			// An insufficient read range never forces a stagnation verdict.
 			f.Known = false
-			return f, execution, nil
+			return f, nil, nil
 		}
 		f.Gap = progressText(milestone["action"]) + ": " + progressJSON(milestone["missing"])
-		f.Waiting = f.Waiting || milestone["human_required"] == true
-		for _, a := range loaded.Assignments {
-			if a.OwnerAgentID != "Main" && (a.State == string(workstate.Active) || a.State == string(workstate.Blocked)) {
-				switch a.ReportStatus {
-				case "reported", "verified", "acknowledged", "cleanup_pending", "complete":
-				default:
-					f.Waiting = true
-				}
-			}
+		if milestone["human_required"] == true {
+			f.Waiting = true
 		}
 		semantic["checkpoint"] = []any{milestone["action"], milestone["missing"], milestone["blocker"], milestone["blocked"]}
 		if reads, ok := milestone["read"].([]any); ok {
@@ -572,15 +409,131 @@ func projectWorkProgress(root string, request policy.Input, snap runtime.Snapsho
 				projected[i] = ref
 			}
 			if err := projectMilestoneReadSources(f.Sources, &remaining, root, projected); err != nil {
+				return f, nil, err
+			}
+		}
+	} else {
+		// The Worker observes its own original responsibility coordinates.
+		if loaded.PolicyContext.Agent != nil && loaded.PolicyContext.Agent.ID == owner {
+			agent := loaded.PolicyContext.Agent
+			assignment := hook.AssignmentForAgent(loaded.Assignments, owner)
+			packetReceived := loaded.PolicyContext.PacketMode && submission.CompletedOwner(root, owner)
+			responsibility := hook.CurrentResponsibility(root, snap, agent, assignment, packetReceived)
+			f.Binding += progressJSON([]any{responsibility.CurrentResponsibility, responsibility.AssignmentID})
+			f.Semantic = progressJSON([]any{responsibility.Status, responsibility.DeliveryRecorded, responsibility.ConsumerPending, responsibility.NextAction})
+			if applyResponsibilityProgress(&f, responsibility) {
+				return f, execution, nil
+			}
+		}
+		// The current S5 responsibility and the range it actually owns.
+		packets, _ := entities["work_packets"].([]any)
+		var current *workpacket.Packet
+		for _, raw := range packets {
+			row, _ := raw.(map[string]any)
+			// FindWorkPacket is the original S5 lookup, not a decoder for the
+			// S7/S8/S9 typed packets retained in this shared history. Their
+			// original consumers own those responsibilities.
+			if row["template_id"] != "s5-document-review-v1" {
+				continue
+			}
+			binding, _ := row["binding"].(map[string]any)
+			if binding == nil || (binding["owner"] != owner && binding["owner_agent_id"] != owner) {
+				// Another owner's issued packet is not this responsibility.
+				continue
+			}
+			p, ok, err := runtime.FindWorkPacket(snap.State, progressText(row["packet_id"]))
+			if err != nil || !ok {
+				return f, execution, fmt.Errorf("issued responsibility unavailable")
+			}
+			if p.Binding.Generation != workspace.Generation(snap.State) || p.Binding.RuntimeID != workspace.RuntimeID(snap.State) || progressJSON(p.Binding.StageEntry) != progressJSON(life["phase_revision"]) {
+				continue
+			}
+			reception, accepted, err := runtime.FindSubmission(snap.State, p.ID)
+			if err != nil {
 				return f, execution, err
+			}
+			if reception.RevisionPacketID != "" || life["state"] != "document_verification" {
+				continue
+			}
+			if current != nil {
+				return f, execution, fmt.Errorf("multiple current packets require a responsibility selector")
+			}
+			copy := p
+			current = &copy
+			f.Complete, f.Waiting = accepted, accepted
+		}
+		if current != nil {
+			f.Binding += current.ID
+			f.Gap = "complete original " + current.Binding.Responsibility + " answer and receive its domain receipt"
+			f.RecoveryOwner = owner
+			answerRoot, answerRef, sourceRoot := root, current.AnswerPath, root
+			if execution != nil {
+				paths, err := b.WorkerSubmissionPaths(*execution)
+				if err != nil {
+					return f, execution, err
+				}
+				answerRoot, answerRef = execution.Path, paths.Answer
+				sourceRoot = filepath.Join(execution.Path, ".claude/inputs")
+			}
+			if data, err := workpacket.ReadFile(answerRoot, answerRef, 256<<10); err == nil {
+				var draft workpacket.Draft
+				if json.Unmarshal(data, &draft) == nil {
+					semantic["answer"] = draft.Answer
+				} else {
+					semantic["answer"] = string(data)
+				}
+				_, issues := workpacket.ValidateAnswer(*current, data)
+				if len(issues) > 0 {
+					f.Gap = issues[0].Pointer + ": " + issues[0].Expected
+				} else if !f.Complete {
+					f.Gap = "receive the original complete answer through its issued Save adapter"
+					f.RecoveryOwner = "Main"
+				}
+			} else if !os.IsNotExist(err) {
+				return f, execution, err
+			}
+			if err := projectProgressSourceInputs(f.Sources, &remaining, sourceRoot, current.Inputs); err != nil {
+				return f, execution, err
+			}
+		} else {
+			// The Worker still holds its original Assignment closing contract.
+			var own *hookctx.AssignmentContext
+			for _, a := range loaded.Assignments {
+				if a.OwnerAgentID == owner {
+					if own != nil {
+						return f, execution, fmt.Errorf("multiple assignments require an original selector")
+					}
+					copy := a
+					own = &copy
+				}
+			}
+			if own == nil {
+				f.Known = false
+				return f, execution, nil
+			}
+			f.Binding += own.AssignmentID
+			f.Gap = "satisfy original Assignment closing contract and receive delivery"
+			f.Waiting = loaded.PolicyContext.Agent.LifecycleActivity() == "queued" || loaded.PolicyContext.Agent.LifecycleActivity() == "blocked"
+			switch own.ReportStatus {
+			case "reported", "verified", "acknowledged", "cleanup_pending", "complete":
+				f.Waiting = true
+			}
+			semantic["assignment"] = []any{own.State, own.ReportStatus, own.CompletionRef, own.CompletionAckRef, loaded.PolicyContext.Agent.State, loaded.PolicyContext.Agent.PlanReportedRef}
+			for _, ref := range own.ReadPaths {
+				sourceRoot := root
+				if execution != nil {
+					sourceRoot = filepath.Join(execution.Path, ".claude/inputs")
+				}
+				cleanRef, _, _ := strings.Cut(ref, "#")
+				if sourceRoot == root && (cleanRef == ".claude/loop-state.json" || cleanRef == ".claude/loop-events.jsonl") {
+					continue
+				}
+				if _, err := addProgressSource(f.Sources, &remaining, sourceRoot, ref); err != nil {
+					return f, execution, err
+				}
 			}
 		}
 	}
-	_, busy, err := filelock.Probe(filepath.Join(root, ".claude/integration.lock"))
-	if err != nil {
-		return f, execution, err
-	}
-	f.Running = f.Running || busy
 	semantic["sources"] = f.Sources
 	f.Semantic = progressJSON(semantic)
 	return f, execution, nil

@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-func TestBodyPublicationRetainsOriginalAndRequiresExactIndex(t *testing.T) {
+func TestBodyPublicationRetainsOriginalAndMatchesCurrentResponsibility(t *testing.T) {
 	root := t.TempDir()
 	body := map[string]any{"packet_id": "original", "template_id": "historical", "binding": map[string]any{"owner": "worker"}, "inputs": map[string]any{"original": "frozen"}, "draft": map[string]any{"questions": "historical"}}
 	ctx := WithRoot(context.Background(), root)
@@ -27,6 +27,12 @@ func TestBodyPublicationRetainsOriginalAndRequiresExactIndex(t *testing.T) {
 	}
 	if _, err := Publish(ctx, root, body); err != nil {
 		t.Fatal(err)
+	}
+	// Extra presentation metadata is not the issued owner or Assignment.
+	index["note"] = "later diagnostic"
+	index["binding"].(map[string]any)["comment"] = "unrelated"
+	if _, err := Read(ctx, index); err != nil {
+		t.Fatalf("unrelated index data blocked the original responsibility: %v", err)
 	}
 	index["binding"].(map[string]any)["owner"] = "other"
 	if _, err := Read(ctx, index); err == nil {
@@ -68,5 +74,29 @@ func TestBodyMissingCorruptUnknownFormatAndCancellationFailClosed(t *testing.T) 
 	cancel()
 	if _, err := Publish(canceled, root, map[string]any{"packet_id": "new"}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled publish: %v", err)
+	}
+}
+
+func TestLongPacketIdentityUsesBoundedReversiblePathWithoutDigest(t *testing.T) {
+	root := t.TempDir()
+	ctx := WithRoot(context.Background(), root)
+	packetID := strings.Repeat("packet-", 90)
+	body := map[string]any{"packet_id": packetID, "inputs": "original"}
+	index, err := Publish(ctx, root, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref, external, err := ReferenceFromIndex(index)
+	if err != nil || !external {
+		t.Fatalf("reference: %v %v", external, err)
+	}
+	for _, component := range strings.Split(ref.Path, "/") {
+		if len(component) > 125 {
+			t.Fatalf("path component exceeds limit: %d", len(component))
+		}
+	}
+	got, err := Read(ctx, index)
+	if err != nil || !reflect.DeepEqual(got, body) {
+		t.Fatalf("original body: %v %v", got, err)
 	}
 }

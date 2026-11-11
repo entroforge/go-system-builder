@@ -26,7 +26,7 @@ func TestTaskPlanningReceptionRetainsIssuedMethodsAndValidatesFormalSources(t *t
 		t.Fatalf("method text became a new receipt gate: %v", err)
 	}
 	writeTaskPlanningFile(t, root, "docs/architecture/ARCHITECTURE-001.md", "> Status: locked\n> Version: v1.0.0\nchanged formal source\n")
-	if err := runtime.ValidateTaskPlanningReceptionSources(root, state, p, files); err == nil {
-		t.Fatal("formal design drift accepted")
+	if err := runtime.ValidateTaskPlanningReceptionSources(root, state, p, files); err != nil {
+		t.Fatalf("later design content invalidated issued responsibility: %v", err)
 	}
 }

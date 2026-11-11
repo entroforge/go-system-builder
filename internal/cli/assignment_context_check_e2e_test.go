@@ -14,7 +14,6 @@ import (
 	"github.com/entroforge/go-system-builder/internal/cli"
 	"github.com/entroforge/go-system-builder/internal/hookctx"
 	"github.com/entroforge/go-system-builder/internal/policy"
-	"github.com/entroforge/go-system-builder/internal/workpacket"
 	"github.com/entroforge/go-system-builder/internal/workspace"
 )
 
@@ -55,8 +54,8 @@ func TestNativeAssignmentContextCheckUsesOriginalIsolatedRunnerAndWriter(t *test
 		"id": "profile-s6-native-owned-check", "version": "v1.0.0", "check_index": 0,
 		"command": "go test ./src/pkg", "location": "worker", "timeout_seconds": 20,
 		"environment_policy": "declared_only", "environment": []any{},
-		"dependencies":  []any{map[string]any{"path": "src/pkg/input.go", "sha256": workpacket.Digest([]byte("package pkg\n"))}},
-		"fixtures":      []any{map[string]any{"path": "testdata/input.txt", "sha256": workpacket.Digest([]byte("registered profile input\n"))}},
+		"dependencies":  []any{map[string]any{"path": "src/pkg/input.go"}},
+		"fixtures":      []any{map[string]any{"path": "testdata/input.txt"}},
 		"input_closure": "whole_tree", "side_effects": "none", "reuse_policy": "never",
 	}
 	row["closing_contract"] = map[string]any{"contract": assignmentrecord.ClosingContractVersion, "worker_checks": []any{map[string]any{
@@ -74,11 +73,10 @@ func TestNativeAssignmentContextCheckUsesOriginalIsolatedRunnerAndWriter(t *test
 	var nativeBinding struct {
 		OwnedCheckCommands []string `json:"owned_check_commands"`
 		Context            struct {
-			Path   string `json:"path"`
-			SHA256 string `json:"sha256"`
+			Path string `json:"path"`
 		} `json:"context_ref"`
 	}
-	if err := json.Unmarshal([]byte(contextOutput), &nativeBinding); err != nil || nativeBinding.Context.Path == "" || nativeBinding.Context.SHA256 == "" {
+	if err := json.Unmarshal([]byte(contextOutput), &nativeBinding); err != nil || nativeBinding.Context.Path == "" {
 		t.Fatalf("prepare original fixed context: %+v err=%v", nativeBinding, err)
 	}
 	wantOwnedCheckCommands := []string{policy.NativeOwnedCheckInvocation(root, owner, 0)}
@@ -86,7 +84,7 @@ func TestNativeAssignmentContextCheckUsesOriginalIsolatedRunnerAndWriter(t *test
 		t.Fatalf("prepare did not return the exact frozen owner-check command: got=%q want=%q", nativeBinding.OwnedCheckCommands, wantOwnedCheckCommands)
 	}
 	contextBytes, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(nativeBinding.Context.Path)))
-	if err != nil || workpacket.Digest(contextBytes) != nativeBinding.Context.SHA256 {
+	if err != nil {
 		t.Fatalf("fixed context source mismatch: %v", err)
 	}
 	var context struct {
@@ -105,7 +103,7 @@ func TestNativeAssignmentContextCheckUsesOriginalIsolatedRunnerAndWriter(t *test
 		t.Fatalf("trusted hook loader did not project the fixed native WorkerCheck: loaded=%+v err=%v", loaded, err)
 	}
 	projected := loaded.PolicyContext.NativeOwnedAssignments[0]
-	if projected.AssignmentID != assignment || projected.OwnerAgentID != owner || projected.AssignmentRecordSHA256 == "" || !projected.ContextBound || projected.PlanActivated {
+	if projected.AssignmentID != assignment || projected.OwnerAgentID != owner || !projected.ContextBound || projected.PlanActivated {
 		t.Fatalf("pre-activation native policy projection is incorrect: %+v", projected)
 	}
 	assertion := "The registered package change passes the frozen WorkerCheck."
@@ -127,9 +125,7 @@ func TestNativeAssignmentContextCheckUsesOriginalIsolatedRunnerAndWriter(t *test
 	var registered []struct {
 		CheckIndex          int                              `json:"check_index"`
 		Command             string                           `json:"command"`
-		ProfileDigest       string                           `json:"profile_digest"`
 		Record              assignmentrecord.RecordReference `json:"record"`
-		RecordSHA256        string                           `json:"record_sha256"`
 		RuntimeID           string                           `json:"runtime_id"`
 		BaselineGeneration  int                              `json:"baseline_generation"`
 		AssignmentID        string                           `json:"assignment_id"`
@@ -137,14 +133,10 @@ func TestNativeAssignmentContextCheckUsesOriginalIsolatedRunnerAndWriter(t *test
 		ExecutionGeneration int                              `json:"execution_generation"`
 		ContextGeneration   int                              `json:"native_context_generation"`
 		ContextRef          string                           `json:"native_context_ref"`
-		ContextSHA256       string                           `json:"native_context_sha256"`
 		ActivationRef       string                           `json:"activation_ref"`
-		ActivationSHA256    string                           `json:"activation_sha256"`
 		Checkout            string                           `json:"checkout"`
 		SourceBranch        string                           `json:"source_branch"`
 		TargetBranch        string                           `json:"target_branch"`
-		SourceHead          string                           `json:"source_head"`
-		SourceSnapshotSHA   string                           `json:"source_snapshot_sha256"`
 		ToolReceipt         checkexec.ToolReceipt            `json:"tool_receipt"`
 	}
 	for _, raw := range current.State["entities"].(map[string]any)["agents"].([]any) {
@@ -161,7 +153,7 @@ func TestNativeAssignmentContextCheckUsesOriginalIsolatedRunnerAndWriter(t *test
 		t.Fatalf("original Runtime Writer did not persist one captured native receipt: rows=%d code=%d stderr=%s stdout=%s", len(registered), code, errout.String(), out.String())
 	}
 	receipt := registered[0]
-	if receipt.CheckIndex != 0 || receipt.Command != "go test ./src/pkg" || receipt.ProfileDigest != record.ClosingContract.WorkerChecks[0].Profile.Digest() || receipt.Record != record.Reference() || receipt.RecordSHA256 == "" || receipt.RuntimeID != record.RuntimeID || receipt.BaselineGeneration != record.BaselineGeneration || receipt.AssignmentID != record.AssignmentID || receipt.OwnerAgentID != owner || receipt.ExecutionGeneration != 0 || receipt.ContextGeneration != 1 || receipt.ContextRef != nativeBinding.Context.Path || receipt.ContextSHA256 != nativeBinding.Context.SHA256 || receipt.ActivationRef == "" || receipt.ActivationSHA256 == "" || receipt.Checkout != worktree || receipt.SourceBranch != branch || receipt.TargetBranch != "test-development" || receipt.SourceHead == "" || receipt.SourceSnapshotSHA == "" {
+	if receipt.CheckIndex != 0 || receipt.Command != "go test ./src/pkg" || receipt.Record != record.Reference() || receipt.RuntimeID != record.RuntimeID || receipt.BaselineGeneration != record.BaselineGeneration || receipt.AssignmentID != record.AssignmentID || receipt.OwnerAgentID != owner || receipt.ExecutionGeneration != 0 || receipt.ContextGeneration != 1 || receipt.ContextRef != nativeBinding.Context.Path || receipt.ActivationRef == "" || receipt.Checkout != worktree || receipt.SourceBranch != branch || receipt.TargetBranch != "test-development" {
 		t.Fatalf("native receipt lost its original identity/context/activation/source tuple: %+v", receipt)
 	}
 	verified, err := checkexec.VerifyToolReceipt(filepath.Dir(receipt.ToolReceipt.Path), receipt.ToolReceipt)

@@ -1,10 +1,9 @@
 {
   "type": "object",
-  "additionalProperties": false,
+  "additionalProperties": true,
   "required": [
     "packet_id",
     "template_id",
-    "template_sha256",
     "binding",
     "view_path",
     "answer_path",
@@ -18,10 +17,6 @@
     },
     "template_id": {
       "const": "s4-task-planning-v1"
-    },
-    "template_sha256": {
-      "type": "string",
-      "pattern": "^[a-f0-9]{64}$"
     },
     "binding": {
       "type": "object",
@@ -55,12 +50,11 @@
         },
         "requirement": {
           "type": "object",
-          "additionalProperties": false,
+          "additionalProperties": true,
           "required": [
             "id",
             "path",
-            "version",
-            "sha256"
+            "version"
           ],
           "properties": {
             "id": {
@@ -74,10 +68,6 @@
             "version": {
               "type": "string",
               "minLength": 1
-            },
-            "sha256": {
-              "type": "string",
-              "pattern": "^[a-f0-9]{64}$"
             }
           }
         }
@@ -313,11 +303,10 @@
           ],
           "items": {
             "type": "object",
-            "additionalProperties": false,
+            "additionalProperties": true,
             "required": [
               "path",
-              "version",
-              "sha256"
+              "version"
             ],
             "properties": {
               "path": {
@@ -326,10 +315,6 @@
               },
               "version": {
                 "type": "string"
-              },
-              "sha256": {
-                "type": "string",
-                "pattern": "^[a-f0-9]{64}$"
               }
             }
           }
@@ -349,12 +334,11 @@
           "minItems": 1,
           "items": {
             "type": "object",
-            "additionalProperties": false,
+            "additionalProperties": true,
             "required": [
               "id",
               "path",
-              "version",
-              "sha256"
+              "version"
             ],
             "properties": {
               "id": {
@@ -368,10 +352,6 @@
               "version": {
                 "type": "string",
                 "minLength": 1
-              },
-              "sha256": {
-                "type": "string",
-                "pattern": "^[a-f0-9]{64}$"
               }
             }
           }

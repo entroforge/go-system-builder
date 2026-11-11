@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"github.com/entroforge/go-system-builder/internal/fileview"
 	"github.com/entroforge/go-system-builder/internal/semantic"
-	"path/filepath"
 	"strings"
 	"time"
 )
@@ -38,7 +37,7 @@ func dispatchPlanDocuments(state map[string]any, ctx *ActionContext, register bo
 				continue
 			}
 			if d["kind"] == "dispatch_plan" {
-				if p.Path == "" || d["path"] != p.Path || d["sha256"] != SHA256(p.Content) {
+				if p.Path == "" || d["path"] != p.Path {
 					return fmt.Errorf("dispatch plan changed since S4; return to planning and re-review")
 				}
 				found = true
@@ -55,11 +54,7 @@ func dispatchPlanDocuments(state map[string]any, ctx *ActionContext, register bo
 				for _, raw := range docs {
 					d, _ := raw.(map[string]any)
 					if d["kind"] == "task" && d["id"] == t.ID && integerOf(d["generation"]) == generation {
-						b, e := files.ReadFile(filepath.Join(root, t.Path))
-						if e != nil {
-							return fmt.Errorf("read S4 registered TASK %s (%s): %w", t.ID, t.Path, e)
-						}
-						ok = d["sha256"] == SHA256(b)
+						ok = d["path"] == t.Path
 					}
 				}
 				if !ok {
@@ -95,6 +90,6 @@ func dispatchPlanDocuments(state map[string]any, ctx *ActionContext, register bo
 	if ctx.Request != nil {
 		actor = ctx.Request.Actor
 	}
-	state["documents"] = appendDocument(state["documents"], map[string]any{"id": "dispatch-plan:" + p.REQ, "kind": "dispatch_plan", "path": p.Path, "version": p.Revision, "sha256": SHA256(p.Content), "status": "complete", "generation": generation, "author_agent_id": actor, "registered_at": ctx.OccurredAt.UTC().Format(time.RFC3339Nano)})
+	state["documents"] = appendDocument(state["documents"], map[string]any{"id": "dispatch-plan:" + p.REQ, "kind": "dispatch_plan", "path": p.Path, "version": p.Revision, "status": "complete", "generation": generation, "author_agent_id": actor, "registered_at": ctx.OccurredAt.UTC().Format(time.RFC3339Nano)})
 	return nil
 }

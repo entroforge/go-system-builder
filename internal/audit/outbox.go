@@ -59,7 +59,7 @@ func (o *Outbox) AppendContext(parent context.Context, record any) error {
 		return fmt.Errorf("open audit outbox: %w", err)
 	}
 	defer file.Close()
-	index, contentHash, err := loadDecisionIndex(ctx, o.path, file)
+	index, err := loadDecisionIndex(ctx, o.path, file)
 	if err != nil {
 		return err
 	}
@@ -89,9 +89,7 @@ func (o *Outbox) AppendContext(parent context.Context, record any) error {
 	}
 	// Once the event is durable, cancellation/index failure cannot undo it.
 	// A retry reconstructs from this log and never appends a duplicate.
-	_, _ = contentHash.Write(line)
 	index.Bytes += int64(len(line))
-	index.SHA256 = digestString(contentHash)
 	index.Decisions[identity.DecisionID] = true
 	if err := writeDecisionIndex(ctx, o.path, index); err != nil {
 		return fmt.Errorf("audit record %s appended; decision index update incomplete: %w", identity.DecisionID, err)

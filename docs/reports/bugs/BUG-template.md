@@ -14,9 +14,7 @@
 | Projection status | reported / assigned / fixing / fixed / verifying / closed / rejected / duplicate |
 | Route | `s9_repair` / `s2_spec_rework` / `human_req_change` / `s7_no_change` / `investigate_more` / `duplicate` |
 | InvestigationCase | `{case-id}@{revision}` |
-| Case hash | `{sha256}` |
 | RepairContract | `{contract-id}@{revision}` or `not applicable` |
-| Contract hash | `{sha256}` or `not applicable` |
 | Source Findings | `{exact Finding ID set}` |
 | ObservationBatch | `{batch-id}@{revision}` |
 | Runtime ref | `{runtime-id}@{revision}` |
@@ -28,9 +26,9 @@ to the Case or Contract and use:
 
 ```text
 BLOCKED: BUG projection is missing an approved authority
-Missing: <Case/Contract reference or hash>
+Missing: <Case/Contract reference>
 Next: read or revise the referenced InvestigationCase/RepairContract
-Verify: compare the projection metadata with the approved Case/Contract hash
+Verify: check the actual Case/Contract reference and approved decision
 ```
 
 ## Authority and Traceability
@@ -41,13 +39,13 @@ The authoritative read order is:
 InvestigationCase -> approved RepairContract -> this BUG projection -> S9 task
 ```
 
-| Kind | ID | Path | Revision | SHA-256 | Relevant clauses |
-|:---|:---|:---|:---|:---|:---|
-| Finding set | `{finding-ids}` | `{evidence paths}` | `{revision}` | `{sha256}` | observed facts |
-| InvestigationCase | `{case-id}` | `{case path}` | `{revision}` | `{sha256}` | grouping/causal model/route |
-| RepairContract | `{contract-id}` | `{contract path}` | `{revision}` | `{sha256}` | approved repair/verification |
-| TASK | `TASK-{id}` | `docs/dev/tasks/...` | `{version}` | `{sha256}` | derived execution scope |
-| REQ/design/rule | `{id}` | `{path}` | `{version}` | `{sha256}` | affected authority |
+| Kind | ID | Path | Revision | Relevant clauses |
+|:---|:---|:---|:---|:---|
+| Finding set | `{finding-ids}` | `{evidence paths}` | `{revision}` | observed facts |
+| InvestigationCase | `{case-id}` | `{case path}` | `{revision}` | grouping/causal model/route |
+| RepairContract | `{contract-id}` | `{contract path}` | `{revision}` | approved repair/verification |
+| TASK | `TASK-{id}` | `docs/dev/tasks/...` | `{version}` | derived execution scope |
+| REQ/design/rule | `{id}` | `{path}` | `{version}` | affected authority |
 
 Do not edit the Finding, Case, or RepairContract from this document. If the
 projection disagrees with an authority artifact, the authority artifact wins;
@@ -122,11 +120,11 @@ assert {regression surface} == passing with fresh evidence
 | Repair assignment | `{assignment-id}` |
 | Contract approval | `{approval-ref}` |
 | Builder activation | `{activation-ref}` |
-| Repair fingerprint | `{commit/sha256}` |
+| Repair reference | `{actual repair result}` |
 | Impact analysis | `{impact-ref}` |
 | Invalidated evidence | `{evidence-ids}` |
 
-S9 executes the approved Contract revision and hash. It must not broaden the
+S9 executes the actual approved Contract revision. It must not broaden the
 scope, replace the root cause, or weaken the assertions through this BUG file.
 
 ## 4. Verification and Closure

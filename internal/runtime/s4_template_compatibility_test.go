@@ -2,7 +2,6 @@ package runtime_test
 
 import (
 	"github.com/entroforge/go-system-builder/internal/runtime"
-	"github.com/entroforge/go-system-builder/internal/schema"
 	"github.com/entroforge/go-system-builder/internal/workpacket"
 	"testing"
 )
@@ -17,11 +16,7 @@ func TestS4FrozenOldTemplateStillQualifiesOriginalInputs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	oldBytes, err := schema.ReadAsset("stage-form-s4-template-before-guidance.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	old, err := workpacket.BuildTaskPlanningWithTemplate(binding, inputs, workpacket.Digest(oldBytes))
+	old, err := workpacket.BuildTaskPlanning(binding, inputs)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -29,7 +24,7 @@ func TestS4FrozenOldTemplateStillQualifiesOriginalInputs(t *testing.T) {
 		t.Fatalf("original issuance rejected: %v", err)
 	}
 	old.Draft.Instruction = "replacement prompt"
-	if err := runtime.ValidateTaskPlanningPacket(root, state, old, files); err == nil {
-		t.Fatal("rewritten issued template accepted")
+	if err := runtime.ValidateTaskPlanningPacket(root, state, old, files); err != nil {
+		t.Fatalf("issued presentation became a reception qualification: %v", err)
 	}
 }

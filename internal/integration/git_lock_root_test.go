@@ -13,7 +13,7 @@ func TestIntegrationLocksGitCheckoutWhenEvidenceRootDiffers(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer release()
-	_, err = Integrate(context.Background(), IntegrateRequest{}, IntegrateConfig{Root: t.TempDir(), GitRoot: gitRoot})
+	_, err = Integrate(context.Background(), IntegrateRequest{Inspection: Inspection{WorktreePath: t.TempDir(), SourceBranch: "feature", TargetBranch: "develop", NonSquashMode: true}}, IntegrateConfig{Root: t.TempDir(), GitRoot: gitRoot})
 	if !errors.Is(err, ErrIntegrationBusy) {
 		t.Fatalf("did not serialize against actual Git root: %v", err)
 	}

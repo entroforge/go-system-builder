@@ -4,8 +4,6 @@ package workpacket
 
 import (
 	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,7 +24,6 @@ type Binding struct {
 	StageEntry            int    `json:"stage_entry"`
 	Owner                 string `json:"owner"`
 	AssignmentID          string `json:"assignment_id"`
-	AssignmentSHA         string `json:"assignment_sha256"`
 	Responsibility        string `json:"responsibility"`
 	Attempt               int    `json:"attempt"`
 	PreviousSubmissionKey string `json:"previous_submission_key,omitempty"`
@@ -38,7 +35,6 @@ type Reference struct {
 	ID      string `json:"id"`
 	Path    string `json:"path"`
 	Version string `json:"version"`
-	SHA256  string `json:"sha256"`
 }
 
 type ReadItem struct {
@@ -76,7 +72,6 @@ type Packet struct {
 	Methods      []ReadItem       `json:"methods,omitempty"`
 	ID           string           `json:"packet_id"`
 	TemplateID   string           `json:"template_id"`
-	TemplateSHA  string           `json:"template_sha256"`
 	Binding      Binding          `json:"binding"`
 	Inputs       []Reference      `json:"inputs"`
 	AnswerPath   string           `json:"answer_path"`
@@ -100,21 +95,12 @@ func BindMethods(p Packet, methods []ReadItem) (Packet, error) {
 			return Packet{}, fmt.Errorf("invalid or duplicate S5 method reference")
 		}
 	}
-	data, err := json.Marshal(methods)
-	if err != nil {
-		return Packet{}, err
-	}
-	oldID := p.ID
-	p.ID = "packet-" + Digest(append([]byte(oldID+":methods:"), data...))
-	p.ViewPath = strings.Replace(p.ViewPath, oldID, p.ID, 1)
-	p.AnswerPath = strings.Replace(p.AnswerPath, oldID, p.ID, 1)
 	p.Methods = methods
 	return p, nil
 }
 
 type TaskAnalysisRef struct {
 	Path          string `json:"path"`
-	SHA256        string `json:"sha256"`
 	ParserVersion string `json:"parser_version"`
 }
 
@@ -124,50 +110,45 @@ func BindTaskAnalysis(p Packet, ref *TaskAnalysisRef) (Packet, error) {
 	if ref == nil {
 		return p, nil
 	}
-	if !safeRelative(ref.Path) || ref.Path != ".claude/work-packets/analysis/"+ref.SHA256+".json" || !digestPattern.MatchString(ref.SHA256) || ref.ParserVersion != "1.0.0" {
-		return Packet{}, fmt.Errorf("invalid frozen task analysis reference")
+	if !safeRelative(ref.Path) || !strings.HasPrefix(ref.Path, ".claude/work-packets/analysis/") || ref.ParserVersion != "1.0.0" {
+		return Packet{}, fmt.Errorf("invalid task analysis reference")
 	}
-	data, err := json.Marshal(ref)
-	if err != nil {
-		return Packet{}, err
-	}
-	oldID := p.ID
-	p.ID = "packet-" + Digest(append([]byte(oldID+":"), data...))
-	p.ViewPath = strings.Replace(p.ViewPath, oldID, p.ID, 1)
-	p.AnswerPath = strings.Replace(p.AnswerPath, oldID, p.ID, 1)
 	copyRef := *ref
 	p.TaskAnalysis = &copyRef
 	p.Draft.Read = append(p.Draft.Read, ReadItem{Path: ref.Path, Purpose: "读取这一冻结解析器版本的 TASK 读集/粒度 advisory；它不证明 PASS，也不扩大本责任。"})
 	return p, nil
 }
 
-func RebuildS5(p Packet) (Packet, error) {
-	// Wording updates apply to new questionnaires. Reconstruct an issued
-	// packet from its original bundled template, including named revisions.
-	for _, name := range []string{"stage-form-s5-template.json", "stage-form-s5-template-save-guidance-legacy.json", "stage-form-s5-template-legacy.json"} {
-		data, err := schema.ReadAsset(name)
-		if err != nil {
-			return Packet{}, fmt.Errorf("read S5 template: %w", err)
-		}
-		if Digest(data) != p.TemplateSHA {
-			continue
-		}
-		base, err := buildS5(p.Binding, p.Inputs, data)
-		if err != nil {
-			return Packet{}, err
-		}
-		base, err = BindMethods(base, p.Methods)
-		if err != nil {
-			return Packet{}, err
-		}
-		return BindTaskAnalysis(base, p.TaskAnalysis)
-	}
-	return Packet{}, fmt.Errorf("unknown issued S5 template fingerprint")
-}
+// Issued packets retain their original responsibility, path and draft. Historical
+// template digests are not re-computed or used as a condition for continuing.
+func RebuildS5(p Packet) (Packet, error) { return p, nil }
 
 func RebuildS5ForBinding(binding Binding, old Packet) (Packet, error) {
 	old.Binding = binding
-	return RebuildS5(old)
+	old.ID = s5PacketID(binding)
+	old.ViewPath, old.AnswerPath = s5PacketPaths(binding, old.ID)
+	return old, nil
+}
+
+func s5PacketID(binding Binding) string {
+	return fmt.Sprintf("packet-s5-%d-%s-g%d-e%d-%d-%s-%d-%s-a%d", len(binding.RuntimeID), binding.RuntimeID, binding.Generation, binding.StageEntry, len(binding.AssignmentID), binding.AssignmentID, len(binding.Owner), binding.Owner, binding.Attempt)
+}
+
+// s5PacketPaths preserves the full original responsibility identity without a
+// digest while keeping each generated component below filesystem name limits.
+func s5PacketPaths(binding Binding, id string) (string, string) {
+	parts := []string{"p"}
+	for len(id) > 120 {
+		parts = append(parts, id[:120])
+		id = id[120:]
+	}
+	parts = append(parts, id)
+	base := filepath.Join(binding.RuntimeID, fmt.Sprintf("g%d", binding.Generation), binding.Responsibility)
+	viewParts := append([]string{".claude/work-packets", base}, parts...)
+	viewParts = append(viewParts, "view.json")
+	answerParts := append([]string{".claude/submissions", base, binding.Owner}, parts...)
+	answerParts = append(answerParts, "answer.json")
+	return filepath.ToSlash(filepath.Join(viewParts...)), filepath.ToSlash(filepath.Join(answerParts...))
 }
 
 type FieldError struct {
@@ -212,7 +193,7 @@ func buildS5(binding Binding, inputs []Reference, data []byte) (Packet, error) {
 		return Packet{}, fmt.Errorf("work packet owner: %w", err)
 	}
 	if !safeComponent(binding.Owner) || !safeComponent(binding.RuntimeID) ||
-		!safeComponent(binding.AssignmentID) || !digestPattern.MatchString(binding.AssignmentSHA) ||
+		!safeComponent(binding.AssignmentID) ||
 		binding.Generation < 1 || binding.StageEntry < 0 || binding.Attempt < 1 {
 		return Packet{}, fmt.Errorf("invalid work packet binding")
 	}
@@ -220,7 +201,7 @@ func buildS5(binding Binding, inputs []Reference, data []byte) (Packet, error) {
 		if binding.PreviousSubmissionKey != "" || binding.RevisionReason != "" || binding.ExecutionRequired {
 			return Packet{}, fmt.Errorf("first attempt cannot declare a revision")
 		}
-	} else if !digestPattern.MatchString(binding.PreviousSubmissionKey) || strings.TrimSpace(binding.RevisionReason) == "" || len(binding.RevisionReason) > 1024 {
+	} else if strings.TrimSpace(binding.PreviousSubmissionKey) == "" || strings.TrimSpace(binding.RevisionReason) == "" || len(binding.RevisionReason) > 1024 {
 		return Packet{}, fmt.Errorf("revision requires a previous submission key and a concrete reason <=1024 bytes")
 	}
 	var template struct {
@@ -250,30 +231,20 @@ func buildS5(binding Binding, inputs []Reference, data []byte) (Packet, error) {
 	seen := map[string]bool{}
 	read := make([]ReadItem, 0, len(inputs))
 	for _, ref := range inputs {
-		if ref.ID == "" || ref.Version == "" || !safeRelative(ref.Path) || !digestPattern.MatchString(ref.SHA256) || seen[ref.Path] {
+		if ref.ID == "" || ref.Version == "" || !safeRelative(ref.Path) || seen[ref.Path] {
 			return Packet{}, fmt.Errorf("invalid or duplicate frozen document reference")
 		}
 		seen[ref.Path] = true
 		read = append(read, ReadItem{Path: ref.Path, Purpose: "核对本责任的规格、覆盖、依赖和完成条件；结论签署这一冻结版本。"})
 	}
-	templateSHA := Digest(data)
-	idData, err := json.Marshal(struct {
-		Binding     Binding
-		Inputs      []Reference
-		TemplateSHA string
-	}{binding, inputs, templateSHA})
-	if err != nil {
-		return Packet{}, fmt.Errorf("encode packet identity: %w", err)
-	}
-	id := "packet-" + Digest(idData)
-	base := filepath.Join(binding.RuntimeID, fmt.Sprintf("g%d", binding.Generation), binding.Responsibility)
+	id := s5PacketID(binding)
+	viewPath, answerPath := s5PacketPaths(binding, id)
 	draft := Draft{Title: question.Title, Instruction: template.Instruction, Read: read, Questions: map[string]Question{
 		"conclusion": {Question: question.Question, Choices: template.Choices},
 		"findings":   {Question: template.FindingsQuestion, Example: &template.FindingExample},
 	}, Answer: Answer{Findings: []Finding{}}}
-	return Packet{ID: id, TemplateID: "s5-document-review-v1", TemplateSHA: templateSHA, Binding: binding, Inputs: inputs,
-		ViewPath:   filepath.ToSlash(filepath.Join(".claude/work-packets", base, id+".json")),
-		AnswerPath: filepath.ToSlash(filepath.Join(".claude/submissions", base, binding.Owner, fmt.Sprintf("a%d-%s", binding.Attempt, id), "answer.json")), Draft: draft}, nil
+	return Packet{ID: id, TemplateID: "s5-document-review-v1", Binding: binding, Inputs: inputs,
+		ViewPath: viewPath, AnswerPath: answerPath, Draft: draft}, nil
 }
 
 func ValidateAnswer(packet Packet, data []byte) (Answer, []FieldError) {
@@ -336,16 +307,6 @@ func ValidateAnswer(packet Packet, data []byte) (Answer, []FieldError) {
 	return answer, issues
 }
 
-// AnswerDigest hashes the validated professional answer, independent of JSON
-// formatting and object key order. Callers must validate against the packet first.
-func AnswerDigest(answer Answer) (string, error) {
-	data, err := json.Marshal(answer)
-	if err != nil {
-		return "", err
-	}
-	return Digest(data), nil
-}
-
 // JSON decoders normally accept duplicate fields and keep the last value. A
 // signed questionnaire must have one unambiguous value for every field.
 func rejectDuplicateKeys(data []byte) error {
@@ -399,11 +360,8 @@ func rejectDuplicateKeys(data []byte) error {
 }
 
 var componentPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
-var digestPattern = regexp.MustCompile(`^[a-f0-9]{64}$`)
 
 func safeComponent(s string) bool { return componentPattern.MatchString(s) }
 func safeRelative(s string) bool {
 	return s != "" && !filepath.IsAbs(s) && !strings.ContainsAny(s, "\\:#") && filepath.ToSlash(filepath.Clean(s)) == s && s != ".." && !strings.HasPrefix(s, "../")
 }
-
-func Digest(data []byte) string { sum := sha256.Sum256(data); return hex.EncodeToString(sum[:]) }

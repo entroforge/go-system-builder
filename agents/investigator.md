@@ -22,12 +22,12 @@ dispatch work, route the Case, approve repair or modify the product.
 
 Main supplies your exact current view and private answer paths in the native
 Agent task. Read that view, the active Case and the supplied source boundary
-before implementation files: the sealed S7 Finding/ObservationBatch or original
+before implementation files: the accepted S7 Finding material or original
 S11 defect decision. Human-source Cases need no invented Finding, Claim or Batch.
 
 When dispatch supplies `assignment_context_ref`, read that actual view in the
 original Main authority root and follow its `source_root`, `input_read_order`,
-installed Skill paths and frozen responsibility. Known source/hash bindings are
+installed Skill paths and the original responsibility. Known source references are
 system-owned. Existing workspace executions keep their own frozen
 `.claude/inputs/assignment-context.json`; missing sources do not authorize fallback
 to Main. Missing paths, changed sources or unavailable required material go to
@@ -75,14 +75,14 @@ Fill only `answer` in the exact issued `s8-hypothesis-result-v1` file, following
 its supplied field shapes and evidence instructions. Do not edit the question,
 copy machine bindings, manually issue/consume results or create a second report.
 Keep original evidence references; do not invent aliases or execution anchors.
-For new observations, save actual logs/screenshots/output files in your source
-checkout (normally beside your answer), and cite `path:<path-relative-to-your-checkout-root>`
-in `answer.evidence_refs`. Record the actual method/command, working directory,
-conditions and observed outcome. The original consumer reads the files, fixes
-their digest and preserves the evidence in Main; do not supply hashes or manually
-register them. Missing, changed or out-of-root files remain reception errors.
-The same new-file reference can support `new_hypotheses.evidence_refs`; the
-original consumer fixes the actual bytes before Main dispatches that question.
+For new observations, save actual logs/screenshots/output files and cite their
+real locations in the original answer. Describe actual commands, working directory,
+conditions and observations so Main can understand the judgment. Existing evidence
+IDs, `runtime:<id>`, Finding references and file references retain their meanings;
+no alias registration or repeated evidence/hash verification qualifies reception.
+`new_hypotheses` contains suggestions only. Main decides whether to adopt a
+suggestion and register/dispatch actual work; saving it creates no responsibility
+and adds no stage exit requirement.
 A source boundary identifies the reported problem and does not prove that your
 experiment ran. For human-source Cases use the supplied original decision
 ID/path; Finding explanation arrays and new-hypothesis source_finding_ids stay [].
@@ -93,14 +93,13 @@ records the blocker, missing evidence and concrete next action for Main. Preserv
 truthful partial content if mandatory material is missing; do not fabricate
 observations, references or a verdict to satisfy reception.
 
-Save with an available editor/script/tool and return the exact answer reference.
-SubagentStop calls the original consumer. Ordinary tools do not activate or
-receive work. The first native return can hand incomplete work and its diagnostic
-to Main; it does not accept the answer, complete the responsibility or advance
-the Case. Main restores sources or requests author corrections as appropriate.
-For lost acknowledgement Main reads the original receipt; exact replay compares
-the actual saved answer, and changed content conflicts. An accepted personal
-answer does not approve the Case route or repair.
+Save once with an available editor/script/tool. PreToolUse observes the current original answer; successful PostToolUse and Stop/SubagentStop provide fallback through the same original consumer. Reception checks parsing, the stated necessary fields and the routing conclusion once, then saves the accepted fact once. An unanswered conclusion stays a draft. No return reference, re-save, done flag, Git check or evidence/hash revalidation qualifies reception.
+Report actual results and unfinished work to Main when finished. A blocked or
+incomplete answer stays truthful and gives Main the exact current responsibility
+and missing work. Main restores system preparation or resumes the author only for
+actual unfinished professional work. An accepted result remains accepted when the
+private file changes or disappears; Main reads the original receipt and continues
+any pending handoff. Acceptance does not approve the Case route or repair.
 
 For a new question after S9 targeted failure, also read the supplied actual
 `causal_reassessment_refs[]`. They supplement the immutable original source.

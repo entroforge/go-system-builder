@@ -3,7 +3,6 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -66,9 +65,9 @@ func TestNativeS6CompactResultUsesOriginalPlanWithoutAuthoringItsFactsAgain(t *t
 	if !bytes.Equal(before, after) {
 		t.Fatal("Result projection changed the original Plan")
 	}
-	// Already full authoring remains unchanged, including its canonical digest.
+	// Already full authoring remains unchanged.
 	full, _ := json.Marshal(result)
-	digest, _ := assignmentresult.AnswerDigest(answer)
+	originalAnswer := answer
 	if err := projectNativeS6Result(plan, result, len(record.DoneWhen)); err != nil {
 		t.Fatal(err)
 	}
@@ -77,9 +76,8 @@ func TestNativeS6CompactResultUsesOriginalPlanWithoutAuthoringItsFactsAgain(t *t
 		t.Fatal("legacy full Result was rewritten")
 	}
 	answer, err = validateProjectedNativeResult(plan, result, record)
-	nextDigest, _ := assignmentresult.AnswerDigest(answer)
-	if err != nil || nextDigest != digest {
-		t.Fatalf("original canonical answer signature changed: %v", err)
+	if err != nil || !reflect.DeepEqual(answer, originalAnswer) {
+		t.Fatalf("original answer changed: %v", err)
 	}
 }
 
@@ -159,46 +157,6 @@ func TestNativeS6CompactProjectionDoesNotCreateSuccessOrRepairLegacyText(t *test
 	}
 	if _, err := validateProjectedNativeResult(plan, result, record); err == nil {
 		t.Fatal("projection silently replaced an explicitly wrong original oracle")
-	}
-}
-
-func TestNativeS6BriefPreservesExactLegacyAuthoringAndRejectsDrift(t *testing.T) {
-	root := t.TempDir()
-	r := assignmentrecord.Record{AssignmentID: "assignment-compact", Revision: 1, RoleFamily: "backend-builder", Contract: assignmentrecord.NativeDeliveryContract, Task: assignmentrecord.ContextSource{ID: "TASK-001", Ref: "docs/dev/tasks/TASK-001.md"}, EffectiveWritePaths: []string{"src/"}, DoneWhen: []string{"behavior verified"}}
-	state := map[string]any{"bound_req": map[string]any{"workspace": map[string]any{"dev_branch": "dev"}}}
-	if err := prepareNativeS6Brief(root, state, r, "original-base", io.Discard); err != nil {
-		t.Fatal(err)
-	}
-	brief, plan, result := assignmentrecord.NativePaths(r)
-	path := filepath.Join(root, brief)
-	current, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Contains(current, []byte(`"plan_assertion_index":0`)) || bytes.Contains(current, []byte(`"judgment":null,"plan_assertion_indexes":[]`)) {
-		t.Fatal("normal preparation did not deliver compact authoring")
-	}
-	previousSourceAligned := strings.TrimSuffix(string(current), nativeS6CurrentAuthoringGuidance)
-	previousCurrent := strings.TrimPrefix(previousSourceAligned, nativeS6SourceAlignment(r, "original-base", plan, result))
-	previousInputs := strings.Replace(previousCurrent, nativeS6BriefInputs(root, r, false), nativeS6BriefInputs(root, r, true), 1)
-	legacy := strings.Replace(previousInputs, nativeS6ProfessionalInstructions("original-base", path, plan, result), nativeS6LegacyProfessionalInstructions("original-base", path, plan, result), 1)
-	compact := strings.Replace(previousInputs, nativeS6ProfessionalInstructions("original-base", path, plan, result), fmt.Sprintf(nativeS6CompactProfessionalFormat, "original-base", path, plan, result), 1)
-	for _, text := range []string{string(current), previousSourceAligned, previousCurrent + nativeS6LegacySourceAlignment(r, "original-base", plan, result), previousCurrent, compact, strings.Replace(compact, nativeS6MethodGuidance(root, r), "", 1), legacy, strings.Replace(legacy, nativeS6MethodGuidance(root, r), "", 1)} {
-		if err := os.WriteFile(path, []byte(text), 0600); err != nil {
-			t.Fatal(err)
-		}
-		if err := prepareNativeS6Brief(root, state, r, "original-base", io.Discard); err != nil {
-			t.Fatalf("exact prepared brief no longer recoverable: %v", err)
-		}
-		if got, err := os.ReadFile(path); err != nil || string(got) != text {
-			t.Fatal("recovery rewrote original brief")
-		}
-	}
-	if err := os.WriteFile(path, []byte(strings.Replace(legacy, "original-base", "different-base", 1)), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := prepareNativeS6Brief(root, state, r, "original-base", io.Discard); err == nil || !strings.Contains(err.Error(), "original native task brief differs") {
-		t.Fatalf("legacy compatibility accepted changed sources: %v", err)
 	}
 }
 

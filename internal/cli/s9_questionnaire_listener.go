@@ -21,6 +21,7 @@ import (
 // reconstruct receipt, baseline, execution-end or recovery proofs.
 type s9ListenerQuestionnaire struct {
 	id, view, answer    string
+	brief               string
 	originalRoot        string
 	executionAssignment string
 	binding             workpacket.RepairPlanReportBinding
@@ -96,10 +97,14 @@ func s9QuestionnaireContext(ctx context.Context, root string, request policy.Inp
 		prefix := fmt.Sprintf("S9 Builder %s assignment=%s: %s. ", packet.binding.OwnerAgentID, packet.binding.RepairAssignmentID, paths)
 		var nativeAuthorErr error
 		if isNative {
-			brief, _, _ := nativeS9Paths(native)
+			brief := nativeS9BriefPath(native)
 			planPath, resultPath, pathErr := nativeS9AuthorPaths(root, native)
 			nativeAuthorErr = pathErr
-			prefix = fmt.Sprintf("S9 Builder %s assignment=%s: exact native brief %s; read-only professional question %s; private worktree-relative PlanReport %s and Result %s. ", packet.binding.OwnerAgentID, packet.binding.RepairAssignmentID, resolveRootPath(root, brief), resolveRootPath(root, native.ViewPath), planPath, resultPath)
+			question := "embedded in the original brief"
+			if native.ViewPath != "" {
+				question = resolveRootPath(root, native.ViewPath)
+			}
+			prefix = fmt.Sprintf("S9 Builder %s assignment=%s: exact native brief %s; read-only professional question %s; private worktree-relative PlanReport %s and Result %s. ", packet.binding.OwnerAgentID, packet.binding.RepairAssignmentID, resolveRootPath(root, brief), question, planPath, resultPath)
 			if pathErr != nil {
 				prefix = fmt.Sprintf("S9 Builder %s assignment=%s: exact native brief %s; %s. ", packet.binding.OwnerAgentID, packet.binding.RepairAssignmentID, resolveRootPath(root, brief), s9NativeAuthorCoordinatesFailure(root, native, pathErr, main))
 			}
@@ -125,10 +130,7 @@ func s9QuestionnaireContext(ctx context.Context, root string, request policy.Inp
 			if isNative && nativeAuthorErr != nil {
 				next = "The PlanReport is recorded; preserve the accepted Plan. Main owns the original preparation gap before the same Builder continues; no repeated Plan is due."
 			}
-			_, originalExecution := repairExecutionForChoice(snapshot.State, repairDispatchChoice{AssignmentID: packet.binding.RepairAssignmentID, AgentID: packet.binding.OwnerAgentID})
-			if len(originalExecution) > 0 && originalExecution["purpose"] != "native_delivery" {
-				next = fmt.Sprintf("The PlanReport is recorded for an existing frozen execution. Main preserves its original workspace recovery: runtime workspace prepare --root %q --assignment %q --agent %q --check-location %s; then supplies this Builder’s exact RepairResult questionnaire. Do not repeat the accepted Plan or division answer.", root, packet.binding.ManifestAssignmentID, packet.binding.OwnerAgentID, stringValue(originalExecution["check_location"]))
-			}
+
 			switch fact.kind {
 			case "candidate":
 				assignment := stringValue(execution["assignment_id"])
@@ -195,7 +197,7 @@ func s9QuestionnaireContext(ctx context.Context, root string, request policy.Inp
 			}
 			if ctx.Err() != nil {
 				note += " Current filesystem preparation was not refreshed; preserve the original question and any independently accepted work."
-			} else if !s8QuestionnaireFileExists(resolveRootPath(root, native.ViewPath)) {
+			} else if native.ViewPath != "" && !s8QuestionnaireFileExists(resolveRootPath(root, native.ViewPath)) {
 				note += " Main/system must restore the missing original professional question before work continues."
 			}
 			lines = append(lines, prefix+note)
@@ -210,7 +212,7 @@ func s9QuestionnaireContext(ctx context.Context, root string, request policy.Inp
 			continue
 		}
 		missing := ""
-		if !s8QuestionnaireFileExists(filepath.Join(source, filepath.FromSlash(packet.view))) || !s8QuestionnaireFileExists(filepath.Join(source, filepath.FromSlash(packet.answer))) {
+		if (packet.view != "" && !s8QuestionnaireFileExists(filepath.Join(source, filepath.FromSlash(packet.view)))) || !s8QuestionnaireFileExists(filepath.Join(source, filepath.FromSlash(packet.answer))) {
 			missing = " The original view/answer is not prepared; Main/system must complete normal responsibility preparation at these exact paths before this answer can be filled."
 		}
 		note := "Fill only the issued professional answer and save this exact questionnaire for the original consumer."
@@ -229,13 +231,9 @@ func s9QuestionnaireContext(ctx context.Context, root string, request policy.Inp
 	return strings.Join(lines, "\n")
 }
 
-// A prepared native brief identifies the authoring route. Existing frozen
-// executions retain their original questionnaire and recovery contract.
+// A prepared native brief identifies the authoring route.
 func s9ListenerNativePacket(state map[string]any, packets []workpacket.RepairPlanReportPacket, question s9ListenerQuestionnaire) (workpacket.RepairPlanReportPacket, bool) {
-	_, execution := repairExecutionForChoice(state, repairDispatchChoice{AssignmentID: question.binding.RepairAssignmentID, AgentID: question.binding.OwnerAgentID})
-	if len(execution) > 0 && execution["purpose"] != "native_delivery" {
-		return workpacket.RepairPlanReportPacket{}, false
-	}
+
 	for _, packet := range packets {
 		if packet.Binding.RepairAssignmentID == question.binding.RepairAssignmentID && packet.Binding.OwnerAgentID == question.binding.OwnerAgentID {
 			return packet, true
@@ -311,7 +309,7 @@ func s9ListenerQuestionnairesContext(ctx context.Context, root string, state map
 	// This is a pure projection of already-read facts. Cancellation forbids
 	// new I/O; it does not erase known responsibilities, paths or progress.
 	pointer := repairPointerCLI(state)
-	baseline, review := mapFieldCLI(state, "baseline"), mapFieldCLI(state, "review")
+	baseline := mapFieldCLI(state, "baseline")
 	owners := mapFieldCLI(pointer, "assignment_owners")
 	rows := mapFieldCLI(state, "entities")["work_packets"]
 	if rows == nil {
@@ -341,12 +339,12 @@ func s9ListenerQuestionnairesContext(ctx context.Context, root string, state map
 			binding = mapFieldCLI(binding, "sources")
 		}
 		if owner != "" && binding["owner_agent_id"] != owner || binding["runtime_id"] != state["runtime_id"] ||
-			tolerantInt(binding["baseline_generation"]) != tolerantInt(baseline["generation"]) || tolerantInt(binding["review_round"]) != tolerantInt(review["round"]) ||
+			tolerantInt(binding["baseline_generation"]) != tolerantInt(baseline["generation"]) ||
 			binding["session_id"] != pointer["session_id"] || binding["plan_ref"] != pointer["plan_ref"] ||
 			owners[stringValue(binding["repair_assignment_id"])] != binding["owner_agent_id"] {
 			continue
 		}
-		packet := s9ListenerQuestionnaire{id: stringValue(row["packet_id"]), view: stringValue(row["view_path"]), answer: stringValue(row["answer_path"]), draft: row["draft"]}
+		packet := s9ListenerQuestionnaire{id: stringValue(row["packet_id"]), brief: stringValue(row["brief_path"]), view: stringValue(row["view_path"]), answer: stringValue(row["answer_path"]), draft: row["draft"]}
 		encoded, err := json.Marshal(binding)
 		if err == nil {
 			err = json.Unmarshal(encoded, &packet.binding)
@@ -368,8 +366,8 @@ func s9ListenerQuestionnairesContext(ctx context.Context, root string, state map
 		if err != nil {
 			return out, err
 		}
-		if packet.id == "" || packet.view == "" || packet.answer == "" {
-			return out, fmt.Errorf("current S9 packet has no exact identity/view/answer path")
+		if packet.id == "" || packet.answer == "" {
+			return out, fmt.Errorf("current S9 packet has no exact identity or required answer/question path")
 		}
 		if packet.result != nil {
 			if s9ListenerResolutionRecorded(state, packet) {
@@ -424,6 +422,12 @@ func s9ListenerResultSource(root string, state map[string]any, packet s9Listener
 }
 
 func s9ListenerPacketPaths(root string, packet s9ListenerQuestionnaire) string {
+	if packet.view == "" {
+		if root == "" {
+			return "recorded answer path " + packet.answer + "; optional Result view unavailable (registered Worker root unavailable)"
+		}
+		return "questionnaire " + filepath.Join(root, filepath.FromSlash(packet.answer)) + "; optional Result view unavailable; the questionnaire retains the original question"
+	}
 	if root == "" {
 		return "recorded questionnaire-relative path " + packet.answer + "; view-relative path " + packet.view + " (registered Worker root unavailable)"
 	}
@@ -458,7 +462,7 @@ func s9ListenerKnownPaths(root string, state map[string]any, owner string, resul
 			continue
 		}
 		if native, ok := s9ListenerNativePacket(state, nativePackets, packet); ok {
-			brief, _, _ := nativeS9Paths(native)
+			brief := nativeS9BriefPath(native)
 			planPath, resultPath, pathErr := nativeS9AuthorPaths(root, native)
 			if pathErr != nil {
 				paths = append(paths, fmt.Sprintf("native brief %s; %s", resolveRootPath(root, brief), s9NativeAuthorCoordinatesFailure(root, native, pathErr, owner == "" || owner == "Main")))
@@ -492,8 +496,7 @@ func s9ListenerKnownPaths(root string, state map[string]any, owner string, resul
 	return strings.Join(paths, "; ")
 }
 
-func s9ReadListenerDocument(root, path, _ string) (map[string]any, error) {
-	// The historical digest argument remains for existing observation callers.
+func s9ReadListenerDocument(root, path string) (map[string]any, error) {
 	// This is a path read for reminders, never a source-authorization proof.
 	return s9ObservedDocument(root, path)
 }
@@ -510,15 +513,15 @@ func s9ListenerAcceptanceContext(ctx context.Context, root string, state map[str
 	}
 	budgetUnknown := func(err error) (s9ListenerFact, error) { value := known; value.unknown = true; return value, err }
 	pointer := repairPointerCLI(state)
-	list, pathKey, shaKey := "plan_report_refs", "plan_report_ref", "plan_report_sha256"
+	list, pathKey := "plan_report_refs", "plan_report_ref"
 	if packet.result != nil {
-		list, pathKey, shaKey = "result_refs", "result_ref", "result_sha256"
+		list, pathKey = "result_refs", "result_ref"
 	}
-	for _, ref := range repairArtifactRefs(pointer, list, pathKey, shaKey) {
+	for _, ref := range repairArtifactRefs(pointer, list, pathKey) {
 		if err := ctx.Err(); err != nil {
 			return budgetUnknown(err)
 		}
-		document, err := s9ReadListenerDocument(root, ref.Path, ref.SHA256)
+		document, err := s9ReadListenerDocument(root, ref.Path)
 		if err != nil {
 			return s9ListenerFact{}, err
 		}
@@ -556,7 +559,7 @@ func s9ListenerAcceptanceContext(ctx context.Context, root string, state map[str
 		if err := ctx.Err(); err != nil {
 			return budgetUnknown(err)
 		}
-		document, err := s9ReadListenerDocument(root, ref, stringValue(row["sha256"]))
+		document, err := s9ReadListenerDocument(root, ref)
 		if err != nil {
 			return s9ListenerFact{}, err
 		}
@@ -589,7 +592,7 @@ func s9ListenerPreparationOwner(root string, state map[string]any, packets []s9L
 		if sourceErr != nil {
 			continue // A lost Worker root is not a missing Main-root question.
 		}
-		if !s8QuestionnaireFileExists(filepath.Join(source, filepath.FromSlash(packet.view))) || !s8QuestionnaireFileExists(filepath.Join(source, filepath.FromSlash(packet.answer))) {
+		if (packet.view != "" && !s8QuestionnaireFileExists(filepath.Join(source, filepath.FromSlash(packet.view)))) || !s8QuestionnaireFileExists(filepath.Join(source, filepath.FromSlash(packet.answer))) {
 			return packet.binding.OwnerAgentID
 		}
 	}
@@ -602,7 +605,7 @@ func s9ListenerPreparationOwner(root string, state map[string]any, packets []s9L
 		if !result {
 			// assignment_owners also contains independent verifier anchors.
 			// Only a missing original Plan Assignment needs a Builder packet.
-			plan, err := s9ReadListenerDocument(root, stringValue(pointer["plan_ref"]), stringValue(pointer["plan_sha256"]))
+			plan, err := s9ReadListenerDocument(root, stringValue(pointer["plan_ref"]))
 			if err != nil {
 				return ""
 			}
@@ -614,8 +617,8 @@ func s9ListenerPreparationOwner(root string, state map[string]any, packets []s9L
 			continue
 		}
 		reportPresent := false
-		for _, ref := range repairArtifactRefs(pointer, "plan_report_refs", "plan_report_ref", "plan_report_sha256") {
-			document, err := s9ReadListenerDocument(root, ref.Path, ref.SHA256)
+		for _, ref := range repairArtifactRefs(pointer, "plan_report_refs", "plan_report_ref") {
+			document, err := s9ReadListenerDocument(root, ref.Path)
 			if err == nil && document["assignment_id"] == assignment && document["agent_id"] == owner {
 				reportPresent = true
 			}
@@ -723,8 +726,15 @@ func s9ListenerNativePlans(root string, state map[string]any) []workpacket.Repai
 	}
 	var packets []workpacket.RepairPlanReportPacket
 	for _, question := range questions {
-		packet := workpacket.RepairPlanReportPacket{ID: question.id, Binding: question.binding, ViewPath: question.view, AnswerPath: question.answer}
-		brief, _, _ := nativeS9Paths(packet)
+		// A native responsibility is identified by the original brief file at
+		// its deterministic packet coordinate. A packet row that carries no
+		// brief_path still has exactly one such location, derived from the
+		// same registered coordinates the native authoring entry uses, so the
+		// authored brief itself decides whether this responsibility is native.
+		// Without that, the projection falls back to telling Main to prepare
+		// the Builder's own professional answer.
+		packet := workpacket.RepairPlanReportPacket{ID: question.id, Binding: question.binding, ViewPath: question.view, AnswerPath: question.answer, BriefPath: question.brief}
+		brief := nativeS9BriefPath(packet)
 		if s8QuestionnaireFileExists(resolveRootPath(root, brief)) {
 			packets = append(packets, packet)
 		}

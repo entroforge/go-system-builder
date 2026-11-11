@@ -14,7 +14,7 @@
       }
     },
     "evidence_refs": {
-      "question": "填写字符串数组，复用 inputs.evidence_refs 的原 ref，runtime:<id> 不另登记别名。新日志、命令输出、截图或观察文件可保存在本人准确 answer.json 同目录；引用 path:<相对本人 checkout 根目录的实际文件路径>，不填写 hash、不登记证据。原接收器读取实际文件、固定摘要并保存共享证据，Case 结果保留可验证引用；同答重试不会重新签署已变文件，缺失、越界或显式 hash 不符会拒绝。method 写实际操作、工作目录、条件与结果，observed 区分观察和推断。文件内容摘要只证明保存字节，不证明命令实际执行。原冻结 Finding 引用保持原样并按原摘要核验，不从新文件重绑。真实已有 execution anchor 保持兼容，但 scheme:// 只验形状，不可编造 URI 充当执行证据。人类原决定可引用本卷决定 ID/准确路径，不重复登记；它不证明新判别已执行。FindingSupplement 仅用于原发现者或明确授权替代者补充原现场，不要求为普通实验文件另写报告。必需来源缺失时保留原卷和实际诊断交 Main/系统。",
+      "question": "填写字符串数组，复用 inputs.evidence_refs 的原 ref，runtime:<id> 不另登记别名。新日志、命令输出、截图或观察文件可保存在本人准确 answer.json 同目录；引用 path:<相对本人 checkout 根目录的实际文件路径>，不填写 hash、不登记证据。Case 原接收器保留本人填写的实际引用，不要求摘要登记或额外采集。method 写实际操作、工作目录、条件与结果，observed 区分观察和推断。原 Finding 引用保持原样；引用文件不代表命令已经执行。真实已有 execution anchor 保持兼容，但 scheme:// 只验形状，不可编造 URI 充当执行证据。人类原决定可引用本卷决定 ID/准确路径，不重复登记；它不证明新判别已执行。FindingSupplement 仅用于原发现者或明确授权替代者补充原现场，不要求为普通实验文件另写报告。必需来源缺失时保留原卷和实际诊断交 Main/系统。",
       "example": {
         "path": "answer.evidence_refs",
         "expected": "[\"path:investigation/field-boundary.txt\"]",
@@ -50,7 +50,7 @@
       "question": "填写字符串数组，如 [\"finding-example\"]，只选本卷 Case 中该假设仍不能解释的实际 Finding ID；没有时填 []，不得与 explains_finding_ids 重复或隐藏未解释项。"
     },
     "new_hypotheses": {
-      "question": "填写数组；无后续问题填 []，有则每项完整填写 statement、invariant、discriminator、expected_outcomes{support,refute}、source_finding_ids、evidence_refs 六组字段。有 Finding 时引用本卷 Case Finding 子集；人类来源没有 Finding 时 source_finding_ids 填 []。两种来源都须完整填写专业问题和真实证据。不要填写 ID、Assignment 或状态；原消费者生成身份并登记，Main 再决定专业派发并通过真实平台启动。 判别特有范围、停止和未决条件写在 discriminator；支持/反驳观察写在 expected_outcomes，不新增字段。 本次取得的新文件可在新问题 evidence_refs 使用同样 path:<本人 checkout 内实际文件路径>；原消费者统一固定真实摘要，Main 再派发，不为新问题编造引用。",
+      "question": "填写数组；无后续问题填 []，有则每项完整填写 statement、invariant、discriminator、expected_outcomes{support,refute}、source_finding_ids、evidence_refs 六组字段。有 Finding 时按实际问题引用已接收的 Finding；Main 选择的晚到 Finding 随新问题进入当前 Case，其余可留待后续。人类来源没有 Finding 时 source_finding_ids 填 []。两种来源都须完整填写专业问题和真实证据。不要填写 ID、Assignment 或状态；原消费者生成身份并登记，Main 再决定专业派发并通过真实平台启动。 判别特有范围、停止和未决条件写在 discriminator；支持/反驳观察写在 expected_outcomes，不新增字段。 本次取得的新文件可在新问题 evidence_refs 使用同样 path:<本人 checkout 内实际文件路径>；Main 再派发，不为新问题编造引用。",
       "example": {
         "path": "answer.new_hypotheses",
         "expected": "[{\"statement\":\"必填字段在共享映射层被丢弃，而非服务端拒绝后被清空。\",\"invariant\":\"有效输入的必填字段必须保留到发送载荷。\",\"discriminator\":\"比较同一次调用在映射前后及发送边界的字段值。\",\"expected_outcomes\":{\"support\":\"映射前有值、映射后缺失且请求尚未发送。\",\"refute\":\"映射前后和发送载荷均保留该值。\"},\"source_finding_ids\":[\"finding-example\"],\"evidence_refs\":[\"path:investigation/field-boundary.txt\"]}]",

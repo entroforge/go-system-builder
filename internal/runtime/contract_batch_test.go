@@ -27,9 +27,6 @@ func TestContractArtifactsReturnsExactLockedBatch(t *testing.T) {
 	if refs[0].ID != "CONTRACTS-001" || refs[1].ID != "BE-001" || refs[0].Version != "v1.0.0" || refs[1].Version != "v1.0.0" {
 		t.Fatalf("artifact references = %#v", refs)
 	}
-	if refs[0].SHA256 != workpacket.Digest(readContractFile(t, f.root, f.indexPath)) || refs[1].SHA256 != workpacket.Digest(readContractFile(t, f.root, f.contractPath)) {
-		t.Fatal("artifact SHA does not describe checkout content")
-	}
 	for _, display := range []string{"REQ-001（v1.0.0，当前需求）", "`REQ-001`", "[REQ-001](../../requirements/REQ-001.md)（current）"} {
 		original := string(readContractFile(t, f.root, f.indexPath))
 		presented := strings.Replace(original, "> 需求：REQ-001", "> 需求："+display, 1)
@@ -76,7 +73,7 @@ func TestContractArtifactsAppendsCurrentSharedModelCheckerClosure(t *testing.T) 
 		"docs/architecture/data-model/order-invalid.json": true,
 	}
 	for _, ref := range refs[2:] {
-		if !wantModel[ref.Path] || ref.Version != "" || ref.SHA256 != workpacket.Digest(readContractFile(t, f.root, ref.Path)) {
+		if !wantModel[ref.Path] || ref.Version != "" {
 			t.Errorf("shared-model ref = %#v", ref)
 		}
 		delete(wantModel, ref.Path)
@@ -86,8 +83,8 @@ func TestContractArtifactsAppendsCurrentSharedModelCheckerClosure(t *testing.T) 
 	}
 	changedSchema := append(readContractFile(t, f.root, "docs/architecture/data-model/order.schema.json"), '\n')
 	view := replacingReader{Reader: f.files, path: "docs/architecture/data-model/order.schema.json", data: changedSchema}
-	if _, err := runtime.ContractArtifacts(f.root, f.state, f.packet, f.answer, view); err == nil || !strings.Contains(err.Error(), "differs from original checkout") {
-		t.Fatalf("shared-model source view drift was accepted: %v", err)
+	if _, err := runtime.ContractArtifacts(f.root, f.state, f.packet, f.answer, view); err != nil {
+		t.Fatalf("valid shared-model source view rejected because checkout differs: %v", err)
 	}
 	evidence, err := workpacket.ContractEvidence(f.packet, "E-S3-1", refs, f.answer, time.Now().UTC())
 	if err != nil {
@@ -97,8 +94,9 @@ func TestContractArtifactsAppendsCurrentSharedModelCheckerClosure(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := runtime.ValidateContractEnvelope(f.packet, "E-S3-1", f.answer, evidenceBytes); err != nil {
-		t.Fatalf("historical envelope did not reconstruct SHA-only model refs: %v", err)
+	acceptedAnswer, err := runtime.ContractAnswerFromEvidence(evidenceBytes)
+	if err != nil || acceptedAnswer.IndexPath == nil || *acceptedAnswer.IndexPath != *f.answer.IndexPath {
+		t.Fatalf("original professional answer unavailable: %+v %v", acceptedAnswer, err)
 	}
 	subjects := evidence["subject_refs"].([]workpacket.Subject)
 	for path := range map[string]bool{
@@ -131,7 +129,7 @@ func TestContractArtifactsDoesNotRepeatSharedModelRefAlreadyFrozenUpstream(t *te
 	writeContractFile(t, f.root, "docs/architecture/data-model/order-valid.json", `{"id":"order-1"}`)
 	writeContractFile(t, f.root, "docs/architecture/data-model/order-invalid.json", `{}`)
 	frozenInputs := f.packet.Inputs
-	frozenInputs.Sources = []workpacket.Subject{{Path: "docs/architecture/data-model/order.schema.json", SHA256: workpacket.Digest(schema)}}
+	frozenInputs.Sources = []workpacket.Subject{{Path: "docs/architecture/data-model/order.schema.json"}}
 	packet, err := workpacket.BuildContracts(f.packet.Binding, frozenInputs)
 	if err != nil {
 		t.Fatal(err)
@@ -250,35 +248,30 @@ func TestContractArtifactsRejectsDraftAmongSubmittedContracts(t *testing.T) {
 	}
 }
 
-func TestContractArtifactsRejectsSourceViewCheckoutDrift(t *testing.T) {
+func TestContractArtifactsReadsOriginalSourceViewWithoutCheckoutEqualityGate(t *testing.T) {
 	f := newContractBatchFixture(t)
 	changed := append(readContractFile(t, f.root, f.contractPath), []byte("\nsource-view-only\n")...)
 	view := replacingReader{Reader: f.files, path: f.contractPath, data: changed}
-	_, err := runtime.ContractArtifacts(f.root, f.state, f.packet, f.answer, view)
-	if err == nil || !strings.Contains(err.Error(), "checkout differs from source view") {
-		t.Fatalf("source view mismatch error = %v", err)
+	refs, err := runtime.ContractArtifacts(f.root, f.state, f.packet, f.answer, view)
+	if err != nil || len(refs) < 2 || refs[1].Path != f.contractPath {
+		t.Fatalf("original source view lost its actual contract: refs=%v err=%v", refs, err)
 	}
 }
 
-func TestContractArtifactsGitTreeOutputDriftExplainsBoundRef(t *testing.T) {
+func TestContractArtifactsUsesBoundBranchWhenCheckoutHasOtherContent(t *testing.T) {
 	f := newContractBatchFixture(t)
 	view := commitContractBatchFixture(t, f)
 	f.files = view
 	updated := string(readContractFile(t, f.root, f.contractPath)) + "\ncommitted behavior fix\n"
 	writeContractFile(t, f.root, f.contractPath, updated)
 
-	_, err := runtime.ContractArtifacts(f.root, f.state, f.packet, f.answer, f.files)
-	if err == nil {
-		t.Fatal("uncommitted S3 contract output was accepted against its bound Git source")
-	}
-	for _, want := range []string{"checkout differs from source view", "refs/heads/feature/s3", "current S3 entry", "commit this file", "original S3 answer"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("S3 Git output diagnostic omitted %q: %v", want, err)
-		}
+	refs, err := runtime.ContractArtifacts(f.root, f.state, f.packet, f.answer, f.files)
+	if err != nil || len(refs) < 2 || refs[1].Path != f.contractPath {
+		t.Fatalf("bound branch contract was not retained: refs=%v err=%v", refs, err)
 	}
 }
 
-func TestContractArtifactsSharedModelGitTreeMismatchExplainsBoundRef(t *testing.T) {
+func TestContractArtifactsSharedModelUsesSelectedGitTree(t *testing.T) {
 	t.Run("changed checkout", func(t *testing.T) {
 		f := newContractBatchFixture(t)
 		prepareContractSharedModelBatch(t, f)
@@ -286,8 +279,10 @@ func TestContractArtifactsSharedModelGitTreeMismatchExplainsBoundRef(t *testing.
 		f.files = view
 		writeContractFile(t, f.root, "docs/architecture/data-model/order.schema.json", `{"type":"object","properties":{"id":{"type":"integer"}},"required":["id"]}`)
 
-		_, err := runtime.ContractArtifacts(f.root, f.state, f.packet, f.answer, f.files)
-		assertS3GitOutputHint(t, err)
+		refs, err := runtime.ContractArtifacts(f.root, f.state, f.packet, f.answer, f.files)
+		if err != nil || len(refs) != 5 {
+			t.Fatalf("selected model source rejected due to unrelated checkout: refs=%v err=%v", refs, err)
+		}
 	})
 
 	t.Run("missing from bound ref preserves closure error", func(t *testing.T) {
@@ -308,6 +303,23 @@ func TestContractArtifactsSharedModelGitTreeMismatchExplainsBoundRef(t *testing.
 			t.Fatalf("closure checker error received a path-inferred commit hint: %v", err)
 		}
 	})
+}
+
+func TestContractArtifactsIgnoresUnrelatedCheckoutDirectoryOccupants(t *testing.T) {
+	f := newContractBatchFixture(t)
+	prepareContractSharedModelBatch(t, f)
+	view := commitContractBatchFixture(t, f)
+	writeContractFile(t, f.root, "docs/dev/contracts/FE-UNKNOWN.md", "# unknown checkout file\n")
+	if err := os.Remove(filepath.Join(f.root, "docs/architecture/data-model/order.schema.json")); err != nil {
+		t.Fatal(err)
+	}
+	refs, err := runtime.ContractArtifacts(f.root, f.state, f.packet, f.answer, view)
+	if err != nil || len(refs) != 5 {
+		t.Fatalf("selected view blocked by checkout occupants: refs=%v err=%v", refs, err)
+	}
+	if _, err := os.Stat(filepath.Join(f.root, "docs/dev/contracts/FE-UNKNOWN.md")); err != nil {
+		t.Fatalf("unknown checkout file changed: %v", err)
+	}
 }
 
 type contractBatchFixture struct {
@@ -340,8 +352,8 @@ func newContractBatchFixture(t *testing.T) contractBatchFixture {
 	writeContractFile(t, root, contractPath, contract)
 
 	pass := "pass"
-	binding := workpacket.PlanningBinding{RuntimeID: "runtime-contract", Generation: 1, StageEntry: 3, Stage: "S3", Owner: "Main", Requirement: workpacket.Reference{ID: "REQ-001", Path: reqPath, Version: "v1.0.0", SHA256: workpacket.Digest([]byte(req))}}
-	designRef := workpacket.Reference{ID: "ARCHITECTURE-001", Path: designPath, Version: "v1.0.0", SHA256: workpacket.Digest([]byte(design))}
+	binding := workpacket.PlanningBinding{RuntimeID: "runtime-contract", Generation: 1, StageEntry: 3, Stage: "S3", Owner: "Main", Requirement: workpacket.Reference{ID: "REQ-001", Path: reqPath, Version: "v1.0.0"}}
+	designRef := workpacket.Reference{ID: "ARCHITECTURE-001", Path: designPath, Version: "v1.0.0"}
 	packet, err := workpacket.BuildContracts(binding, workpacket.ContractInputs{Designs: []workpacket.Reference{designRef}})
 	if err != nil {
 		t.Fatal(err)
@@ -353,11 +365,11 @@ func newContractBatchFixture(t *testing.T) contractBatchFixture {
 		"baseline":       map[string]any{"generation": 1},
 		"lifecycle":      map[string]any{"state": "planning", "phase": "contracts", "phase_revision": 3},
 		"bound_req": map[string]any{
-			"id": "REQ-001", "path": reqPath, "version": "v1.0.0", "sha256": binding.Requirement.SHA256, "status": "locked",
+			"id": "REQ-001", "path": reqPath, "version": "v1.0.0", "status": "locked",
 			"workspace": map[string]any{"project_root": root},
 		},
 		"documents": []any{map[string]any{
-			"kind": "design", "id": designRef.ID, "path": designRef.Path, "version": designRef.Version, "sha256": designRef.SHA256,
+			"kind": "design", "id": designRef.ID, "path": designRef.Path, "version": designRef.Version,
 			"status": "locked", "generation": 1,
 		}},
 	}
@@ -435,18 +447,6 @@ func commitContractBatchFixture(t *testing.T, f contractBatchFixture) *fileview.
 	return view
 }
 
-func assertS3GitOutputHint(t *testing.T, err error) {
-	t.Helper()
-	if err == nil {
-		t.Fatal("S3 model output mismatch was accepted")
-	}
-	for _, want := range []string{"refs/heads/feature/s3", "current S3 entry", "commit this file", "original S3 answer"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("S3 Git output diagnostic omitted %q: %v", want, err)
-		}
-	}
-}
-
 func readContractFile(t *testing.T, root, path string) []byte {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(path)))
@@ -469,8 +469,11 @@ func TestContractArtifactsGitIgnoresUnrelatedDirectoryMembers(t *testing.T) {
 		t.Fatalf("unrelated checkout members blocked delivery: %v", err)
 	}
 	writeContractFile(t, f.root, "docs/dev/contracts/FE-002.md", "# FE-002\n> Status: draft\n")
-	if _, err := runtime.ContractArtifacts(f.root, f.state, f.packet, f.answer, f.files); err == nil || !strings.Contains(err.Error(), "docs/dev/contracts/FE-002.md") {
-		t.Fatalf("unsubmitted real contract candidate lacks its exact source diagnostic: %v", err)
+	if _, err := runtime.ContractArtifacts(f.root, f.state, f.packet, f.answer, f.files); err != nil {
+		t.Fatalf("checkout-only contract must not replace the selected Git source: %v", err)
+	}
+	if _, err := runtime.ContractArtifacts(f.root, f.state, f.packet, f.answer, fileview.Disk{Root: f.root}); err == nil {
+		t.Fatal("the selected source's actual unsubmitted contract was ignored")
 	}
 }
 

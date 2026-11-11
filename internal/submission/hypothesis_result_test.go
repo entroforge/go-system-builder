@@ -21,29 +21,20 @@ func submissionHypothesisPacket(t *testing.T) workpacket.HypothesisResultPacket 
 		SourceFindingIDs: []string{"finding-001"}, EvidenceRefs: []string{"test://hypothesis-probe"},
 	}
 	route := workpacket.HypothesisResultCaseRoute{Status: "investigating"}
-	questionSHA, err := workpacket.HypothesisQuestionDigest(question)
-	if err != nil {
-		t.Fatal(err)
-	}
-	routeSHA, err := workpacket.HypothesisCaseRouteDigest(route)
-	if err != nil {
-		t.Fatal(err)
-	}
 	finding := workpacket.HypothesisResultFinding{
-		FindingID: "finding-001", Ref: ".claude/evidence/findings/finding-001.json", SHA256: strings.Repeat("d", 64),
+		FindingID: "finding-001", Ref: ".claude/evidence/findings/finding-001.json",
 		Document: json.RawMessage(`{"schema_version":"1.0.0","finding_id":"finding-001","claim_id":"claim-cache-read","lens":"qa","severity":"P1","expected":"A fresh read reflects the persisted value.","authority_refs":["REQ-001"],"observed":"The response is stale.","observation_mode":"code_inspection","encounter":{"journey_summary":"Read path inspected.","wall_action":"Read the value.","first_bad_checkpoint":"Cache returned older value.","inspection_entry":"internal/cache/read.go","symbol_trail":"Read -> Lookup"},"reproducibility":"always","evidence_refs":["test://finding-observation"]}`),
 	}
 	binding := workpacket.HypothesisResultBinding{
-		RuntimeID: "loop-REQ-001", BaselineGeneration: 1, ReviewRound: 1,
+		RuntimeID: "loop-REQ-001", BaselineGeneration: 1,
 		CaseID: "investigation-case-001", CaseRef: ".claude/review/investigation/cases/investigation-case-001-r2.json",
-		CaseSHA256: strings.Repeat("a", 64), CaseRevision: 2, CaseRouteSHA256: routeSHA,
-		ObservationBatchID: "observation-batch-001", ObservationBatchRef: ".claude/evidence/observation-batch-001.json",
-		ObservationBatchSHA256: strings.Repeat("b", 64), BaselineDigest: strings.Repeat("c", 64),
+		CaseRevision: 2,
+
 		SourceFindingIDs: []string{"finding-001"}, HypothesisID: question.HypothesisID,
-		HypothesisQuestionSHA256: questionSHA, HypothesisSourceFindingIDs: []string{"finding-001"},
-		AssignmentID: question.AssignmentID, AssignmentSHA256: strings.Repeat("e", 64),
-		TeamID: "workgroup-s8-1", TaskID: "TASK-001-01", TaskRef: "docs/tasks/TASK-001-01.md", TaskSHA256: strings.Repeat("f", 64),
-		ManifestRef: ".claude/workgroups/workgroup-s8-1.json", ManifestSHA256: strings.Repeat("1", 64), OwnerAgentID: "investigator-01",
+		HypothesisSourceFindingIDs: []string{"finding-001"},
+		AssignmentID:               question.AssignmentID,
+		TeamID:                     "workgroup-s8-1", TaskID: "TASK-001-01", TaskRef: "docs/tasks/TASK-001-01.md",
+		ManifestRef: ".claude/workgroups/workgroup-s8-1.json", OwnerAgentID: "investigator-01",
 	}
 	packet, err := workpacket.BuildHypothesisResult(binding, workpacket.HypothesisResultInputs{
 		Hypothesis: question, CaseRoute: route, Findings: []workpacket.HypothesisResultFinding{finding},
@@ -63,12 +54,12 @@ func TestHypothesisResultPathResolutionUsesOnlyExactIssuedPath(t *testing.T) {
 	packet := submissionHypothesisPacket(t)
 	state := map[string]any{"runtime_id": packet.Binding.RuntimeID, "baseline": map[string]any{"generation": packet.Binding.BaselineGeneration}}
 	path := filepath.Join(root, filepath.FromSlash(packet.AnswerPath))
-	selected, selectedRoot, found, err := hypothesisResultPathInRoots(root, state, path, []workpacket.HypothesisResultPacket{packet}, false)
+	selected, selectedRoot, found, err := hypothesisResultPathInRoots(root, state, path, []workpacket.HypothesisResultPacket{packet})
 	if err != nil || !found || selected.ID != packet.ID || filepath.Clean(selectedRoot) != filepath.Clean(root) {
 		t.Fatalf("exact issued path not selected: found=%v selected=%s root=%s err=%v", found, selected.ID, selectedRoot, err)
 	}
 	forged := strings.Replace(path, "/answer.json", "/other.json", 1)
-	if _, _, found, err := hypothesisResultPathInRoots(root, state, forged, []workpacket.HypothesisResultPacket{packet}, false); err != nil || found {
+	if _, _, found, err := hypothesisResultPathInRoots(root, state, forged, []workpacket.HypothesisResultPacket{packet}); err != nil || found {
 		t.Fatalf("sibling path selected: found=%v err=%v", found, err)
 	}
 }
@@ -87,7 +78,7 @@ func TestHypothesisResultPathResolutionRejectsSymlinkSource(t *testing.T) {
 	}
 	state := map[string]any{"runtime_id": packet.Binding.RuntimeID, "baseline": map[string]any{"generation": packet.Binding.BaselineGeneration}}
 	path := filepath.Join(root, filepath.FromSlash(packet.AnswerPath))
-	if _, _, found, err := hypothesisResultPathInRoots(root, state, path, []workpacket.HypothesisResultPacket{packet}, false); err != nil || found {
+	if _, _, found, err := hypothesisResultPathInRoots(root, state, path, []workpacket.HypothesisResultPacket{packet}); err != nil || found {
 		t.Fatalf("symlink source selected: found=%v err=%v", found, err)
 	}
 }
@@ -97,12 +88,19 @@ func TestHypothesisResultReceiptProjectionIsReadOnlyDomainCompletion(t *testing.
 	snapshot := loopruntime.Snapshot{Revision: 12, State: map[string]any{"lifecycle": map[string]any{"state": "bug_resolution", "phase": "investigation"}}}
 	accepted := loopruntime.HypothesisResultReceipt{
 		PacketID: packet.ID, OwnerAgentID: packet.Binding.OwnerAgentID,
-		AnswerSHA256: strings.Repeat("a", 64), AcceptedIdempotencyKey: "runtime:investigation-case:case:12",
-		SuccessorCaseRef: ".claude/review/investigation/cases/case-r3.json", SuccessorCaseRevision: 3,
+		AcceptedIdempotencyKey: "runtime:investigation-case:case:12",
+		SuccessorCaseRef:       ".claude/review/investigation/cases/case-r3.json", SuccessorCaseRevision: 3,
 	}
 	receipt, err := acceptedHypothesisResultReceipt(snapshot, packet, accepted)
 	if err != nil || !receipt.Accepted || !receipt.WorkComplete || receipt.ResponsibilityStatus != "accepted" || len(receipt.DomainRefs) != 1 || receipt.DomainRefs[0] != accepted.SuccessorCaseRef {
 		t.Fatalf("accepted Case receipt projection mismatch: %+v err=%v", receipt, err)
+	}
+	for _, conclusion := range []string{"supported", "refuted", "inconclusive"} {
+		accepted.Result = conclusion
+		receipt, err := acceptedHypothesisResultReceipt(snapshot, packet, accepted)
+		if err != nil || !receipt.Accepted || !receipt.WorkComplete || receipt.ResponsibilityStatus != "accepted" {
+			t.Fatalf("%s changed personal progress without an original responsibility fact: %+v %v", conclusion, receipt, err)
+		}
 	}
 	accepted.OwnerAgentID = "other"
 	if _, err := acceptedHypothesisResultReceipt(snapshot, packet, accepted); err == nil {

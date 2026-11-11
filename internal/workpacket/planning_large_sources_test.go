@@ -11,11 +11,11 @@ import (
 )
 
 func TestPlanningPacketsCarryLargeInheritedSourceSets(t *testing.T) {
-	binding := PlanningBinding{RuntimeID: "loop-contract", Generation: 1, StageEntry: 3, Stage: "S3", Owner: "Main", Requirement: Reference{ID: "REQ-001", Path: "docs/requirements/REQ-001.md", Version: "v1", SHA256: Digest([]byte("REQ"))}}
-	inputs := ContractInputs{Designs: []Reference{{ID: "ARCHITECTURE-001", Path: "docs/architecture/ARCHITECTURE-001.md", Version: "v1", SHA256: Digest([]byte("design"))}}, Directories: map[string][]string{}}
+	binding := PlanningBinding{RuntimeID: "loop-contract", Generation: 1, StageEntry: 3, Stage: "S3", Owner: "Main", Requirement: Reference{ID: "REQ-001", Path: "docs/requirements/REQ-001.md", Version: "v1"}}
+	inputs := ContractInputs{Designs: []Reference{{ID: "ARCHITECTURE-001", Path: "docs/architecture/ARCHITECTURE-001.md", Version: "v1"}}, Directories: map[string][]string{}}
 	for i := 0; i < 5000; i++ {
 		name := fmt.Sprintf("%s-%04d.md", strings.Repeat("source", 20), i)
-		inputs.Sources = append(inputs.Sources, Subject{Path: "docs/design/prototypes/existing/" + name, SHA256: Digest([]byte(name))})
+		inputs.Sources = append(inputs.Sources, Subject{Path: "docs/design/prototypes/existing/" + name})
 		inputs.Directories["docs/design/prototypes/existing"] = append(inputs.Directories["docs/design/prototypes/existing"], name)
 	}
 	for i := 0; i < 70; i++ {
@@ -57,8 +57,8 @@ func TestPlanningPacketsCarryLargeInheritedSourceSets(t *testing.T) {
 		t.Fatalf("machine source inventory consumed the author answer budget: %v", issues)
 	}
 	evidence, err := ContractEvidence(p, "ev-large", []Reference{
-		{Path: index, Version: "v1", SHA256: Digest([]byte("index"))},
-		{Path: draft.Answer.ContractPaths[0], Version: "v1", SHA256: Digest([]byte("contract"))},
+		{Path: index, Version: "v1"},
+		{Path: draft.Answer.ContractPaths[0], Version: "v1"},
 	}, draft.Answer, time.Now())
 	if err != nil {
 		t.Fatal(err)

@@ -10,7 +10,7 @@ import (
 	"testing"
 
 	"github.com/entroforge/go-system-builder/internal/cli"
-	"github.com/entroforge/go-system-builder/internal/transition"
+	"github.com/entroforge/go-system-builder/internal/projectlayout"
 )
 
 // newUXTestRoot prepares a repository root with definition/policy assets and
@@ -120,6 +120,9 @@ func TestREQBindAutoInitsAndDiscoversSoleLockedREQ(t *testing.T) {
 		t.Fatalf("req bind failed: code=%d stderr=%s", code, stderr.String())
 	}
 	out := stdout.String()
+	if strings.Contains(out, "sha256") {
+		t.Fatalf("bind output advertised a digest: %s", out)
+	}
 	for _, want := range []string{
 		"initialized fresh runtime at .claude/loop-state.json",
 		"discovered sole bindable REQ: docs/requirements/REQ-098.md",
@@ -138,7 +141,7 @@ func TestREQBindAutoInitsAndDiscoversSoleLockedREQ(t *testing.T) {
 	}
 }
 
-func TestREQBindUsesRawCRLFFingerprint(t *testing.T) {
+func TestREQBindAcceptsCRLFAndRecordsResponsibility(t *testing.T) {
 	body := "# REQ-098\r\n\r\n> 状态：locked\r\n> 版本：v1.0.0\r\n> UI impact：none\r\n"
 	root := newUXTestRoot(t, map[string]string{"REQ-098.md": body})
 	var stdout, stderr bytes.Buffer
@@ -150,8 +153,11 @@ func TestREQBindUsesRawCRLFFingerprint(t *testing.T) {
 		t.Fatal(err)
 	}
 	bound, _ := state["bound_req"].(map[string]any)
-	if got, _ := bound["sha256"].(string); got != transition.REQSHA256([]byte(body)) {
-		t.Fatalf("bound SHA256 = %q, want raw-byte %q", got, transition.REQSHA256([]byte(body)))
+	if bound["id"] != "REQ-098" || bound["path"] != "docs/requirements/REQ-098.md" || bound["version"] != "v1.0.0" || bound["approved_by"] != "ux-owner" {
+		t.Fatalf("bound REQ responsibility changed: %v", bound)
+	}
+	if _, exists := bound["sha256"]; exists {
+		t.Fatal("bound REQ registered a digest")
 	}
 }
 
@@ -291,11 +297,26 @@ func TestREQBindingUsesCommittedBytesAndExplicitDestinations(t *testing.T) {
 		t.Fatal(e)
 	}
 	binding := state["bound_req"].(map[string]any)["workspace"].(map[string]any)
-	if binding["dev_branch"] != "feature/req" || binding["release_upstream"] != "origin/release" || binding["bound_commit"] == "" {
+	if binding["dev_branch"] != "feature/req" || binding["release_upstream"] != "origin/release" {
 		t.Fatalf("lost binding: %v", binding)
 	}
 }
 
+// TestExplicitLegacyStateCannotBeReconciled pins that the retired
+// `runtime reconcile-policy-ref` entry no longer reconciles a Runtime at all:
+// it is a pure diagnostic that reports the policy which is currently
+// available, and it neither gates on the legacy layout nor rewrites the
+// historical Runtime bytes.
+//
+// L4-state-transition-core.md:359 retires the fingerprint maintenance entry
+// ("旧 fingerprint 维护入口 … 历史入口不再供 Hook 登记或重算散列；原状态修订或
+// 真实来源问题沿对应实际责任处理"), and :217 keeps the historical digest out of
+// any new reception or recovery condition ("旧散列字段不迁入新责任或变成新的
+// 接收/恢复条件"). The entry therefore must not become a layout gate again.
+// The legacy-layout rejection itself belongs to the still-effective
+// `projectlayout.Check` consumers — the read-only inspectors covered by
+// TestReadOnlyCommandsValidateExplicitRuntimeLayout plus install/doctor — so
+// this test keeps that obligation on the side that still owns it.
 func TestExplicitLegacyStateCannotBeReconciled(t *testing.T) {
 	for _, legacy := range []string{"definition", "bound_req"} {
 		t.Run(legacy, func(t *testing.T) {
@@ -339,8 +360,35 @@ func TestExplicitLegacyStateCannotBeReconciled(t *testing.T) {
 			out.Reset()
 			errOut.Reset()
 			code := cli.Run([]string{"runtime", "reconcile-policy-ref", "--root", root, "--state", statePath, "--journal", journalPath}, strings.NewReader(""), &out, &errOut)
-			if code == 0 || !strings.Contains(errOut.String(), "layout migration required") {
-				t.Fatalf("old explicit Runtime accepted: %d %s %s", code, out.String(), errOut.String())
+			if code != 0 {
+				t.Fatalf("retired entry must still report the available policy: %d %s %s", code, out.String(), errOut.String())
+			}
+			report := out.String()
+			for _, want := range []string{
+				"policy available",
+				"docs/control/hook-policy.json",
+				"version=v2.0.0",
+				"historical contents are not verified",
+			} {
+				if !strings.Contains(report, want) {
+					t.Fatalf("available policy report missing %q: %s", want, report)
+				}
+			}
+			// The retired entry is a diagnostic only: it must not act as a
+			// layout gate any more, and it must not claim to have verified or
+			// re-signed the historical contents.
+			for _, unwanted := range []string{
+				"layout migration required",
+				"legacy or mixed authority",
+				"sha256",
+				"already consistent",
+			} {
+				if strings.Contains(report, unwanted) || strings.Contains(errOut.String(), unwanted) {
+					t.Fatalf("retired reconcile behaviour reappeared (%q): stdout=%q stderr=%q", unwanted, report, errOut.String())
+				}
+			}
+			if errOut.Len() != 0 {
+				t.Fatalf("available policy report must stay silent on stderr: %q", errOut.String())
 			}
 			after, err := os.ReadFile(statePath)
 			if err != nil || !bytes.Equal(after, data) {
@@ -349,6 +397,30 @@ func TestExplicitLegacyStateCannotBeReconciled(t *testing.T) {
 			afterJournal, err := os.ReadFile(journalPath)
 			if err != nil || !bytes.Equal(afterJournal, beforeJournal) {
 				t.Fatal("legacy journal changed", err)
+			}
+			// The recorded digest and the historical references survive
+			// untouched: the retired entry neither re-hashes nor migrates them.
+			var afterState map[string]any
+			if err := json.Unmarshal(after, &afterState); err != nil {
+				t.Fatal(err)
+			}
+			policyRef := afterState["hook_control"].(map[string]any)["policy_ref"].(map[string]any)
+			if policyRef["sha256"] != strings.Repeat("0", 64) {
+				t.Fatalf("retired entry recomputed the recorded digest: %v", policyRef["sha256"])
+			}
+			if legacy == "definition" {
+				if afterState["definition"].(map[string]any)["path"] != "docs/loop-definition.json" {
+					t.Fatalf("retired entry migrated the legacy definition reference: %v", afterState["definition"])
+				}
+			} else if afterState["bound_req"].(map[string]any)["path"] != "docs/product/requirements/REQ-001.md" {
+				t.Fatalf("retired entry migrated the legacy bound_req reference: %v", afterState["bound_req"])
+			}
+			// The legacy-layout rejection now belongs to the still-effective
+			// `projectlayout.Check` consumers (install/doctor and the read-only
+			// inspectors): the very same legacy bytes must still be refused
+			// there.
+			if err := projectlayout.CheckRuntime(data); err == nil || !strings.Contains(err.Error(), "layout migration required") {
+				t.Fatalf("legacy layout accepted by the layout check: %v", err)
 			}
 		})
 	}
@@ -361,7 +433,10 @@ func TestReadOnlyCommandsValidateExplicitRuntimeLayout(t *testing.T) {
 		if legacy {
 			reqPath = "docs/product/requirements/REQ-001.md"
 		}
-		data := []byte(`{"bound_req":{"path":"` + reqPath + `"},"evidence":[]}`)
+		// `revision` is a real top-level Runtime field; the Runtime Store
+		// refuses to load a candidate without it, so the explicit state used
+		// by the read-only inspectors below must carry one.
+		data := []byte(`{"bound_req":{"path":"` + reqPath + `"},"evidence":[],"revision":1}`)
 		for _, absolute := range []bool{false, true} {
 			statePath := "external-state.json"
 			actual := filepath.Join(root, statePath)
@@ -372,7 +447,16 @@ func TestReadOnlyCommandsValidateExplicitRuntimeLayout(t *testing.T) {
 			if err := os.WriteFile(actual, data, 0644); err != nil {
 				t.Fatal(err)
 			}
-			for _, command := range [][]string{{"impact", "analyze", "--changed", "docs/requirements/REQ-001.md"}, {"verification", "clean-round"}, {"explain", "TR-001"}} {
+			// The manual `verification clean-round` entry was removed together
+			// with the machine CleanRound proof it reported
+			// (blueprint/l4-mechanisms/L4-workflow-convergence.md:226
+			// "删除证据／产品基线复核和 CleanRound／ObservationBatch 证明及其旧接线";
+			// :312 "旧入口、旧 schema、旧 Hook／CLI、旧消费者及兼容适配连同仅为它们存在的测试一并删除";
+			// blueprint/l3-stages/L3-S7-verification-round.md:388
+			// "删除旧 CleanRound 消费者和兼容接线"). The current read-only
+			// Runtime inspectors replace it: each one resolves an explicitly
+			// located `--state` file and must reject a legacy/mixed layout.
+			for _, command := range [][]string{{"impact", "analyze", "--changed", "docs/requirements/REQ-001.md"}, {"runtime", "investigation", "status"}, {"explain", "TR-001"}} {
 				var out, errOut bytes.Buffer
 				args := append(append([]string{}, command...), "--root", root, "--state", statePath)
 				code := cli.Run(args, strings.NewReader(""), &out, &errOut)
@@ -384,7 +468,7 @@ func TestReadOnlyCommandsValidateExplicitRuntimeLayout(t *testing.T) {
 					if errOut.Len() != 0 || out.Len() == 0 {
 						t.Fatalf("current state unreadable by %v: %d %s %s", args, code, out.String(), errOut.String())
 					}
-					if command[0] != "verification" && code != 0 {
+					if code != 0 {
 						t.Fatalf("current diagnostic failed: %v %d", args, code)
 					}
 				}

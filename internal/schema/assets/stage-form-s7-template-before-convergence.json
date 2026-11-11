@@ -1,0 +1,49 @@
+{
+  "schema_version": "1.0.0",
+  "stage": "S7",
+  "adapter": "review_result",
+  "authoring_protocol": "shared-checkout-s7-v1",
+  "title": "S07 验证 · ReviewResult",
+  "instruction": "按本 Assignment 的 Claim 集合和实际产品入口执行；整轮覆盖由 Main 组织，不把每项责任扩大为全模块重跑。浏览器、API、命令或状态型行为各按题目方法取证；浏览器专用环境与工具只适用于浏览器 Claim。在系统提供的本人普通唯一直卷填写；Main 不代填。保存本人原答卷后，系统通过 PreToolUse 自然观察、成功 PostToolUse 补足保存时序及 SubagentStop 兜底，沿同一原消费者核对准确责任、来源、必要字段、证据与专业条件，满足原合同才接收；文件存在、工具成功或停止本身不代表已接收。填写中的草稿可继续编辑，普通工具照常使用，不增加 submit、done、marker、重存或无关工具调用。正常汇报可引用同一准确原卷，不要求额外返回引用作为接收动作；已接收后改变结论走原修订／返工。只修改 answer。答卷顶层仅保留 title、instruction、read、questions、answer 五个字段，保持已发行题干不变，只填写 answer；不要把 view packet 的 packet_id、template_id、binding、inputs、draft、view_path 或 answer_path 抄入答卷。普通结果对本卷列出的每个 Claim 给出本人实际判断；本次真实 P0 中止时保留已观察结论及 Finding，删除未执行 Claim 的空白项，系统保留其未观察状态，不补写 pass/fail 或虚假 blocked；blocked_claims 只用于被本轮已确认 Finding 阻断的 Claim。明确填写 Result verdict。保留所有机器题干与来源。 本地证据只选择真实 path:相对路径 或 command_output:原捕获路径；摘要、bytes、truncated 和资产 digest 由原接收机制绑定，不手算或抄 Runtime。",
+  "questions": {
+    "claim_results": {
+      "question": "逐项执行本 Assignment 的 Claim，逐项填写 {\"claim_id\":\"本卷实际Claim ID\",\"conclusion\":\"pass\",\"method\":\"实际采用的方法\",\"observed\":\"实际观察\",\"evidence_refs\":[\"path:docs/reports/review/实际证据.txt\"]}；conclusion 只用 pass/fail。无法执行且被本轮已确认 Finding 阻断的 Claim 改填 blocked_claims，同一 Claim 不在两处重复。不要把未执行写成 pass。仅本次 verdict=finding 且已观察的 fail Claim 有真实 P0 Finding 时，可删除未执行 Claim 的空白项；不得保留 null 伪结论，未观察集合由系统计算。 正常拒绝/负向场景实际通过时，仍填写 pass：在本项 observed 和所引用的真实证据中说明可见结果、终态、持久化影响、禁止副作用、拒绝结果、预期状态和适用恢复；恢复不适用时说明依据与原因。不要为正常拒绝创建 Finding 或填写 encounter；只有实际偏离判据的失败才使用 findings。 冷启动实际使用了 verification_artifact_workspace 中的脚本或夹具时，在本项 evidence_refs 或对应 checks.evidence_refs 中列明实际使用文件的 path:仓库相对路径；执行日志或 command_output 只说明观察，不能代替脚本/夹具依赖。原消费者补齐摘要，作者不填写 hash。只引用本人真实使用的资产，不因目录中有他人文件就认作本人依赖。已有计划明确绑定的复用资产沿原绑定检查。",
+      "choices": [
+        "pass",
+        "fail"
+      ]
+    },
+    "blocked_claims": {
+      "question": "没有被本轮已确认 Finding 阻断的 Claim 时保留 []。仅在该 Finding 使 build/start/entry/precondition 无法执行时，按需添加 {\"claim_id\":\"实际Claim ID\",\"blocking_finding_ids\":[\"本轮已确认finding-ID\"],\"failed_precondition\":{\"kind\":\"start\",\"detail\":\"实际失效前提\"},\"evidence_refs\":[\"path:docs/reports/review/实际证据.txt\"],\"after_repair_required\":true}；kind 只用 build/start/entry/precondition，after_repair_required 必须为 true。证据也可使用 runtime:本轮实际证据ID；不要求为本地 path: 另行登记证据。若关联同卷新 Finding，可在该 Finding 显式填写实际 finding_id 标签并在 blocking_finding_ids 引用。时间、预算或人手不足不能填写为 Finding 阻断。",
+      "example": {
+        "path": "answer.blocked_claims",
+        "expected": "每个阻断项指向本轮已确认 Finding，并要求修复后重做。",
+        "observed": "当前启动前提被已确认 Finding 阻断。"
+      }
+    },
+    "checks": {
+      "question": "没有实际运行的检查时保留 []。每次已运行检查按需添加 {\"name\":\"检查名（可选）\",\"command\":\"实际运行命令\",\"result\":\"pass\",\"evidence_refs\":[\"path:docs/reports/review/实际检查输出.txt\"]}；command/result 必填，result 只用 pass/fail，name/evidence_refs 可选。不要把计划中的命令写成已运行。"
+    },
+    "findings": {
+      "question": "无 fail Claim 时保留 []；每个 fail Claim 恰好一个实际观察到的 Finding。仅在确有问题时按此形状添加并全部替换为实际内容：{\"claim_id\":\"本卷实际fail Claim ID\",\"severity\":\"P2\",\"expected\":\"应有行为\",\"authority_refs\":[\"要求该行为的REQ/契约/CASE路径及条目\"],\"observed\":\"实际偏差\",\"observation_mode\":\"code_inspection\",\"encounter\":{\"journey_summary\":\"从实际检查入口到首次偏差的经过\",\"inspection_entry\":\"实际文件:行号\",\"symbol_trail\":\"实际调用或数据流路径\",\"last_good_checkpoint\":\"偏差发生前最后正常状态\",\"wall_action\":\"暴露偏差的实际动作\",\"first_bad_checkpoint\":\"首次异常及位置\",\"terminal_state\":\"本次检查结束时的状态\"},\"reproducibility\":\"once_with_deterministic_trace\",\"evidence_refs\":[\"path:docs/reports/review/实际证据.txt\"]}。以上示例专业字段均需实际填写；schema_version、finding_id、lens 由系统从原packet/Claim绑定，不要求作者填写。只有同卷确需给 site_lost 或其他真实关联使用明确标签时，才可显式提供 finding_id；显式冲突仍拒绝。severity 只用 P0/P1/P2/P3，reproducibility 只用 always/intermittent/once_with_deterministic_trace，按已执行样本选取。visible_impact 位于 Finding 顶层；副作用写入 encounter.side_effects 字符串数组，不能在 Finding 顶层添加 side_effects。encounter 总需 journey_summary（至少8字）、wall_action、first_bad_checkpoint；按真实 observation_mode 补齐：user_flow 需 entrypoint、timeline、terminal_state；api_flow 需 entrypoint、request_summary、response_summary、terminal_state；command_flow 需 command、exit_code（整数）、terminal_state；state_transition 需 before_state、after_state、terminal_state；code_inspection 需 inspection_entry、symbol_trail。timeline 每步形状为 {\"sequence\":1,\"action\":\"实际动作\",\"observed_checkpoint\":\"该步观察\",\"evidence_refs\":[\"path:docs/reports/review/该步实际证据.txt\"]}，sequence 为从1开始的正整数。普通 Finding 还需 last_good_checkpoint、terminal_state，每个已记录 timeline 步骤有 evidence_refs。可安全执行时继续其余必需 Claim；Finding 不等于要求暂停或改成 PASS。仅真实无法取得的现场证据在 encounter.capture_gaps 字符串数组写明缺什么、无法取得的原因及调查影响；P0/安全/数据破坏风险下停止危险采集，如实保留 capture_gaps，不为补卷重做危险操作。不要填根因或修复方案。 evidence_refs 使用原 typed 引用，例如 path:docs/reports/review/check-output.txt、command_output:原实际捕获路径 或 runtime:实际已登记证据ID，替换为真实引用，不填裸路径。"
+    },
+    "deviations": {
+      "question": "没有实际偏差时保留 []；有偏差时填字符串数组，例如 [\"实际执行与本卷约定的差异及具体原因\"]，不另造偏差对象或重复 Finding。"
+    },
+    "site_lost": {
+      "question": "通常保留 []。仅普通 Finding 的真实 encounter 确实无法恢复、无法补齐调查现场时，按需添加 {\"finding_id\":\"该实际finding-ID\",\"reason\":\"哪些现场已丢失、为何无法恢复\"}；两个字段都必填。这会记录本人阻塞并留在 S7，不表示已完成。P0/安全/数据破坏 Finding 不用此项，按 findings 题记录实际 capture_gaps。"
+    },
+    "verification_artifact_digest": {
+      "question": "机器字段：保留系统预填或 null，由原答卷接收过程从实际来源绑定；作者不计算或抄写摘要，原消费者继续校验源连续性。"
+    },
+    "verdict": {
+      "question": "明确填写本 Assignment 的实际专业结论：全部 Claim 实际通过用 pass；有 fail Finding 或 blocked_claims 用 finding，普通 Finding 仍继续本轮可执行的必需检查；仅专业判断确需需求变更或阻止发布时分别用 req_change_required/release_blocked。不得使用 fail 作为 verdict，不为通过流转把 Finding 改成 pass。",
+      "choices": [
+        "pass",
+        "finding",
+        "req_change_required",
+        "release_blocked"
+      ]
+    }
+  }
+}

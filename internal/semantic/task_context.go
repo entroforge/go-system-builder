@@ -1,8 +1,6 @@
 package semantic
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"path/filepath"
 	"regexp"
@@ -28,7 +26,6 @@ type TaskReadingReference struct {
 	Status           string `json:"status"`
 	Selection        string `json:"selection,omitempty"`
 	Bytes            *int   `json:"bytes"`
-	SHA256           string `json:"sha256,omitempty"`
 	Reason           string `json:"reason,omitempty"`
 }
 type TaskCheckEntrance struct {
@@ -176,8 +173,6 @@ func analyzeTaskContexts(root string, files fileview.Reader, tasks []*taskDocume
 			f := read(r.Path)
 			r.Status, r.Reason = f.status, f.reason
 			if f.status == "readable" {
-				digest := sha256.Sum256(f.body)
-				r.SHA256 = hex.EncodeToString(digest[:])
 				span, selection, reason := readingSpan(f.body, r.Path, r.Anchor)
 				r.Selection, r.Reason = selection, reason
 				n := span.end - span.start

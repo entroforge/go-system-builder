@@ -34,6 +34,7 @@ func TestAllowEnvelopeRemainsStableAndComplete(t *testing.T) {
 	engine := loadRepositoryPolicy(t)
 	input := policy.Input{
 		SessionID: "session-minimal-policy",
+		ToolUseID: "toolu-original-event",
 		Event:     "PreToolUse",
 		AgentID:   "agent-039-03",
 		Runtime: policy.RuntimeContext{

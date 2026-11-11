@@ -1,7 +1,6 @@
 package semantic
 
 import (
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"github.com/entroforge/go-system-builder/internal/fileview"
@@ -278,22 +277,6 @@ func contractsCheck(root string, files fileview.Reader, requirement workpacket.R
 				result.Problems = append(result.Problems, fmt.Sprintf("%s: clause cell %q cites %s §%s but the target contract's 本合同条款 column does not declare that clause — Main must align this reference with the target's existing clause table; prose, examples and foreign contract references cannot declare its obligations", id, cell, contractID, n))
 			}
 		}
-		for _, line := range strings.Split(content, "\n") {
-			trimmed := strings.TrimSpace(line)
-			if !strings.HasPrefix(trimmed, "|") {
-				continue
-			}
-			cells := strings.Split(strings.Trim(trimmed, "|"), "|")
-			for i, cell := range cells {
-				cell = strings.TrimSpace(cell)
-				if isHex64(strings.ToLower(cell)) && strings.Contains(strings.ToLower(strings.Join(cells[:i], " ")), "fingerprint") {
-					result.Fingerprints++
-					if resolved, ok := resolveContractFingerprintWithFiles(root, trimmed, files); ok && resolved != cell {
-						result.Problems = append(result.Problems, fmt.Sprintf("%s: fingerprint column does not match disk (recorded %s… actual %s…)", id, cell[:12], resolved[:12]))
-					}
-				}
-			}
-		}
 	}
 	// Reverse closure: every generated CASE is a verification-denominator
 	// member; a case no contract clause cites is neither locked nor covered
@@ -377,46 +360,6 @@ func expandContractCaseGroups(content string, known map[string]bool) (string, []
 		return strings.Join(matched, " ")
 	})
 	return expanded, unknown
-}
-
-func isHex64(s string) bool {
-	if len(s) != 64 {
-		return false
-	}
-	for _, r := range s {
-		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f')) {
-			return false
-		}
-	}
-	return true
-}
-
-func resolveContractFingerprint(root, row string) (string, bool) {
-	return resolveContractFingerprintWithFiles(root, row, fileview.Disk{Root: root})
-}
-func resolveContractFingerprintWithFiles(root, row string, files fileview.Reader) (string, bool) {
-	cells := strings.Split(strings.Trim(strings.TrimSpace(row), "|"), "|")
-	var fileRef string
-	for _, cell := range cells {
-		cell = strings.TrimSpace(cell)
-		for _, name := range []string{"scenario-model.json", "fixture-contract.json", "cross-matrix.json", "cases.json", "scenario-coverage.json", "index.html", "stories.md", "flows.md"} {
-			if strings.HasSuffix(cell, name) {
-				fileRef = cell
-				break
-			}
-		}
-		if fileRef != "" {
-			break
-		}
-	}
-	if fileRef == "" {
-		return "", false
-	}
-	data, err := files.ReadFile(filepath.Join(root, filepath.FromSlash(fileRef)))
-	if err != nil {
-		return "", false
-	}
-	return fmt.Sprintf("%x", sha256.Sum256(data)), true
 }
 
 // clauseNumberOf extracts the digits of the trailing §n in a clause cell.

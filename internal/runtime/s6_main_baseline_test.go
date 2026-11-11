@@ -2,7 +2,6 @@ package runtime
 
 import (
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -19,12 +18,11 @@ func s6StartFixture(t *testing.T) (map[string]any, productbaseline.S6MainStart, 
 		BaselineGeneration:      1,
 		ProjectRoot:             t.TempDir(),
 		DevelopmentBranch:       "main",
-		StartCommit:             strings.Repeat("a", 40),
 		TransitionEventID:       "evt-tr-003-r2",
 		TransitionAfterRevision: 2,
 		TransitionSequence:      1,
 		TaskSet: []productbaseline.Task{{
-			TaskID: "TASK-001", Path: "docs/dev/tasks/TASK-001.md", Version: "v1.0.0", SHA256: strings.Repeat("b", 64),
+			TaskID: "TASK-001", Path: "docs/dev/tasks/TASK-001.md", Version: "v1.0.0",
 		}},
 	})
 	if err != nil {
@@ -38,7 +36,7 @@ func s6StartFixture(t *testing.T) (map[string]any, productbaseline.S6MainStart, 
 	if err := json.Unmarshal(encoded, &starts); err != nil {
 		t.Fatal(err)
 	}
-	detail := fmt.Sprintf("registered 1 complete task(s); s6_main_start_sha256=%s", start.ReceiptSHA256)
+	detail := "registered 1 complete task(s)"
 	event := map[string]any{
 		"schema_version": "1.0.0", "runtime_id": start.RuntimeID,
 		"event_id": start.TransitionEventID, "idempotency_key": "runtime:TR-003:1",
@@ -87,8 +85,14 @@ func TestS6MainStartReceiptRequiresExactOriginalTR003Journal(t *testing.T) {
 	actions[0].(map[string]any)["detail"] = "registered 1 complete task(s); s6_main_start_sha256=" + strings.Repeat("0", 64)
 	wrong, _ := json.Marshal(event)
 	wrong = append(wrong, '\n')
+	if err := ValidateS6MainStartReceipts(state, wrong); err != nil {
+		t.Fatalf("historical SHA text became an eligibility condition: %v", err)
+	}
+	actions[0].(map[string]any)["result"] = "fail"
+	wrong, _ = json.Marshal(event)
+	wrong = append(wrong, '\n')
 	if err := ValidateS6MainStartReceipts(state, wrong); err == nil || !strings.Contains(err.Error(), "action receipt") {
-		t.Fatalf("mismatched journal receipt accepted: %v", err)
+		t.Fatalf("failed action was accepted as committed: %v", err)
 	}
 	if err := ValidateS6MainStartReceipts(state, nil); err == nil {
 		t.Fatal("missing original journal accepted")

@@ -142,7 +142,7 @@ func runSavedEntryQuestionnaire(root string, request policy.Input, stdout, stder
 		}
 	}
 	var output, errors bytes.Buffer
-	code := bindRequirement(root, filepath.ToSlash(selected), answers[1], answers[2], answers[3], "", "", true, &output, &errors)
+	code := bindRequirement(root, filepath.ToSlash(selected), answers[1], answers[2], answers[3], "", true, &output, &errors)
 	if code != 0 {
 		return true, auditQuestionnaireFeedback(stdout, "S1 original binding/preparation result for "+path+": "+errors.String()+". Follow the actual recorded outcome above; real Git commits/branch setup are Main's ordinary work, not Hook actions.")
 	}
@@ -301,14 +301,6 @@ func currentQuestionnaireLifecycleContextFromSnapshot(root string, request polic
 		return ""
 	}
 	if snapshot.State != nil {
-		if mainQuestionnaireViewer(request) && request.Event == "SessionStart" && s7BudgetGateRequired(snapshot.State, root) {
-			if _, err := prepareS7BudgetDecisionQuestionnaire(root, snapshot.State); err != nil {
-				return "S7 budget application preparation failed; Main/system restores the original decision source: " + err.Error()
-			}
-		}
-		if context := stageS7BudgetDecisionQuestionnaireContext(root, request, snapshot); context != "" {
-			return context
-		}
 		lifecycle, _ := snapshot.State["lifecycle"].(map[string]any)
 		if runtime.PacketEnabled(snapshot.State) && lifecycle["state"] == "document_verification" && mainQuestionnaireViewer(request) {
 			return stageS5ObservedContext(root, snapshot.State)

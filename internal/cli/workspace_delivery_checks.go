@@ -1,8 +1,6 @@
 package cli
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -22,9 +20,6 @@ func verifiedDomainChecks(root string, e workspace.Execution, cp integration.Che
 		return nil, err
 	}
 	root = canonicalRoot
-	if cp.TestedHead == "" {
-		return nil, fmt.Errorf("domain checks require tested_head")
-	}
 	checks := map[string]repair.RepairCheck{}
 	allowed := filepath.Dir(workspaceExecutionCheckpointPath(root, e))
 	for _, path := range cp.CheckReceipts {
@@ -43,15 +38,13 @@ func verifiedDomainChecks(root string, e workspace.Execution, cp integration.Che
 		var r struct {
 			Command string `json:"command"`
 			CWD     string `json:"cwd"`
-			Before  string `json:"head_before"`
-			After   string `json:"head_after"`
 			Status  string `json:"status"`
-			Exit    int    `json:"exit_code"`
+			Exit    *int   `json:"exit_code"`
 		}
 		if err = json.Unmarshal(data, &r); err != nil {
 			return nil, err
 		}
-		if r.Status != "pass" || r.Exit != 0 || r.Before != cp.TestedHead || r.After != cp.TestedHead {
+		if r.Status != "pass" || r.Exit == nil || *r.Exit != 0 {
 			continue
 		}
 		cwd, err := workspace.Canonical(r.CWD)
@@ -64,9 +57,8 @@ func verifiedDomainChecks(root string, e workspace.Execution, cp integration.Che
 		if (err != nil || cwd != root) && !historical {
 			return nil, fmt.Errorf("check receipt belongs to another Main checkout")
 		}
-		sum := sha256.Sum256(data)
 		relative, _ := filepath.Rel(root, physical)
-		checks[r.Command] = repair.RepairCheck{Name: "verified Main integration", Command: r.Command, Result: "pass", EvidenceRefs: []string{"path:" + filepath.ToSlash(relative) + "#sha256=" + hex.EncodeToString(sum[:])}}
+		checks[r.Command] = repair.RepairCheck{Name: "verified Main integration", Command: r.Command, Result: "pass", EvidenceRefs: []string{"path:" + filepath.ToSlash(relative)}}
 	}
 	result := []repair.RepairCheck{}
 	for _, command := range e.Checks {
@@ -75,7 +67,7 @@ func verifiedDomainChecks(root string, e workspace.Execution, cp integration.Che
 		}
 		check, ok := checks[command]
 		if !ok {
-			return nil, fmt.Errorf("no passing receipt for declared check at tested_head: %s", command)
+			return nil, fmt.Errorf("no passing receipt for the declared Main check: %s", command)
 		}
 		result = append(result, check)
 	}

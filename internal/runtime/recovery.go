@@ -1,20 +1,20 @@
 package runtime
 
 import (
-	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"reflect"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/entroforge/go-system-builder/internal/controlproof"
 	"github.com/entroforge/go-system-builder/internal/projectlayout"
 	"github.com/entroforge/go-system-builder/internal/schema"
+	"github.com/entroforge/go-system-builder/internal/workpacket"
 )
 
 var (
@@ -22,7 +22,7 @@ var (
 	// cannot be accepted as a valid Runtime pair.
 	ErrRecoveryCandidateInvalid = errors.New("recovery candidate is invalid")
 	// ErrRecoveryInputDrift means that a plan input changed after it was
-	// fingerprinted, or that the supplied candidate does not match its hash.
+	// observed, or that the supplied candidate cannot be applied.
 	ErrRecoveryInputDrift = errors.New("recovery input drift")
 	// ErrRecoveryConflict means that another recovery plan owns the Runtime
 	// recovery slot or that an applied result no longer matches the active pair.
@@ -34,8 +34,8 @@ var (
 	// durable recovery apply exists.
 	ErrRecoveryNoPending = errors.New("no pending recovery apply")
 	// ErrRecoveryOutputMismatch means that an active output did not have the
-	// hash promised by the durable recovery marker after replacement.
-	ErrRecoveryOutputMismatch = errors.New("recovery output hash mismatch")
+	// output described by the durable recovery marker after replacement.
+	ErrRecoveryOutputMismatch = errors.New("recovery output mismatch")
 	// ErrRecoveryLockUnavailable means the shared Runtime lock could not be
 	// acquired within the requested timeout.
 	ErrRecoveryLockUnavailable = errors.New("recovery runtime lock unavailable")
@@ -71,38 +71,18 @@ type RecoveryFailureInjector interface {
 	Inject(step RecoveryFailureStep) error
 }
 
-// RecoveryRequest contains the complete, fingerprinted input to one recovery
-// apply. CandidateState or CandidateStateMap must be supplied; when both are
-// supplied they must describe the same JSON value.
+// RecoveryRequest contains the input to one recovery
+// apply. CandidateState is the original approved Runtime state.
 type RecoveryRequest struct {
 	Root        string
 	StatePath   string
 	JournalPath string
 
-	PlanID  string
-	PlanSHA string
+	PlanID string
 
-	CandidateState    []byte
-	CandidateStateMap map[string]any
-	CandidateJournal  []byte
+	CandidateState   []byte
+	CandidateJournal []byte
 
-	// CandidateStateSHA256 and CandidateJournalSHA256 are optional expected
-	// output hashes. Supplying them makes candidate drift fail before any
-	// active file is touched.
-	CandidateStateSHA256   string
-	CandidateJournalSHA256 string
-	// SourceStateSHA256 and SourceJournalSHA256 are optional hashes captured by
-	// inspect/plan for the active pair. They prevent applying a stale plan.
-	SourceStateSHA256   string
-	SourceJournalSHA256 string
-	// SourceStateExists and SourceJournalExists distinguish "expected missing"
-	// from an omitted hash assertion. When supplied, existence is checked under
-	// the Runtime lock before quarantine or replacement.
-	SourceStateExists   *bool
-	SourceJournalExists *bool
-	// SourcePendingSHA256 fingerprints pre-existing commit/fingerprint/rollover markers.
-	// Recovery quarantines and retires only these known Runtime marker paths.
-	SourcePendingSHA256 map[string]string
 	// ValidateRestore is an application capability recomposed by the original
 	// Main recovery entrypoint, including marker-only retries. It runs under
 	// the Runtime lock before the first active replacement.
@@ -121,8 +101,6 @@ type RecoveryRequest struct {
 type RecoveryArtifact struct {
 	Path           string `json:"path"`
 	Exists         bool   `json:"exists"`
-	SHA256         string `json:"sha256,omitempty"`
-	Size           int64  `json:"size,omitempty"`
 	QuarantinePath string `json:"quarantine_path,omitempty"`
 }
 
@@ -132,7 +110,6 @@ type RecoveryManifest struct {
 	RecoveryID    string `json:"recovery_id"`
 	Status        string `json:"status"`
 	PlanID        string `json:"plan_id"`
-	PlanSHA       string `json:"plan_sha256"`
 	StatePath     string `json:"state_path"`
 	JournalPath   string `json:"journal_path"`
 	QuarantineDir string `json:"quarantine_dir"`
@@ -140,12 +117,10 @@ type RecoveryManifest struct {
 	OccurredAt    string `json:"occurred_at"`
 	AppliedAt     string `json:"applied_at,omitempty"`
 
-	SourceState   RecoveryArtifact   `json:"source_state"`
-	SourceJournal RecoveryArtifact   `json:"source_journal"`
-	SourcePending []RecoveryArtifact `json:"source_pending,omitempty"`
-
-	CandidateStateSHA256   string `json:"candidate_state_sha256"`
-	CandidateJournalSHA256 string `json:"candidate_journal_sha256"`
+	SourceState      RecoveryArtifact   `json:"source_state"`
+	SourceJournal    RecoveryArtifact   `json:"source_journal"`
+	SourcePending    []RecoveryArtifact `json:"source_pending,omitempty"`
+	UncertainSources []RecoveryArtifact `json:"preserved_unknown_sources,omitempty"`
 }
 
 // RecoveryResult reports the applied manifest and whether the call completed
@@ -159,7 +134,7 @@ type RecoveryResult struct {
 	Idempotent    bool
 }
 
-// RecoveryInputDriftError identifies one changed or mismatched fingerprint.
+// RecoveryInputDriftError identifies a changed original recovery input.
 type RecoveryInputDriftError struct {
 	Artifact string
 	Expected string
@@ -167,7 +142,7 @@ type RecoveryInputDriftError struct {
 }
 
 func (e *RecoveryInputDriftError) Error() string {
-	return fmt.Sprintf("recovery input %s hash %q does not match expected %q", e.Artifact, e.Actual, e.Expected)
+	return fmt.Sprintf("recovery input %s differs: %s (expected %s)", e.Artifact, e.Actual, e.Expected)
 }
 
 func (e *RecoveryInputDriftError) Is(target error) bool { return target == ErrRecoveryInputDrift }
@@ -181,7 +156,7 @@ type RecoveryOutputMismatchError struct {
 }
 
 func (e *RecoveryOutputMismatchError) Error() string {
-	return fmt.Sprintf("recovery output %s hash %q does not match expected %q", e.Artifact, e.Actual, e.Expected)
+	return fmt.Sprintf("recovery output %s differs: %s (expected %s)", e.Artifact, e.Actual, e.Expected)
 }
 
 func (e *RecoveryOutputMismatchError) Is(target error) bool {
@@ -201,13 +176,12 @@ func (e *recoveryLockError) Is(target error) bool { return target == ErrRecovery
 // RecoveryConflictError identifies the recovery plan that owns a conflicting
 // pending or applied recovery slot.
 type RecoveryConflictError struct {
-	PlanID  string
-	PlanSHA string
-	Reason  string
+	PlanID string
+	Reason string
 }
 
 func (e *RecoveryConflictError) Error() string {
-	return fmt.Sprintf("recovery plan %s/%s conflicts: %s", e.PlanID, e.PlanSHA, e.Reason)
+	return fmt.Sprintf("recovery plan %s conflicts: %s", e.PlanID, e.Reason)
 }
 
 func (e *RecoveryConflictError) Is(target error) bool { return target == ErrRecoveryConflict }
@@ -226,40 +200,33 @@ func (e *recoveryInjectedError) Unwrap() error { return e.Cause }
 func (e *recoveryInjectedError) Is(target error) bool { return target == ErrRecoveryInjectedFailure }
 
 type preparedRecovery struct {
-	request       RecoveryRequest
-	state         map[string]any
-	stateBytes    []byte
-	journalBytes  []byte
-	stateSHA256   string
-	journalSHA256 string
+	request      RecoveryRequest
+	state        map[string]any
+	stateBytes   []byte
+	journalBytes []byte
 }
 
 type recoveryPendingMarker struct {
 	SchemaVersion string `json:"schema_version"`
 	PlanID        string `json:"plan_id"`
-	PlanSHA       string `json:"plan_sha256"`
 	StatePath     string `json:"state_path"`
 	JournalPath   string `json:"journal_path"`
 	QuarantineDir string `json:"quarantine_dir"`
+	ManifestPath  string `json:"manifest_path"`
 
 	CandidateStateBase64   string `json:"candidate_state_base64"`
 	CandidateJournalBase64 string `json:"candidate_journal_base64"`
-	CandidateStateSHA256   string `json:"candidate_state_sha256"`
-	CandidateJournalSHA256 string `json:"candidate_journal_sha256"`
 
 	Manifest RecoveryManifest `json:"manifest"`
 }
 
 type quarantineManifest struct {
-	SchemaVersion          string             `json:"schema_version"`
-	PlanID                 string             `json:"plan_id"`
-	PlanSHA                string             `json:"plan_sha256"`
-	CreatedAt              string             `json:"created_at"`
-	CandidateStateSHA256   string             `json:"candidate_state_sha256"`
-	CandidateJournalSHA256 string             `json:"candidate_journal_sha256"`
-	State                  RecoveryArtifact   `json:"state"`
-	Journal                RecoveryArtifact   `json:"journal"`
-	Pending                []RecoveryArtifact `json:"pending,omitempty"`
+	SchemaVersion string             `json:"schema_version"`
+	PlanID        string             `json:"plan_id"`
+	CreatedAt     string             `json:"created_at"`
+	State         RecoveryArtifact   `json:"state"`
+	Journal       RecoveryArtifact   `json:"journal"`
+	Pending       []RecoveryArtifact `json:"pending,omitempty"`
 }
 
 type recoveryPendingSource struct {
@@ -308,20 +275,31 @@ func ApplyRecovery(request RecoveryRequest) (RecoveryResult, error) {
 		return RecoveryResult{}, err
 	}
 	if exists {
-		if normalizedRequest.PlanID == "" && normalizedRequest.PlanSHA == "" {
+		if normalizedRequest.PlanID == "" {
 			normalizedRequest.PlanID = marker.PlanID
-			normalizedRequest.PlanSHA = marker.PlanSHA
 		}
-		if marker.PlanID != normalizedRequest.PlanID || marker.PlanSHA != normalizedRequest.PlanSHA {
-			return RecoveryResult{}, &RecoveryConflictError{PlanID: marker.PlanID, PlanSHA: marker.PlanSHA, Reason: "another plan is pending"}
+		if marker.PlanID != normalizedRequest.PlanID {
+			return RecoveryResult{}, &RecoveryConflictError{PlanID: marker.PlanID, Reason: "another plan is pending"}
 		}
 		prepared, err := prepareRecoveryFromMarker(normalizedRequest, marker)
 		if err != nil {
 			return RecoveryResult{}, err
 		}
+		if normalizedRequest.ValidateRestore != nil {
+			if err := normalizedRequest.ValidateRestore(prepared.state, prepared.journalBytes); err != nil {
+				return RecoveryResult{}, err
+			}
+		}
 		return completePendingRecovery(prepared, marker, true)
 	}
-	if len(normalizedRequest.CandidateState) == 0 && normalizedRequest.CandidateStateMap == nil && len(normalizedRequest.CandidateJournal) == 0 {
+	if normalizedRequest.PlanID != "" {
+		if applied, err := findAppliedRecovery(normalizedRequest); err != nil {
+			return RecoveryResult{}, err
+		} else if applied != nil {
+			return *applied, nil
+		}
+	}
+	if len(normalizedRequest.CandidateState) == 0 && len(normalizedRequest.CandidateJournal) == 0 {
 		return RecoveryResult{}, ErrRecoveryNoPending
 	}
 
@@ -338,8 +316,8 @@ func prepareRecovery(request RecoveryRequest) (preparedRecovery, error) {
 	if err != nil {
 		return preparedRecovery{}, err
 	}
-	if strings.TrimSpace(request.PlanID) == "" || strings.TrimSpace(request.PlanSHA) == "" {
-		return preparedRecovery{}, fmt.Errorf("%w: plan id and sha are required", ErrRecoveryCandidateInvalid)
+	if strings.TrimSpace(request.PlanID) == "" {
+		return preparedRecovery{}, fmt.Errorf("%w: plan id is required", ErrRecoveryCandidateInvalid)
 	}
 	if strings.TrimSpace(request.Approver) == "" || request.OccurredAt.IsZero() {
 		return preparedRecovery{}, fmt.Errorf("%w: approver and occurred_at are required", ErrRecoveryCandidateInvalid)
@@ -368,31 +346,10 @@ func prepareRecovery(request RecoveryRequest) (preparedRecovery, error) {
 		if err := ValidateCheckpointIndices(request.Root, state, journalBytes); err != nil {
 			return preparedRecovery{}, fmt.Errorf("%w: indices: %w", ErrRecoveryCandidateInvalid, err)
 		}
-		if request.ValidateRestore == nil {
-			return preparedRecovery{}, fmt.Errorf("%w: indexed recovery requires the original Main source/launch validator", ErrRecoveryCandidateInvalid)
-		}
-		if err := request.ValidateRestore(state, journalBytes); err != nil {
-			return preparedRecovery{}, err
-		}
 	}
 
-	stateSHA := sha256Hex(stateBytes)
-	journalSHA := sha256Hex(journalBytes)
-	if err := verifyDeclaredHash("candidate_state", request.CandidateStateSHA256, stateSHA); err != nil {
-		return preparedRecovery{}, err
-	}
-	if err := verifyDeclaredHash("candidate_journal", request.CandidateJournalSHA256, journalSHA); err != nil {
-		return preparedRecovery{}, err
-	}
-	request.CandidateStateSHA256 = stateSHA
-	request.CandidateJournalSHA256 = journalSHA
 	return preparedRecovery{
-		request:       request,
-		state:         state,
-		stateBytes:    stateBytes,
-		journalBytes:  journalBytes,
-		stateSHA256:   stateSHA,
-		journalSHA256: journalSHA,
+		request: request, state: state, stateBytes: stateBytes, journalBytes: journalBytes,
 	}, nil
 }
 
@@ -405,19 +362,11 @@ func prepareRecoveryFromMarker(request RecoveryRequest, marker recoveryPendingMa
 	if err != nil {
 		return preparedRecovery{}, fmt.Errorf("%w: decode pending candidate journal: %w", ErrRecoveryCandidateInvalid, err)
 	}
-	if marker.CandidateStateSHA256 == "" || marker.CandidateJournalSHA256 == "" {
-		return preparedRecovery{}, fmt.Errorf("%w: pending candidate hashes are required", ErrRecoveryCandidateInvalid)
-	}
-	if marker.Manifest.PlanID != marker.PlanID || marker.Manifest.PlanSHA != marker.PlanSHA ||
-		marker.Manifest.CandidateStateSHA256 != marker.CandidateStateSHA256 ||
-		marker.Manifest.CandidateJournalSHA256 != marker.CandidateJournalSHA256 {
-		return preparedRecovery{}, fmt.Errorf("%w: pending marker manifest does not match candidate identity", ErrRecoveryCandidateInvalid)
+	if marker.Manifest.PlanID != marker.PlanID {
+		return preparedRecovery{}, fmt.Errorf("%w: pending marker plan identity differs", ErrRecoveryCandidateInvalid)
 	}
 	request.CandidateState = stateBytes
-	request.CandidateStateMap = nil
 	request.CandidateJournal = journalBytes
-	request.CandidateStateSHA256 = marker.CandidateStateSHA256
-	request.CandidateJournalSHA256 = marker.CandidateJournalSHA256
 	prepared, err := prepareRecovery(request)
 	if err != nil {
 		return preparedRecovery{}, err
@@ -453,20 +402,7 @@ func normalizeRecoveryRequest(request RecoveryRequest) (RecoveryRequest, error) 
 	if request.StatePath == request.JournalPath {
 		return RecoveryRequest{}, fmt.Errorf("%w: distinct state and journal paths are required", ErrRecoveryCandidateInvalid)
 	}
-	if len(request.SourcePendingSHA256) > 0 {
-		normalizedPending := make(map[string]string, len(request.SourcePendingSHA256))
-		for path, hash := range request.SourcePendingSHA256 {
-			normalizedPath, pathErr := recoveryPathWithinRoot(request.Root, path)
-			if pathErr != nil {
-				return RecoveryRequest{}, fmt.Errorf("%w: source pending path: %v", ErrRecoveryCandidateInvalid, pathErr)
-			}
-			if _, duplicate := normalizedPending[normalizedPath]; duplicate {
-				return RecoveryRequest{}, fmt.Errorf("%w: duplicate source pending path", ErrRecoveryCandidateInvalid)
-			}
-			normalizedPending[normalizedPath] = hash
-		}
-		request.SourcePendingSHA256 = normalizedPending
-	}
+
 	return request, nil
 }
 
@@ -518,55 +454,16 @@ func pathContainedBy(root, candidate string) bool {
 
 func candidateStateBytes(request RecoveryRequest) ([]byte, map[string]any, error) {
 	var state map[string]any
-	if len(request.CandidateState) > 0 {
-		if err := json.Unmarshal(request.CandidateState, &state); err != nil {
-			return nil, nil, fmt.Errorf("decode candidate state: %w", err)
-		}
-		if state == nil {
-			return nil, nil, errors.New("candidate state must be an object")
-		}
-		if err := schema.NewEmbeddedValidator().ValidateBytes("loop-state.schema.json", request.CandidateState); err != nil {
-			return nil, nil, fmt.Errorf("validate candidate state bytes: %w", err)
-		}
-		if request.CandidateStateMap != nil {
-			left, err := canonicalJSON(request.CandidateState)
-			if err != nil {
-				return nil, nil, fmt.Errorf("normalize candidate state bytes: %w", err)
-			}
-			right, err := json.Marshal(request.CandidateStateMap)
-			if err != nil {
-				return nil, nil, fmt.Errorf("encode candidate state map: %w", err)
-			}
-			right, err = canonicalJSON(right)
-			if err != nil {
-				return nil, nil, fmt.Errorf("normalize candidate state map: %w", err)
-			}
-			if !bytes.Equal(left, right) {
-				return nil, nil, errors.New("candidate state bytes and map differ")
-			}
-		}
-	} else if request.CandidateStateMap != nil {
-		state = request.CandidateStateMap
-	} else {
-		return nil, nil, errors.New("candidate state bytes or map are required")
+	if err := json.Unmarshal(request.CandidateState, &state); err != nil {
+		return nil, nil, fmt.Errorf("decode candidate state: %w", err)
 	}
-
-	if len(request.CandidateState) > 0 {
-		return append([]byte(nil), request.CandidateState...), state, nil
+	if state == nil {
+		return nil, nil, errors.New("candidate state must be an object")
 	}
-	encoded, err := jsonDocumentBytes(state)
-	if err != nil {
-		return nil, nil, fmt.Errorf("encode candidate state: %w", err)
+	if err := schema.NewEmbeddedValidator().ValidateBytes("loop-state.schema.json", request.CandidateState); err != nil {
+		return nil, nil, fmt.Errorf("validate candidate state bytes: %w", err)
 	}
-	return encoded, state, nil
-}
-
-func canonicalJSON(data []byte) ([]byte, error) {
-	var value any
-	if err := json.Unmarshal(data, &value); err != nil {
-		return nil, err
-	}
-	return json.Marshal(value)
+	return append([]byte(nil), request.CandidateState...), state, nil
 }
 
 func validateRecoveryPair(state map[string]any, journalBytes []byte) error {
@@ -604,54 +501,10 @@ func validateRecoveryPair(state map[string]any, journalBytes []byte) error {
 	return nil
 }
 
-func verifyDeclaredHash(artifact, expected, actual string) error {
-	if expected == "" || expected == actual {
-		return nil
-	}
-	return &RecoveryInputDriftError{Artifact: artifact, Expected: expected, Actual: actual}
-}
-
 func applyRecoveryLocked(prepared preparedRecovery) (RecoveryResult, error) {
 	request := prepared.request
 	markerPath := request.StatePath + ".recovery-pending.json"
-	marker, exists, err := readRecoveryMarker(markerPath)
-	if err != nil {
-		return RecoveryResult{}, err
-	}
-	if exists {
-		if marker.PlanID != request.PlanID || marker.PlanSHA != request.PlanSHA {
-			return RecoveryResult{}, &RecoveryConflictError{PlanID: marker.PlanID, PlanSHA: marker.PlanSHA, Reason: "another plan is pending"}
-		}
-		if marker.CandidateStateSHA256 != prepared.stateSHA256 || marker.CandidateJournalSHA256 != prepared.journalSHA256 {
-			return RecoveryResult{}, &RecoveryInputDriftError{Artifact: "pending_candidate", Expected: marker.CandidateStateSHA256 + "/" + marker.CandidateJournalSHA256, Actual: prepared.stateSHA256 + "/" + prepared.journalSHA256}
-		}
-		return completePendingRecovery(prepared, marker, true)
-	}
-
-	applied, err := findAppliedRecovery(request)
-	if err != nil {
-		return RecoveryResult{}, err
-	}
-	if applied != nil {
-		if applied.PlanID != request.PlanID || applied.PlanSHA != request.PlanSHA {
-			return RecoveryResult{}, &RecoveryConflictError{PlanID: applied.PlanID, PlanSHA: applied.PlanSHA, Reason: "a different plan was already applied"}
-		}
-		if applied.CandidateStateSHA256 != prepared.stateSHA256 || applied.CandidateJournalSHA256 != prepared.journalSHA256 {
-			return RecoveryResult{}, &RecoveryConflictError{PlanID: applied.PlanID, PlanSHA: applied.PlanSHA, Reason: "applied candidate hashes differ"}
-		}
-		stateData, stateExists, err := readOptionalFile(request.StatePath)
-		if err != nil {
-			return RecoveryResult{}, err
-		}
-		journalData, journalExists, err := readOptionalFile(request.JournalPath)
-		if err != nil {
-			return RecoveryResult{}, err
-		}
-		if stateExists && journalExists && sha256Hex(stateData) == prepared.stateSHA256 && sha256Hex(journalData) == prepared.journalSHA256 {
-			return recoveryResult(request, *applied, true, false), nil
-		}
-		return RecoveryResult{}, &RecoveryConflictError{PlanID: request.PlanID, PlanSHA: request.PlanSHA, Reason: "active pair differs from applied manifest"}
-	}
+	var marker recoveryPendingMarker
 
 	stateData, stateExists, err := readOptionalFile(request.StatePath)
 	if err != nil {
@@ -661,21 +514,15 @@ func applyRecoveryLocked(prepared preparedRecovery) (RecoveryResult, error) {
 	if err != nil {
 		return RecoveryResult{}, err
 	}
-	if err := verifyRecoverySourceExists("source_state", request.SourceStateExists, stateExists); err != nil {
-		return RecoveryResult{}, err
-	}
-	if err := verifyRecoverySourceExists("source_journal", request.SourceJournalExists, journalExists); err != nil {
-		return RecoveryResult{}, err
-	}
-	if err := verifyDeclaredHash("source_state", request.SourceStateSHA256, optionalHash(stateData, stateExists)); err != nil {
-		return RecoveryResult{}, err
-	}
-	if err := verifyDeclaredHash("source_journal", request.SourceJournalSHA256, optionalHash(journalData, journalExists)); err != nil {
-		return RecoveryResult{}, err
-	}
 	pendingSources, err := inspectRecoveryPendingSources(request)
 	if err != nil {
 		return RecoveryResult{}, err
+	}
+
+	if request.ValidateRestore != nil {
+		if err := request.ValidateRestore(prepared.state, prepared.journalBytes); err != nil {
+			return RecoveryResult{}, err
+		}
 	}
 
 	if err := injectRecoveryFailure(request, RecoveryBeforeQuarantine); err != nil {
@@ -686,33 +533,37 @@ func applyRecoveryLocked(prepared preparedRecovery) (RecoveryResult, error) {
 		return RecoveryResult{}, err
 	}
 	manifest := RecoveryManifest{
-		SchemaVersion:          "1.0.0",
-		RecoveryID:             recoveryID(request),
-		Status:                 "applying",
-		PlanID:                 request.PlanID,
-		PlanSHA:                request.PlanSHA,
-		StatePath:              recoveryPath(request.Root, request.StatePath),
-		JournalPath:            recoveryPath(request.Root, request.JournalPath),
-		QuarantineDir:          quarantineDir,
-		Approver:               request.Approver,
-		OccurredAt:             request.OccurredAt.UTC().Format(time.RFC3339Nano),
-		SourceState:            sourceState,
-		SourceJournal:          sourceJournal,
-		SourcePending:          sourcePending,
-		CandidateStateSHA256:   prepared.stateSHA256,
-		CandidateJournalSHA256: prepared.journalSHA256,
+		SchemaVersion: "1.0.0",
+		RecoveryID:    recoveryID(request),
+		Status:        "applying",
+		PlanID:        request.PlanID,
+		StatePath:     recoveryPath(request.Root, request.StatePath),
+		JournalPath:   recoveryPath(request.Root, request.JournalPath),
+		QuarantineDir: quarantineDir,
+		Approver:      request.Approver,
+		OccurredAt:    request.OccurredAt.UTC().Format(time.RFC3339Nano),
+		SourceState:   sourceState,
+		SourceJournal: sourceJournal,
+		SourcePending: sourcePending,
+	}
+	manifest.Status = "applied"
+	manifest.AppliedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	manifestPath, err := publishRecoveryManifest(request, manifest)
+	if err != nil {
+		return RecoveryResult{}, err
+	}
+	if err := appendRecoveryCompletion(&prepared, recoveryPath(request.Root, manifestPath)); err != nil {
+		return RecoveryResult{}, err
 	}
 	marker = recoveryPendingMarker{
 		SchemaVersion:          "1.0.0",
 		PlanID:                 request.PlanID,
-		PlanSHA:                request.PlanSHA,
 		StatePath:              recoveryPath(request.Root, request.StatePath),
 		JournalPath:            recoveryPath(request.Root, request.JournalPath),
 		QuarantineDir:          quarantineDir,
+		ManifestPath:           recoveryPath(request.Root, manifestPath),
 		CandidateStateBase64:   base64.StdEncoding.EncodeToString(prepared.stateBytes),
 		CandidateJournalBase64: base64.StdEncoding.EncodeToString(prepared.journalBytes),
-		CandidateStateSHA256:   prepared.stateSHA256,
-		CandidateJournalSHA256: prepared.journalSHA256,
 		Manifest:               manifest,
 	}
 	if err := injectRecoveryFailure(request, RecoveryBeforePendingMarker); err != nil {
@@ -724,34 +575,10 @@ func applyRecoveryLocked(prepared preparedRecovery) (RecoveryResult, error) {
 	return completePendingRecovery(prepared, marker, false)
 }
 
-func verifyRecoverySourceExists(artifact string, expected *bool, actual bool) error {
-	if expected == nil || *expected == actual {
-		return nil
-	}
-	want := "missing"
-	if *expected {
-		want = "present"
-	}
-	got := "missing"
-	if actual {
-		got = "present"
-	}
-	return &RecoveryInputDriftError{Artifact: artifact + "_existence", Expected: want, Actual: got}
-}
-
 func inspectRecoveryPendingSources(request RecoveryRequest) ([]recoveryPendingSource, error) {
 	known, err := recoverySourcePaths(request, nil)
 	if err != nil {
 		return nil, err
-	}
-	knownSet := make(map[string]struct{}, len(known))
-	for _, path := range known {
-		knownSet[filepath.Clean(path)] = struct{}{}
-	}
-	for path := range request.SourcePendingSHA256 {
-		if _, ok := knownSet[filepath.Clean(path)]; !ok {
-			return nil, fmt.Errorf("%w: unsupported source pending path %s", ErrRecoveryCandidateInvalid, path)
-		}
 	}
 
 	sources := make([]recoveryPendingSource, 0, len(known))
@@ -760,24 +587,8 @@ func inspectRecoveryPendingSources(request RecoveryRequest) ([]recoveryPendingSo
 		if err != nil {
 			return nil, err
 		}
-		expected, planned := request.SourcePendingSHA256[path]
-		if exists != planned {
-			want := "missing"
-			if planned {
-				want = "present"
-			}
-			got := "missing"
-			if exists {
-				got = "present"
-			}
-			return nil, &RecoveryInputDriftError{Artifact: recoveryPath(request.Root, path) + "_existence", Expected: want, Actual: got}
-		}
 		if !exists {
 			continue
-		}
-		actual := sha256Hex(data)
-		if actual != expected {
-			return nil, &RecoveryInputDriftError{Artifact: recoveryPath(request.Root, path), Expected: expected, Actual: actual}
 		}
 		sources = append(sources, recoveryPendingSource{path: path, data: data})
 	}
@@ -786,7 +597,6 @@ func inspectRecoveryPendingSources(request RecoveryRequest) ([]recoveryPendingSo
 
 // KnownRecoverySourcePendingPaths returns the canonical list of Runtime
 // pending marker paths that a recovery plan can declare in
-// SourcePendingSHA256. Exported for tests and operator tooling.
 func KnownRecoverySourcePendingPaths(statePath string) []string {
 	return knownRecoverySourcePendingPaths(statePath)
 }
@@ -794,7 +604,6 @@ func KnownRecoverySourcePendingPaths(statePath string) []string {
 func knownRecoverySourcePendingPaths(statePath string) []string {
 	return []string{
 		statePath + ".commit-pending.json",
-		statePath + ".fingerprint-pending.json",
 		statePath + ".rollover-pending.json",
 		statePath + ".journal-rotation-pending.json",
 	}
@@ -810,9 +619,6 @@ func completePendingRecovery(prepared preparedRecovery, marker recoveryPendingMa
 	if err != nil {
 		return RecoveryResult{}, fmt.Errorf("%w: decode pending candidate journal: %w", ErrRecoveryPending, err)
 	}
-	if sha256Hex(stateBytes) != marker.CandidateStateSHA256 || sha256Hex(journalBytes) != marker.CandidateJournalSHA256 {
-		return RecoveryResult{}, fmt.Errorf("%w: pending candidate hash mismatch", ErrRecoveryPending)
-	}
 	if marker.QuarantineDir == "" {
 		return RecoveryResult{}, fmt.Errorf("%w: quarantine directory is missing", ErrRecoveryPending)
 	}
@@ -827,7 +633,32 @@ func completePendingRecovery(prepared preparedRecovery, marker recoveryPendingMa
 	if err != nil {
 		return RecoveryResult{}, err
 	}
-	if !stateExists || sha256Hex(stateData) != marker.CandidateStateSHA256 {
+	stateDone, stateNewer := recoveryStateProgress(stateData, stateBytes)
+	if stateNewer {
+		var current, target map[string]any
+		_ = json.Unmarshal(stateData, &current)
+		_ = json.Unmarshal(stateBytes, &target)
+		if stringValue(current["runtime_id"]) == stringValue(target["runtime_id"]) {
+			if _, err := controlproof.ReadJournalForStateAt(request.JournalPath, current); err != nil {
+				stateNewer = false // unverified state is preserved as unknown below
+			}
+		} else if !recoveryProjectionCoherent(request, current) {
+			// A different Runtime epoch may only claim later committed progress
+			// when it is a self-consistent Runtime. A damaged projection is the
+			// material this recovery replaces; it is not an authority that can
+			// refuse the recovery.
+			stateNewer = false
+		}
+	}
+	if stateNewer {
+		return RecoveryResult{}, &RecoveryConflictError{PlanID: marker.PlanID, Reason: "current Runtime has later or different committed progress; original retained"}
+	}
+	if !stateDone {
+		if retried && stateExists {
+			if err := preserveUnknownRecoverySource(request, &marker, request.StatePath, stateData); err != nil {
+				return RecoveryResult{}, err
+			}
+		}
 		if err := injectRecoveryFailure(request, RecoveryBeforeStateReplace); err != nil {
 			return RecoveryResult{}, err
 		}
@@ -837,20 +668,28 @@ func completePendingRecovery(prepared preparedRecovery, marker recoveryPendingMa
 		if err := injectRecoveryFailure(request, RecoveryAfterStateReplace); err != nil {
 			return RecoveryResult{}, err
 		}
-		stateData, stateExists, err = readOptionalFile(request.StatePath)
+		written, err := os.ReadFile(request.StatePath)
 		if err != nil {
 			return RecoveryResult{}, err
 		}
-		if !stateExists || sha256Hex(stateData) != marker.CandidateStateSHA256 {
-			return RecoveryResult{}, &RecoveryOutputMismatchError{Artifact: "active_state", Expected: marker.CandidateStateSHA256, Actual: optionalHash(stateData, stateExists)}
+		if done, _ := recoveryStateProgress(written, stateBytes); !done {
+			return RecoveryResult{}, &RecoveryOutputMismatchError{Artifact: "active_state", Expected: "pending Writer revision", Actual: "unknown state"}
 		}
 	}
-
 	journalData, journalExists, err := readOptionalFile(request.JournalPath)
 	if err != nil {
 		return RecoveryResult{}, err
 	}
-	if !journalExists || sha256Hex(journalData) != marker.CandidateJournalSHA256 {
+	journalDone, journalNewer := recoveryJournalProgress(journalData, journalBytes)
+	if journalNewer {
+		return RecoveryResult{}, &RecoveryConflictError{PlanID: marker.PlanID, Reason: "current Runtime journal has later or different committed progress; original retained"}
+	}
+	if !journalDone {
+		if retried && journalExists {
+			if err := preserveUnknownRecoverySource(request, &marker, request.JournalPath, journalData); err != nil {
+				return RecoveryResult{}, err
+			}
+		}
 		if err := injectRecoveryFailure(request, RecoveryBeforeJournalReplace); err != nil {
 			return RecoveryResult{}, err
 		}
@@ -860,15 +699,15 @@ func completePendingRecovery(prepared preparedRecovery, marker recoveryPendingMa
 		if err := injectRecoveryFailure(request, RecoveryAfterJournalReplace); err != nil {
 			return RecoveryResult{}, err
 		}
-		journalData, journalExists, err = readOptionalFile(request.JournalPath)
+		written, err := os.ReadFile(request.JournalPath)
 		if err != nil {
 			return RecoveryResult{}, err
 		}
-		if !journalExists || sha256Hex(journalData) != marker.CandidateJournalSHA256 {
-			return RecoveryResult{}, &RecoveryOutputMismatchError{Artifact: "active_journal", Expected: marker.CandidateJournalSHA256, Actual: optionalHash(journalData, journalExists)}
+		if done, _ := recoveryJournalProgress(written, journalBytes); !done {
+			return RecoveryResult{}, &RecoveryOutputMismatchError{Artifact: "active_journal", Expected: "pending Writer event", Actual: "unknown journal"}
 		}
 	}
-	if err := retireRecoverySourcePending(request, marker.Manifest.SourcePending); err != nil {
+	if err := retireRecoverySourcePending(request, marker.Manifest.SourcePending, retried); err != nil {
 		return RecoveryResult{}, err
 	}
 	// RC-13 contract: a rotation marker that survived the atomic apply means
@@ -893,13 +732,9 @@ func completePendingRecovery(prepared preparedRecovery, marker recoveryPendingMa
 	if err := injectRecoveryFailure(request, RecoveryBeforeManifest); err != nil {
 		return RecoveryResult{}, err
 	}
-	manifestPath := recoveryManifestPath(request)
-	manifest, err := appliedManifestFor(marker.Manifest, manifestPath)
-	if err != nil {
-		return RecoveryResult{}, err
-	}
-	if err := writeImmutableJSON(manifestPath, manifest); err != nil {
-		return RecoveryResult{}, fmt.Errorf("write recovery manifest: %w", err)
+	manifestPath := filepath.Join(request.Root, filepath.FromSlash(marker.ManifestPath))
+	if err := atomicWriteJSON(manifestPath, marker.Manifest); err != nil {
+		return RecoveryResult{}, fmt.Errorf("record preserved recovery sources: %w", err)
 	}
 	if err := os.Remove(request.StatePath + ".recovery-pending.json"); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return RecoveryResult{}, fmt.Errorf("clear recovery pending marker: %w", err)
@@ -907,7 +742,91 @@ func completePendingRecovery(prepared preparedRecovery, marker recoveryPendingMa
 	if err := syncDir(filepath.Dir(request.StatePath)); err != nil {
 		return RecoveryResult{}, fmt.Errorf("sync recovery active directory: %w", err)
 	}
-	return recoveryResult(request, manifest, false, retried), nil
+	result := recoveryResult(request, marker.Manifest, false, retried)
+	result.ManifestPath = manifestPath
+	return result, nil
+}
+
+// Progress is decided by structural Runtime facts: the epoch identity of the
+// active projection and its committed responsibility coordinate (the journal
+// tail). A revision counter is only an audit coordinate, so it never decides
+// whether a recovery is stale, and a complete user document is never compared.
+func recoveryStateProgress(current, target []byte) (done, later bool) {
+	var have, want map[string]any
+	if json.Unmarshal(current, &have) != nil || json.Unmarshal(target, &want) != nil {
+		return false, false
+	}
+	haveJournal, ok1 := have["journal"].(map[string]any)
+	wantJournal, ok2 := want["journal"].(map[string]any)
+	if !ok1 || !ok2 {
+		return false, false
+	}
+	if stringValue(have["runtime_id"]) != stringValue(want["runtime_id"]) {
+		// A different Runtime epoch may only claim later progress when it is
+		// a self-consistent Runtime; the caller proves that coherence.
+		return false, true
+	}
+	haveSequence, haveErr := integerField(haveJournal, "last_sequence")
+	wantSequence, wantErr := integerField(wantJournal, "last_sequence")
+	if haveErr != nil || wantErr != nil {
+		return false, false
+	}
+	if haveSequence == wantSequence {
+		if stringValue(haveJournal["last_event_id"]) == stringValue(wantJournal["last_event_id"]) {
+			// The active projection already holds the recovered committed event.
+			return true, false
+		}
+		return false, true
+	}
+	if haveSequence > wantSequence {
+		// The active projection holds later committed progress of the same epoch.
+		return false, true
+	}
+	return false, false
+}
+
+// recoveryProjectionCoherent reports whether the active projection is a
+// self-consistent Runtime. Only such a projection may claim later committed
+// progress against a recovery candidate; a damaged one is unknown material.
+func recoveryProjectionCoherent(request RecoveryRequest, state map[string]any) bool {
+	if len(state) == 0 || request.Validator == nil {
+		return false
+	}
+	return request.Validator.ValidateCandidate(request.Root, state) == nil
+}
+
+func recoveryJournalProgress(current, target []byte) (done, later bool) {
+	have, e1 := inspectJournalData(current)
+	want, e2 := inspectJournalData(target)
+	if e1 != nil || e2 != nil || have.TailSequence == 0 || want.TailSequence == 0 {
+		return false, false
+	}
+	if have.RuntimeID != want.RuntimeID || have.TailSequence > want.TailSequence {
+		return false, true
+	}
+	if have.TailSequence == want.TailSequence {
+		if have.Events[len(have.Events)-1]["event_id"] == want.Events[len(want.Events)-1]["event_id"] {
+			return true, false
+		}
+		return false, true
+	}
+	return false, false
+}
+
+func preserveUnknownRecoverySource(request RecoveryRequest, marker *recoveryPendingMarker, source string, data []byte) error {
+	dir, err := os.MkdirTemp(marker.QuarantineDir, "pending-source-")
+	if err != nil {
+		return err
+	}
+	saved := filepath.Join(dir, filepath.Base(source))
+	if err := writeImmutableBytes(saved, data); err != nil {
+		return err
+	}
+	marker.Manifest.UncertainSources = append(marker.Manifest.UncertainSources, recoveryArtifact(request.Root, source, true, saved))
+	if err := atomicWriteJSON(request.StatePath+".recovery-pending.json", marker); err != nil {
+		return fmt.Errorf("record preserved unknown source: %w", err)
+	}
+	return nil
 }
 
 func verifyPostApplyPendingRetired(request RecoveryRequest) error {
@@ -916,7 +835,7 @@ func verifyPostApplyPendingRetired(request RecoveryRequest) error {
 		return err
 	}
 	for _, path := range paths {
-		data, exists, err := readOptionalFile(path)
+		_, exists, err := readOptionalFile(path)
 		if err != nil {
 			return fmt.Errorf("post-apply pending marker check: %w", err)
 		}
@@ -932,15 +851,14 @@ func verifyPostApplyPendingRetired(request RecoveryRequest) error {
 		// before any subsequent writer observes the active pair.
 		relative := recoveryPath(request.Root, path)
 		return &RecoveryConflictError{
-			PlanID:  request.PlanID,
-			PlanSHA: request.PlanSHA,
-			Reason:  fmt.Sprintf("Runtime pending marker %s survived atomic replace; run `runtime reconcile` to retire it (sha256=%s)", relative, sha256Hex(data)),
+			PlanID: request.PlanID,
+			Reason: fmt.Sprintf("Runtime pending marker %s survived atomic replace; preserve it for reconciliation", relative),
 		}
 	}
 	return nil
 }
 
-func retireRecoverySourcePending(request RecoveryRequest, artifacts []RecoveryArtifact) error {
+func retireRecoverySourcePending(request RecoveryRequest, artifacts []RecoveryArtifact, retried bool) error {
 	byPath := make(map[string]RecoveryArtifact, len(artifacts))
 	for _, artifact := range artifacts {
 		byPath[artifact.Path] = artifact
@@ -959,11 +877,11 @@ func retireRecoverySourcePending(request RecoveryRequest, artifacts []RecoveryAr
 		}
 		if !planned {
 			if exists {
-				return &RecoveryConflictError{PlanID: request.PlanID, PlanSHA: request.PlanSHA, Reason: "unexpected Runtime pending marker appeared during recovery"}
+				return &RecoveryConflictError{PlanID: request.PlanID, Reason: "unexpected Runtime pending marker appeared during recovery"}
 			}
 			continue
 		}
-		if !artifact.Exists || artifact.SHA256 == "" {
+		if !artifact.Exists || artifact.QuarantinePath == "" {
 			return fmt.Errorf("%w: pending source artifact is incomplete", ErrRecoveryPending)
 		}
 		if !exists {
@@ -971,8 +889,14 @@ func retireRecoverySourcePending(request RecoveryRequest, artifacts []RecoveryAr
 			// files were replaced but before the applied manifest was written.
 			continue
 		}
-		if sha256Hex(data) != artifact.SHA256 {
-			return &RecoveryInputDriftError{Artifact: relative, Expected: artifact.SHA256, Actual: sha256Hex(data)}
+		if retried {
+			original, err := os.ReadFile(artifact.QuarantinePath)
+			if err != nil {
+				return err
+			}
+			if !sameRecoveryPendingIdentity(path, original, data) {
+				return &RecoveryConflictError{PlanID: request.PlanID, Reason: "Runtime pending marker identity is unknown; original file retained"}
+			}
 		}
 		if err := os.Remove(path); err != nil {
 			return fmt.Errorf("retire recovered Runtime pending marker %s: %w", relative, err)
@@ -987,6 +911,48 @@ func retireRecoverySourcePending(request RecoveryRequest, artifacts []RecoveryAr
 	return nil
 }
 
+func sameRecoveryPendingIdentity(path string, original, current []byte) bool {
+	var before, after map[string]any
+	if json.Unmarshal(original, &before) != nil || json.Unmarshal(current, &after) != nil {
+		return false
+	}
+	keys := []string{}
+	switch {
+	case strings.HasSuffix(path, ".commit-pending.json"):
+		oldEvent, ok1 := before["journal_event"].(map[string]any)
+		newEvent, ok2 := after["journal_event"].(map[string]any)
+		oldID, oldOK := oldEvent["event_id"].(string)
+		newID, newOK := newEvent["event_id"].(string)
+		if !ok1 || !ok2 || !oldOK || !newOK || oldID == "" || oldID != newID {
+			return false
+		}
+		keys = []string{"previous_revision", "idempotency_key"}
+	case strings.HasSuffix(path, ".rollover-pending.json"):
+		keys = []string{"source_runtime_id", "source_revision"}
+	case strings.HasSuffix(path, ".journal-rotation-pending.json"):
+		keys = []string{"tail_event_id", "tail_sequence", "archived_file"}
+	default:
+		return false
+	}
+	for _, key := range keys {
+		switch value := before[key].(type) {
+		case string:
+			other, ok := after[key].(string)
+			if !ok || value == "" || value != other {
+				return false
+			}
+		case float64:
+			other, ok := after[key].(float64)
+			if !ok || value != other {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 func recoveryResult(request RecoveryRequest, manifest RecoveryManifest, idempotent, retried bool) RecoveryResult {
 	return RecoveryResult{
 		ManifestPath:  recoveryManifestPath(request),
@@ -996,26 +962,6 @@ func recoveryResult(request RecoveryRequest, manifest RecoveryManifest, idempote
 		Retried:       retried,
 		Idempotent:    idempotent,
 	}
-}
-
-func appliedManifestFor(pending RecoveryManifest, path string) (RecoveryManifest, error) {
-	data, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
-		pending.Status = "applied"
-		pending.AppliedAt = time.Now().UTC().Format(time.RFC3339Nano)
-		return pending, nil
-	}
-	if err != nil {
-		return RecoveryManifest{}, fmt.Errorf("read existing recovery manifest: %w", err)
-	}
-	var existing RecoveryManifest
-	if err := json.Unmarshal(data, &existing); err != nil {
-		return RecoveryManifest{}, fmt.Errorf("decode existing recovery manifest: %w", err)
-	}
-	if existing.Status != "applied" || existing.PlanID != pending.PlanID || existing.PlanSHA != pending.PlanSHA || existing.CandidateStateSHA256 != pending.CandidateStateSHA256 || existing.CandidateJournalSHA256 != pending.CandidateJournalSHA256 {
-		return RecoveryManifest{}, &RecoveryConflictError{PlanID: pending.PlanID, PlanSHA: pending.PlanSHA, Reason: "existing recovery manifest differs"}
-	}
-	return existing, nil
 }
 
 func injectRecoveryFailure(request RecoveryRequest, step RecoveryFailureStep) error {
@@ -1040,45 +986,120 @@ func readRecoveryMarker(path string) (recoveryPendingMarker, bool, error) {
 	if err := json.Unmarshal(data, &marker); err != nil {
 		return recoveryPendingMarker{}, false, fmt.Errorf("%w: decode recovery pending marker: %w", ErrRecoveryPending, err)
 	}
-	if marker.SchemaVersion != "1.0.0" || marker.PlanID == "" || marker.PlanSHA == "" {
+	if marker.SchemaVersion != "1.0.0" || marker.PlanID == "" {
 		return recoveryPendingMarker{}, false, fmt.Errorf("%w: recovery pending marker is incomplete", ErrRecoveryPending)
 	}
 	return marker, true, nil
 }
 
-func findAppliedRecovery(request RecoveryRequest) (*RecoveryManifest, error) {
-	dir := filepath.Join(request.Root, ".claude", "recovery", "manifests")
-	entries, err := os.ReadDir(dir)
-	if errors.Is(err, os.ErrNotExist) {
+// A recovery is complete only when the original Writer's committed journal
+// records its plan and the actual manifest it created. Unrelated files are not
+// inspected as recovery receipts.
+func findAppliedRecovery(request RecoveryRequest) (*RecoveryResult, error) {
+	raw, err := os.ReadFile(request.StatePath)
+	if err != nil {
 		return nil, nil
 	}
-	if err != nil {
-		return nil, fmt.Errorf("read recovery manifests: %w", err)
+	var state map[string]any
+	if json.Unmarshal(raw, &state) != nil {
+		return nil, nil
 	}
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+	journal, err := controlproof.ReadJournalForStateAt(request.JournalPath, state)
+	if err != nil {
+		return nil, nil
+	}
+	inspection, err := inspectJournalData(journal)
+	if err != nil {
+		return nil, nil
+	}
+	for _, event := range inspection.Events {
+		if event["transition_id"] != "RECOVERY-APPLIED" || event["event"] != "transition_committed" || event["outcome"] != "committed" || event["idempotency_key"] != "recovery:"+request.PlanID || event["runtime_id"] != state["runtime_id"] {
 			continue
 		}
-		data, err := os.ReadFile(filepath.Join(dir, entry.Name()))
-		if err != nil {
-			return nil, fmt.Errorf("read recovery manifest %s: %w", entry.Name(), err)
-		}
-		var manifest RecoveryManifest
-		if err := json.Unmarshal(data, &manifest); err != nil {
-			return nil, fmt.Errorf("decode recovery manifest %s: %w", entry.Name(), err)
-		}
-		if manifest.Status != "applied" {
+		refs, _ := event["evidence_ids"].([]any)
+		if len(refs) != 1 {
 			continue
 		}
-		if manifest.PlanID != request.PlanID || manifest.PlanSHA != request.PlanSHA {
-			// Applied manifests describe completed recovery epochs. They are
-			// historical lineage, not a global mutex. Only a pending marker
-			// represents an in-flight recovery that can conflict.
+		ref, ok := refs[0].(string)
+		if !ok || ref == "" {
 			continue
 		}
-		return &manifest, nil
+		manifest := RecoveryManifest{PlanID: request.PlanID, Status: "applied"}
+		if data, err := workpacket.ReadFile(request.Root, ref, 4<<20); err == nil {
+			_ = json.Unmarshal(data, &manifest)
+		}
+		result := recoveryResult(request, manifest, true, false)
+		result.Manifest.PlanID = request.PlanID
+		result.ManifestPath = filepath.Join(request.Root, filepath.FromSlash(ref))
+		return &result, nil
 	}
 	return nil, nil
+}
+
+func publishRecoveryManifest(request RecoveryRequest, manifest RecoveryManifest) (string, error) {
+	data, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	data = append(data, '\n')
+	original := recoveryManifestPath(request)
+	for attempt := 0; ; attempt++ {
+		path := original
+		if attempt > 0 {
+			path = filepath.Join(append([]string{request.Root, ".claude", fmt.Sprintf("recovery-manifests-alt-%d", attempt)}, append(recoveryPlanParts(request.PlanID), "manifest.json")...)...)
+		}
+		relative := recoveryPath(request.Root, path)
+		created, err := workpacket.PublishNewBounded(request.Root, relative, data, 4<<20)
+		if err != nil {
+			return "", fmt.Errorf("publish recovery manifest: %w", err)
+		}
+		if created {
+			return path, nil
+		}
+	}
+}
+
+func appendRecoveryCompletion(prepared *preparedRecovery, manifestRef string) error {
+	state := prepared.state
+	before, err := integerField(state, "revision")
+	if err != nil {
+		return err
+	}
+	journal, err := objectField(state, "journal")
+	if err != nil {
+		return err
+	}
+	sequence, err := integerField(journal, "last_sequence")
+	if err != nil {
+		return err
+	}
+	id := "recovery-" + recoveryID(prepared.request)
+	mutation := Mutation{EventID: id, TransitionID: "RECOVERY-APPLIED", Actor: "orchestrator", IdempotencyKey: "recovery:" + prepared.request.PlanID, EvidenceIDs: []string{manifestRef}, BaselineGeneration: baselineGeneration(state), Message: "Applied the approved Runtime recovery plan."}
+	event := buildJournalEvent(mutation, fmt.Sprint(state["runtime_id"]), before, before+1, sequence+1, prepared.request.OccurredAt)
+	if err := validateJournalEvent(event); err != nil {
+		return err
+	}
+	state["revision"] = before + 1
+	journal["last_sequence"] = sequence + 1
+	journal["last_event_id"] = id
+	encodedState, err := json.Marshal(state)
+	if err != nil {
+		return err
+	}
+	encodedEvent, err := json.Marshal(event)
+	if err != nil {
+		return err
+	}
+	if len(prepared.journalBytes) > 0 && prepared.journalBytes[len(prepared.journalBytes)-1] != '\n' {
+		prepared.journalBytes = append(prepared.journalBytes, '\n')
+	}
+	prepared.journalBytes = append(prepared.journalBytes, encodedEvent...)
+	prepared.journalBytes = append(prepared.journalBytes, '\n')
+	prepared.stateBytes = encodedState
+	if err := NewWriter(prepared.request.StatePath, prepared.request.JournalPath, prepared.request.Root, prepared.request.Validator).validateCandidate(state); err != nil {
+		return err
+	}
+	return validateRecoveryPair(state, prepared.journalBytes)
 }
 
 func ensureRecoveryQuarantine(request RecoveryRequest, stateData []byte, stateExists bool, journalData []byte, journalExists bool, pendingSources []recoveryPendingSource) (string, RecoveryArtifact, RecoveryArtifact, []RecoveryArtifact, error) {
@@ -1086,13 +1107,13 @@ func ensureRecoveryQuarantine(request RecoveryRequest, stateData []byte, stateEx
 	if err := os.MkdirAll(base, 0o755); err != nil {
 		return "", RecoveryArtifact{}, RecoveryArtifact{}, nil, fmt.Errorf("create recovery quarantine root: %w", err)
 	}
-	dir := filepath.Join(base, safeRecoveryComponent(request.PlanID)+"-"+safeRecoveryComponent(request.PlanSHA))
-	if err := os.Mkdir(dir, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
+	dir, err := os.MkdirTemp(base, "recovery-")
+	if err != nil {
 		return "", RecoveryArtifact{}, RecoveryArtifact{}, nil, fmt.Errorf("create recovery quarantine: %w", err)
 	}
 
-	stateArtifact := recoveryArtifact(request.Root, request.StatePath, stateData, stateExists, filepath.Join(dir, "loop-state.json"))
-	journalArtifact := recoveryArtifact(request.Root, request.JournalPath, journalData, journalExists, filepath.Join(dir, "loop-events.jsonl"))
+	stateArtifact := recoveryArtifact(request.Root, request.StatePath, stateExists, filepath.Join(dir, "loop-state.json"))
+	journalArtifact := recoveryArtifact(request.Root, request.JournalPath, journalExists, filepath.Join(dir, "loop-events.jsonl"))
 	if stateExists {
 		if err := writeImmutableBytes(stateArtifact.QuarantinePath, stateData); err != nil {
 			return "", RecoveryArtifact{}, RecoveryArtifact{}, nil, fmt.Errorf("quarantine state: %w", err)
@@ -1106,38 +1127,21 @@ func ensureRecoveryQuarantine(request RecoveryRequest, stateData []byte, stateEx
 	pendingArtifacts := make([]RecoveryArtifact, 0, len(pendingSources))
 	for _, source := range pendingSources {
 		name := filepath.Base(source.path)
-		artifact := recoveryArtifact(request.Root, source.path, source.data, true, filepath.Join(dir, name))
+		artifact := recoveryArtifact(request.Root, source.path, true, filepath.Join(dir, name))
 		if err := writeImmutableBytes(artifact.QuarantinePath, source.data); err != nil {
 			return "", RecoveryArtifact{}, RecoveryArtifact{}, nil, fmt.Errorf("quarantine pending marker: %w", err)
 		}
 		pendingArtifacts = append(pendingArtifacts, artifact)
 	}
 	manifest := quarantineManifest{
-		SchemaVersion:          "1.0.0",
-		PlanID:                 request.PlanID,
-		PlanSHA:                request.PlanSHA,
-		CreatedAt:              request.OccurredAt.UTC().Format(time.RFC3339Nano),
-		CandidateStateSHA256:   request.CandidateStateSHA256,
-		CandidateJournalSHA256: request.CandidateJournalSHA256,
-		State:                  stateArtifact,
-		Journal:                journalArtifact,
-		Pending:                pendingArtifacts,
+		SchemaVersion: "1.0.0",
+		PlanID:        request.PlanID,
+		CreatedAt:     request.OccurredAt.UTC().Format(time.RFC3339Nano),
+		State:         stateArtifact,
+		Journal:       journalArtifact,
+		Pending:       pendingArtifacts,
 	}
 	manifestPath := filepath.Join(dir, "manifest.json")
-	if data, readErr := os.ReadFile(manifestPath); readErr == nil {
-		var existing quarantineManifest
-		if err := json.Unmarshal(data, &existing); err != nil {
-			return "", RecoveryArtifact{}, RecoveryArtifact{}, nil, fmt.Errorf("decode existing quarantine manifest: %w", err)
-		}
-		if existing.SchemaVersion != manifest.SchemaVersion || existing.PlanID != manifest.PlanID || existing.PlanSHA != manifest.PlanSHA || existing.CandidateStateSHA256 != manifest.CandidateStateSHA256 || existing.CandidateJournalSHA256 != manifest.CandidateJournalSHA256 || existing.State != manifest.State || existing.Journal != manifest.Journal || !equalRecoveryArtifacts(existing.Pending, manifest.Pending) {
-			return "", RecoveryArtifact{}, RecoveryArtifact{}, nil, fmt.Errorf("%w: existing quarantine manifest differs", ErrRecoveryConflict)
-		}
-		// The first durable quarantine owns its creation timestamp. A retry is
-		// the same recovery operation even when the caller's wall clock changed.
-		manifest = existing
-	} else if !errors.Is(readErr, os.ErrNotExist) {
-		return "", RecoveryArtifact{}, RecoveryArtifact{}, nil, fmt.Errorf("read existing quarantine manifest: %w", readErr)
-	}
 	if err := writeImmutableJSON(manifestPath, manifest); err != nil {
 		return "", RecoveryArtifact{}, RecoveryArtifact{}, nil, fmt.Errorf("write quarantine manifest: %w", err)
 	}
@@ -1147,23 +1151,9 @@ func ensureRecoveryQuarantine(request RecoveryRequest, stateData []byte, stateEx
 	return dir, stateArtifact, journalArtifact, pendingArtifacts, nil
 }
 
-func equalRecoveryArtifacts(left, right []RecoveryArtifact) bool {
-	if len(left) != len(right) {
-		return false
-	}
-	for index := range left {
-		if left[index] != right[index] {
-			return false
-		}
-	}
-	return true
-}
-
-func recoveryArtifact(root, path string, data []byte, exists bool, quarantinePath string) RecoveryArtifact {
+func recoveryArtifact(root, path string, exists bool, quarantinePath string) RecoveryArtifact {
 	artifact := RecoveryArtifact{Path: recoveryPath(root, path), Exists: exists}
 	if exists {
-		artifact.SHA256 = sha256Hex(data)
-		artifact.Size = int64(len(data))
 		artifact.QuarantinePath = quarantinePath
 	}
 	return artifact
@@ -1182,20 +1172,17 @@ func verifyQuarantineManifest(dir string, manifest RecoveryManifest) error {
 		return errors.New("recovery manifest quarantine directory mismatch")
 	}
 	expected := quarantineManifest{
-		SchemaVersion:          manifest.SchemaVersion,
-		PlanID:                 manifest.PlanID,
-		PlanSHA:                manifest.PlanSHA,
-		CreatedAt:              manifest.OccurredAt,
-		CandidateStateSHA256:   manifest.CandidateStateSHA256,
-		CandidateJournalSHA256: manifest.CandidateJournalSHA256,
-		State:                  manifest.SourceState,
-		Journal:                manifest.SourceJournal,
-		Pending:                manifest.SourcePending,
+		SchemaVersion: manifest.SchemaVersion,
+		PlanID:        manifest.PlanID,
+		CreatedAt:     manifest.OccurredAt,
+		State:         manifest.SourceState,
+		Journal:       manifest.SourceJournal,
+		Pending:       manifest.SourcePending,
 	}
-	if quarantine.SchemaVersion != expected.SchemaVersion || quarantine.PlanID != expected.PlanID || quarantine.PlanSHA != expected.PlanSHA || quarantine.CandidateStateSHA256 != expected.CandidateStateSHA256 || quarantine.CandidateJournalSHA256 != expected.CandidateJournalSHA256 {
+	if quarantine.SchemaVersion != expected.SchemaVersion || quarantine.PlanID != expected.PlanID {
 		return errors.New("quarantine manifest identity does not match recovery manifest")
 	}
-	if !reflect.DeepEqual(quarantine.State, expected.State) || !reflect.DeepEqual(quarantine.Journal, expected.Journal) {
+	if !sameRecoveryArtifact(quarantine.State, expected.State) || !sameRecoveryArtifact(quarantine.Journal, expected.Journal) {
 		return errors.New("quarantine manifest state or journal does not match recovery manifest")
 	}
 	if !sameRecoveryArtifacts(quarantine.Pending, expected.Pending) {
@@ -1207,15 +1194,15 @@ func verifyQuarantineManifest(dir string, manifest RecoveryManifest) error {
 		if !artifact.Exists {
 			continue
 		}
-		data, err := os.ReadFile(artifact.QuarantinePath)
-		if err != nil {
+		if _, err := os.Stat(artifact.QuarantinePath); err != nil {
 			return err
-		}
-		if sha256Hex(data) != artifact.SHA256 {
-			return fmt.Errorf("quarantine artifact %s hash mismatch", artifact.Path)
 		}
 	}
 	return nil
+}
+
+func sameRecoveryArtifact(left, right RecoveryArtifact) bool {
+	return left.Path == right.Path && left.Exists == right.Exists && left.QuarantinePath == right.QuarantinePath
 }
 
 func sameRecoveryArtifacts(left, right []RecoveryArtifact) bool {
@@ -1223,7 +1210,7 @@ func sameRecoveryArtifacts(left, right []RecoveryArtifact) bool {
 		return false
 	}
 	for index := range left {
-		if !reflect.DeepEqual(left[index], right[index]) {
+		if !sameRecoveryArtifact(left[index], right[index]) {
 			return false
 		}
 	}
@@ -1241,28 +1228,11 @@ func readOptionalFile(path string) ([]byte, bool, error) {
 	return data, true, nil
 }
 
-func optionalHash(data []byte, exists bool) string {
-	if !exists {
-		return ""
-	}
-	return sha256Hex(data)
-}
-
 func writeImmutableBytes(path string, data []byte) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("create immutable artifact directory: %w", err)
 	}
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-	if errors.Is(err, os.ErrExist) {
-		existing, readErr := os.ReadFile(path)
-		if readErr != nil {
-			return fmt.Errorf("read existing immutable artifact: %w", readErr)
-		}
-		if !bytes.Equal(existing, data) {
-			return errors.New("immutable artifact already exists with different bytes")
-		}
-		return nil
-	}
 	if err != nil {
 		return fmt.Errorf("create immutable artifact: %w", err)
 	}
@@ -1291,12 +1261,22 @@ func writeImmutableJSON(path string, value any) error {
 	return writeImmutableBytes(path, data)
 }
 
+func recoveryPlanParts(id string) []string {
+	encoded := base64.RawURLEncoding.EncodeToString([]byte(id))
+	parts := []string{"plan"}
+	for len(encoded) > 120 {
+		parts = append(parts, encoded[:120])
+		encoded = encoded[120:]
+	}
+	return append(parts, encoded)
+}
+
 func recoveryManifestPath(request RecoveryRequest) string {
-	return filepath.Join(request.Root, ".claude", "recovery", "manifests", safeRecoveryComponent(request.PlanID)+"-"+safeRecoveryComponent(request.PlanSHA)+".json")
+	return filepath.Join(append([]string{request.Root, ".claude", "recovery", "manifests"}, append(recoveryPlanParts(request.PlanID), "manifest.json")...)...)
 }
 
 func recoveryID(request RecoveryRequest) string {
-	return safeRecoveryComponent(request.PlanID) + "-" + safeRecoveryComponent(request.PlanSHA)
+	return base64.RawURLEncoding.EncodeToString([]byte(request.PlanID))
 }
 
 func safeRecoveryComponent(value string) string {
@@ -1358,11 +1338,6 @@ func recoverySourcePaths(request RecoveryRequest, artifacts []RecoveryArtifact) 
 	discovered := append([]string(nil), segments...)
 	segments = nil
 	for _, p := range discovered {
-		if err := add(p); err != nil {
-			return nil, err
-		}
-	}
-	for p := range request.SourcePendingSHA256 {
 		if err := add(p); err != nil {
 			return nil, err
 		}

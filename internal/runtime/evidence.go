@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/entroforge/go-system-builder/internal/reviewmeta"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,9 +13,10 @@ import (
 
 	"github.com/entroforge/go-system-builder/internal/acceptance"
 	"github.com/entroforge/go-system-builder/internal/evidence"
+	"github.com/entroforge/go-system-builder/internal/workpacket"
 )
 
-// EvidenceRequest describes one current, fingerprinted evidence artifact to
+// EvidenceRequest describes one current evidence artifact to
 // append to Runtime. Evidence is deliberately recorded through Store.Update
 // so it participates in the same revision CAS and journal contract as every
 // other Runtime mutation.
@@ -26,7 +28,6 @@ type EvidenceRequest struct {
 	Path             string
 	ProducedBy       []string
 	ResponsibilityID string
-	ReviewRound      *int
 	ScopeRefs        []string
 	OccurredAt       time.Time
 	Validator        CandidateValidator
@@ -46,6 +47,9 @@ func RecordEvidence(root, statePath, journalPath string, request EvidenceRequest
 	if request.Submission != nil {
 		frozen := *request.Submission
 		frozen.AnswerJSON = append([]byte(nil), frozen.AnswerJSON...)
+		if frozen.EvidenceJSON != nil {
+			frozen.EvidenceJSON = append([]byte{}, frozen.EvidenceJSON...)
+		}
 		request.Submission = &frozen
 	}
 	if request.ID == "" {
@@ -53,7 +57,7 @@ func RecordEvidence(root, statePath, journalPath string, request EvidenceRequest
 	}
 	catalog := evidence.DefaultCatalog()
 	if !catalog.IsRegisteredKind(request.Kind) {
-		return Snapshot{}, fmt.Errorf("unsupported evidence kind %q; registered kinds: %s; note: the Quality Gate records S10 artifacts as acceptance_record/release_audit_record, but registration uses --kind acceptance or --kind release_audit (bind --review-round to the current round; S10 envelopes also auto-inherit it from the envelope file)", request.Kind, strings.Join(catalog.RegisteredKinds(), ", "))
+		return Snapshot{}, fmt.Errorf("unsupported evidence kind %q; registered kinds: %s; note: the Quality Gate records S10 artifacts as acceptance_record/release_audit_record, but registration uses --kind acceptance or --kind release_audit", request.Kind, strings.Join(catalog.RegisteredKinds(), ", "))
 	}
 	switch strings.TrimSpace(request.Kind) {
 	case "repair_result_blocker":
@@ -77,36 +81,36 @@ func RecordEvidence(root, statePath, journalPath string, request EvidenceRequest
 			return Snapshot{}, fmt.Errorf("evidence produced_by contains an empty actor")
 		}
 	}
-	cleanPath, err := safeEvidencePath(root, request.Path)
-	if err != nil {
-		return Snapshot{}, err
-	}
-	data, err := os.ReadFile(filepath.Join(root, cleanPath))
-	if err != nil {
-		return Snapshot{}, fmt.Errorf("read evidence artifact: %w", err)
+	// The original S2/S3/S4/S5 consumers hand their prepared reports to this Writer;
+	// it chooses and records their paths in the same locked mutation.
+	publishPreparedReport := (request.Kind == "planning_design" || request.Kind == "planning_contract" || request.Kind == "planning_task" || request.Kind == "document_review") && request.Submission != nil && request.Submission.EvidenceJSON != nil
+	cleanPath := ""
+	var data []byte
+	var err error
+	if publishPreparedReport {
+		data = request.Submission.EvidenceJSON
+	} else {
+		cleanPath, err = safeEvidencePath(root, request.Path)
+		if err != nil {
+			return Snapshot{}, err
+		}
+		data, err = os.ReadFile(filepath.Join(root, cleanPath))
+		if err != nil {
+			return Snapshot{}, fmt.Errorf("read evidence artifact: %w", err)
+		}
 	}
 	type s10Association struct {
+		ReviewPlanID       string `json:"review_plan_id"`
 		RuntimeID          string `json:"runtime_id"`
 		BaselineGeneration int    `json:"baseline_generation"`
-		ReviewRound        int    `json:"review_round"`
 	}
 	var s10Binding s10Association
-	if isS10RoundScopedKind(request.Kind) {
+	if isS10ReportKind(request.Kind) {
 		if err := json.Unmarshal(data, &s10Binding); err != nil {
 			return Snapshot{}, fmt.Errorf("read S10 recording association: %w", err)
 		}
 	} else if err := acceptance.ValidateEvidenceArtifact(root, request.Kind, data); err != nil {
 		return Snapshot{}, err
-	}
-	// S10 evidence must bind to the current review round (L3-S10 §4.2): the
-	// s10 board and gates read entry.review_round verbatim. The envelope
-	// already carries that fact, so a registration that omits --review-round
-	// inherits it instead of persisting a round-less row the S10 layer would
-	// immediately reject as stale (2026-08-28 walkthrough defect B).
-	if request.ReviewRound == nil && isS10RoundScopedKind(request.Kind) {
-		if round, ok := s10EnvelopeReviewRound(data); ok {
-			request.ReviewRound = &round
-		}
 	}
 
 	store := NewWriter(statePath, journalPath, root, request.Validator).WithContext(request.Context)
@@ -115,15 +119,12 @@ func RecordEvidence(root, statePath, journalPath string, request EvidenceRequest
 		return Snapshot{}, fmt.Errorf("read runtime: %w", err)
 	}
 	current := snapshot.State
-	// S3 performs its professional reception inside the atomic Apply below.
-	// Other submission kinds retain their existing preflight behavior.
-	if request.Submission != nil && request.Kind != "planning_contract" {
-		if _, err := prepareSubmission(root, current, request, data); errors.Is(err, errSubmissionAccepted) {
-			return snapshot, nil
-		} else if err != nil {
-			return Snapshot{}, err
-		}
-	}
+	// The submission reception is judged inside the store, under its lock, by
+	// the mutation's Precheck below. It used to be judged here as well, from a
+	// snapshot taken outside the store: a repeat was then answered from a
+	// state the caller no longer held, and the loser of a concurrent reception
+	// was answered with the domain's "submission already accepted" error
+	// instead of replaying the committed reception.
 	if err := validateDocumentRegistration(current, request, data); err != nil {
 		return Snapshot{}, err
 	}
@@ -132,14 +133,11 @@ func RecordEvidence(root, statePath, journalPath string, request EvidenceRequest
 	from := map[string]any{"state": lifecycle["state"], "phase": lifecycle["phase"]}
 	// The public recording entry must also read the existing professional
 	// report; it cannot assume the normal save receiver already validated it.
-	if isS10RoundScopedKind(request.Kind) {
+	if isS10ReportKind(request.Kind) {
 		baseline, _ := current["baseline"].(map[string]any)
 		review, _ := current["review"].(map[string]any)
-		if s10Binding.RuntimeID != runtimeID || !hypothesisJSONEqual(baseline["generation"], s10Binding.BaselineGeneration) || !hypothesisJSONEqual(review["round"], s10Binding.ReviewRound) {
-			return Snapshot{}, fmt.Errorf("S10 report does not describe the current responsibility/round")
-		}
-		if request.ReviewRound != nil && *request.ReviewRound != s10Binding.ReviewRound {
-			return Snapshot{}, fmt.Errorf("S10 recording review round does not match the existing report; omit the override to inherit its current round")
+		if s10Binding.RuntimeID != runtimeID || !hypothesisJSONEqual(baseline["generation"], s10Binding.BaselineGeneration) || reviewmeta.CompareIdentity(reviewmeta.FromReview(review), reviewmeta.ArtifactIdentity(s10Binding.ReviewPlanID)) == reviewmeta.Different {
+			return Snapshot{}, fmt.Errorf("S10 report does not describe the current responsibility")
 		}
 		reportData, reportType, conclusion, err := acceptance.ResolveS10Manifest(root, request.Kind, data)
 		if err != nil {
@@ -149,8 +147,9 @@ func RecordEvidence(root, statePath, journalPath string, request EvidenceRequest
 		if err := json.Unmarshal(reportData, &reportBinding); err != nil {
 			return Snapshot{}, fmt.Errorf("read S10 referenced report association: %w", err)
 		}
-		if reportBinding != s10Binding {
-			return Snapshot{}, fmt.Errorf("S10 referenced report association does not match the recording responsibility/round")
+		if reportBinding.RuntimeID != s10Binding.RuntimeID || reportBinding.BaselineGeneration != s10Binding.BaselineGeneration ||
+			reviewmeta.CompareIdentity(reviewmeta.ArtifactIdentity(reportBinding.ReviewPlanID), reviewmeta.ArtifactIdentity(s10Binding.ReviewPlanID)) == reviewmeta.Different {
+			return Snapshot{}, fmt.Errorf("S10 referenced report association does not match the recording responsibility")
 		}
 		if _, err := acceptance.ValidateForOutcome(reportData, reportType, conclusion); err != nil {
 			return Snapshot{}, fmt.Errorf("S10 %s evidence manifest is invalid: %w", reportType, err)
@@ -162,32 +161,52 @@ func RecordEvidence(root, statePath, journalPath string, request EvidenceRequest
 		occurredAt = time.Now().UTC()
 	}
 	producedBy := append([]string(nil), request.ProducedBy...)
-	commitRevision := request.ExpectedRevision
-	if commitRevision < 0 {
-		commitRevision = snapshot.Revision
-	}
-	scopeRefs, err := expandRolloverScopeRefs(request.ScopeRefs, runtimeID, commitRevision+1)
+	scopeRefs, err := expandRolloverScopeRefs(request.ScopeRefs, runtimeID)
 	if err != nil {
 		return Snapshot{}, err
 	}
-	sha := sha256Hex(data)
 	mutation := Mutation{
-		EventID:        fmt.Sprintf("evt-evidence-%s-r%d", request.ID, commitRevision+1),
+		EventID:        fmt.Sprintf("evt-evidence-%s", request.ID),
 		TransitionID:   "EVIDENCE-RECORD",
 		Event:          "evidence_recorded",
 		Actor:          "orchestrator",
-		IdempotencyKey: fmt.Sprintf("runtime:evidence:%s:%d", request.ID, commitRevision),
+		IdempotencyKey: fmt.Sprintf("runtime:evidence:%s", request.ID),
 		RuntimeID:      runtimeID,
 		From:           from,
 		To:             from,
 		EvidenceIDs:    []string{request.ID},
-		Message:        "Recorded a current fingerprinted evidence artifact.",
+		Message:        "Recorded a current evidence artifact.",
 		OccurredAt:     occurredAt,
+		// G18: the evidence id is the evidence identity, so the event id is
+		// named by it. The journal's global event-id uniqueness check therefore
+		// runs before the Apply closure below, which used to carry the duplicate
+		// rejection. The store calls this Precheck under its lock, after the
+		// revision CAS, so a repeated record keeps its original observable
+		// outcome: the submission reception check first, then the duplicate id
+		// rejection, the same order the Apply closure uses. A concurrent
+		// reception is judged against the committed reception row instead of a
+		// stale snapshot, so the loser of the race replays instead of failing.
+		// Neither path writes Runtime state or a journal fact.
+		Precheck: func(state map[string]any) error {
+			// The event id names this evidence id, so the journal already holds
+			// it exactly when the Runtime already holds the evidence row. That
+			// is the one case the journal's key collision would answer, so it
+			// is the one case the domain has to answer here.
+			if !evidenceRegistered(state, request.ID) {
+				return nil
+			}
+			if request.Submission != nil {
+				if _, err := prepareSubmission(root, state, request, data); err != nil {
+					return err
+				}
+			}
+			return fmt.Errorf("evidence %s is already registered", request.ID)
+		},
 		Apply: func(state map[string]any) error {
-			if isS10RoundScopedKind(request.Kind) {
+			if isS10ReportKind(request.Kind) {
 				baseline, _ := state["baseline"].(map[string]any)
 				review, _ := state["review"].(map[string]any)
-				if state["runtime_id"] != s10Binding.RuntimeID || !hypothesisJSONEqual(baseline["generation"], s10Binding.BaselineGeneration) || !hypothesisJSONEqual(review["round"], s10Binding.ReviewRound) {
+				if state["runtime_id"] != s10Binding.RuntimeID || !hypothesisJSONEqual(baseline["generation"], s10Binding.BaselineGeneration) || reviewmeta.CompareIdentity(reviewmeta.FromReview(review), reviewmeta.ArtifactIdentity(s10Binding.ReviewPlanID)) == reviewmeta.Different {
 					return fmt.Errorf("current S10 responsibility changed before recording")
 				}
 			}
@@ -202,15 +221,26 @@ func RecordEvidence(root, statePath, journalPath string, request EvidenceRequest
 			if err := validateDocumentRegistration(state, request, data); err != nil {
 				return err
 			}
+			if publishPreparedReport {
+				ctx := request.Context
+				if ctx == nil {
+					ctx = context.Background()
+				}
+				path, err := workpacket.PublishS9Questionnaire(ctx, root, request.Path, data, int64(len(data)))
+				if err != nil {
+					return fmt.Errorf("publish original prepared evidence: %w", err)
+				}
+				cleanPath, err = safeEvidencePath(root, path)
+				if err != nil {
+					return err
+				}
+			}
 			items, ok := state["evidence"].([]any)
 			if !ok {
 				return fmt.Errorf("runtime evidence must be an array")
 			}
-			for _, raw := range items {
-				item, _ := raw.(map[string]any)
-				if item != nil && item["id"] == request.ID {
-					return fmt.Errorf("evidence %s is already registered", request.ID)
-				}
+			if evidenceRegistered(state, request.ID) {
+				return fmt.Errorf("evidence %s is already registered", request.ID)
 			}
 			baseline, ok := state["baseline"].(map[string]any)
 			if !ok {
@@ -220,28 +250,25 @@ func RecordEvidence(root, statePath, journalPath string, request EvidenceRequest
 			if err != nil {
 				return err
 			}
-			var reviewRound any
-			if request.ReviewRound != nil {
-				if *request.ReviewRound < 1 {
-					return fmt.Errorf("review round must be at least 1")
-				}
-				reviewRound = *request.ReviewRound
-			}
-			items = append(items, map[string]any{
+			row := map[string]any{
 				"id":                  request.ID,
 				"kind":                request.Kind,
 				"path":                cleanPath,
-				"sha256":              sha,
 				"status":              "valid",
 				"baseline_generation": generation,
-				"review_round":        reviewRound,
 				"produced_by":         producedBy,
 				"invalidated_by":      nil,
 				"invalidation_rule":   nil,
 				"invalidation_reason": nil,
 				"responsibility_id":   nullableString(request.ResponsibilityID),
 				"scope_refs":          scopeRefs,
-			})
+			}
+			if isS10ReportKind(request.Kind) {
+				if s10Binding.ReviewPlanID != "" {
+					row["review_plan_id"] = s10Binding.ReviewPlanID
+				}
+			}
+			items = append(items, row)
 			state["evidence"] = items
 			if request.Submission != nil {
 				if err := appendSubmission(state, submission); err != nil {
@@ -255,12 +282,19 @@ func RecordEvidence(root, statePath, journalPath string, request EvidenceRequest
 	if request.ExpectedRevision < 0 {
 		next, err := store.UpdateCurrent(mutation)
 		if err != nil && request.Submission != nil {
+			// The store's Precheck judged the submission under its lock. An
+			// already accepted submission is a replay of the committed
+			// reception, so the caller observes the committed Runtime unchanged
+			// instead of the store's error.
+			if replay, ok := acceptedSubmissionReplay(store, request, err); ok {
+				return replay, nil
+			}
 			// The journal rejects duplicate event IDs before Apply. Resolve a
 			// concurrent replay from the atomically committed reception row,
 			// never from the artifact's mere presence or the outer error text.
 			latest, readErr := store.Snapshot()
 			if readErr == nil {
-				if request.Kind == "planning_contract" {
+				if request.Kind == "planning_contract" || request.Kind == "planning_task" || request.Kind == "document_review" {
 					if _, accepted, findErr := FindSubmission(latest.State, request.Submission.PacketID); findErr != nil || !accepted {
 						return next, err
 					}
@@ -269,21 +303,64 @@ func RecordEvidence(root, statePath, journalPath string, request EvidenceRequest
 				if errors.Is(replayErr, errSubmissionAccepted) {
 					return latest, nil
 				}
-				if errors.Is(replayErr, ErrSubmissionConflict) {
+				if errors.Is(replayErr, ErrSubmissionConflict) || ((request.Kind == "planning_task" || request.Kind == "document_review") && replayErr != nil) {
 					return Snapshot{}, replayErr
 				}
 			}
 		}
 		return next, err
 	}
-	return store.Update(request.ExpectedRevision, mutation)
+	next, err := store.Update(request.ExpectedRevision, mutation)
+	if replay, ok := acceptedSubmissionReplay(store, request, err); ok {
+		return replay, nil
+	}
+	return next, err
+}
+
+// acceptedSubmissionReplay resolves the store's "submission already accepted"
+// outcome into the committed Runtime. The store's Precheck judges the
+// submission under its lock, so this error means another writer received the
+// very same submission first: the caller observes a replay of the committed
+// reception, not a failed write. The error only ever originates from the
+// submission reception, so a request without one cannot reach it.
+func acceptedSubmissionReplay(store *Store, request EvidenceRequest, err error) (Snapshot, bool) {
+	if !errors.Is(err, errSubmissionAccepted) || request.Submission == nil {
+		return Snapshot{}, false
+	}
+	latest, readErr := store.Snapshot()
+	if readErr != nil {
+		return Snapshot{}, false
+	}
+	// The judgment that produced the error was made under the store lock, so
+	// the reception was already durable when the lock was released. This
+	// re-read only supplies the view of that committed Runtime, and a later
+	// read of the same pair can only see more state, never less. The view
+	// still has to show the reception, or this is not a replay.
+	if _, accepted, findErr := FindSubmission(latest.State, request.Submission.PacketID); findErr != nil || !accepted {
+		return Snapshot{}, false
+	}
+	return latest, true
+}
+
+// evidenceRegistered reports whether the Runtime already holds an evidence row
+// with this identity. The evidence id is the evidence identity, so it is the
+// semantic coordinate of the recording event.
+func evidenceRegistered(state map[string]any, id string) bool {
+	items, _ := state["evidence"].([]any)
+	for _, raw := range items {
+		item, _ := raw.(map[string]any)
+		if item != nil && item["id"] == id {
+			return true
+		}
+	}
+	return false
 }
 
 // expandRolloverScopeRefs resolves the explicit `runtime_rollover:current`
-// token to the revision that this evidence commit will produce. This lets a
-// human approval evidence item bind to its terminal runtime without manually
-// predicting Store.Update's revision increment.
-func expandRolloverScopeRefs(scopeRefs []string, runtimeID string, committedRevision int) ([]string, error) {
+// token to the current runtime identity. This lets a human approval evidence
+// item bind to its terminal runtime without manually predicting the Runtime
+// revision.
+func expandRolloverScopeRefs(scopeRefs []string, runtimeID string) ([]string, error) {
 	if runtimeID == "" {
 		return nil, fmt.Errorf("runtime id is required for rollover scope")
 	}
@@ -297,30 +374,83 @@ func expandRolloverScopeRefs(scopeRefs []string, runtimeID string, committedRevi
 }
 
 func safeEvidencePath(root, path string) (string, error) {
+	clean, _, err := resolveEvidencePath(root, path)
+	return clean, err
+}
+
+// ReadTaskPlanningReport reads a recorded S4 system report from its actual
+// control-root path. Association and professional validation belong to callers.
+// It shares the Evidence Writer's path rules and reads the resolved target
+// without imposing an additional report size limit.
+func ReadTaskPlanningReport(root, path string) ([]byte, error) {
+	return ReadRecordedEvidenceReport(root, path)
+}
+
+// ReadRecordedEvidenceReport reads a report already located by its registered
+// association. It shares the Evidence Writer's resolved-in-repository path
+// boundary, without a byte limit or product FileView. Callers own association
+// and professional validation. This is not a pinned, symlink-free read.
+func ReadRecordedEvidenceReport(root, path string) ([]byte, error) {
+	_, resolved, err := resolveEvidencePath(root, path)
+	if err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(resolved)
+	if err != nil {
+		return nil, fmt.Errorf("read recorded evidence report: %w", err)
+	}
+	return data, nil
+}
+
+// RecordedDocumentReviewReportPath locates an accepted packet report, including
+// historical revisions. It does not qualify a conclusion or change gate rules.
+func RecordedDocumentReviewReportPath(state map[string]any, id string) (string, bool) {
+	entities, _ := state["entities"].(map[string]any)
+	rows, _ := entities["submissions"].([]any)
+	for _, raw := range rows {
+		row, _ := raw.(map[string]any)
+		if row["evidence_id"] != id {
+			continue
+		}
+		if _, found, err := FindWorkPacket(state, stringValue(row["packet_id"])); err != nil || !found {
+			continue
+		}
+		evidence, _ := state["evidence"].([]any)
+		for _, raw := range evidence {
+			item, _ := raw.(map[string]any)
+			if item["id"] == id && item["kind"] == "document_review" {
+				return stringValue(item["path"]), true
+			}
+		}
+	}
+	return "", false
+}
+
+func resolveEvidencePath(root, path string) (string, string, error) {
 	if strings.TrimSpace(path) == "" {
-		return "", fmt.Errorf("evidence path is required")
+		return "", "", fmt.Errorf("evidence path is required")
 	}
 	clean := filepath.Clean(path)
 	if filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("evidence path must stay within repository: %q", path)
+		return "", "", fmt.Errorf("evidence path must stay within repository: %q", path)
 	}
 	rootAbs, err := filepath.Abs(root)
 	if err != nil {
-		return "", fmt.Errorf("resolve repository root: %w", err)
+		return "", "", fmt.Errorf("resolve repository root: %w", err)
 	}
 	resolvedRoot, err := filepath.EvalSymlinks(rootAbs)
 	if err != nil {
-		return "", fmt.Errorf("resolve repository root symlinks: %w", err)
+		return "", "", fmt.Errorf("resolve repository root symlinks: %w", err)
 	}
 	resolvedPath, err := filepath.EvalSymlinks(filepath.Join(rootAbs, clean))
 	if err != nil {
-		return "", fmt.Errorf("resolve evidence path symlinks: %w", err)
+		return "", "", fmt.Errorf("resolve evidence path symlinks: %w", err)
 	}
 	relative, err := filepath.Rel(resolvedRoot, resolvedPath)
 	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("evidence path must stay within repository: %q", path)
+		return "", "", fmt.Errorf("evidence path must stay within repository: %q", path)
 	}
-	return filepath.ToSlash(clean), nil
+	return filepath.ToSlash(clean), resolvedPath, nil
 }
 
 func nullableString(value string) any {
@@ -330,27 +460,14 @@ func nullableString(value string) any {
 	return value
 }
 
-// isS10RoundScopedKind reports whether an evidence kind is consumed by the
-// S10 board and gates with a mandatory current-round binding.
-func isS10RoundScopedKind(kind string) bool {
+// isS10ReportKind identifies the original S10 professional reports.
+func isS10ReportKind(kind string) bool {
 	switch kind {
 	case "acceptance", "acceptance_record", "release_audit", "release_audit_record":
 		return true
 	default:
 		return false
 	}
-}
-
-// s10EnvelopeReviewRound reads review_round out of an S10 evidence envelope.
-// ok is false when the envelope omits it or the value cannot be a round.
-func s10EnvelopeReviewRound(data []byte) (int, bool) {
-	var envelope struct {
-		ReviewRound int `json:"review_round"`
-	}
-	if err := json.Unmarshal(data, &envelope); err != nil || envelope.ReviewRound < 1 {
-		return 0, false
-	}
-	return envelope.ReviewRound, true
 }
 
 // Bound document reviews are gate envelopes, not arbitrary report attachments.
@@ -387,7 +504,6 @@ func validateDocumentRegistration(state map[string]any, req EvidenceRequest, dat
 		Generation     int    `json:"baseline_generation"`
 		Producer       string `json:"producer_agent_id"`
 		Responsibility string `json:"producer_responsibility"`
-		Round          int    `json:"review_round"`
 	}
 	if err := json.Unmarshal(data, &e); err != nil {
 		return fmt.Errorf("document_review requires a JSON evidence envelope: %w", err)
@@ -408,15 +524,6 @@ func validateDocumentRegistration(state map[string]any, req EvidenceRequest, dat
 	}
 	if e.Schema == "" || e.Kind != req.Kind || e.Runtime != state["runtime_id"] || e.Generation != generation || !producerOK || e.Responsibility == "" || e.Responsibility != req.ResponsibilityID {
 		return fmt.Errorf("document_review envelope binding mismatch (schema/kind/runtime/generation/producer/responsibility)")
-	}
-	life, _ := state["lifecycle"].(map[string]any)
-	review, _ := state["review"].(map[string]any)
-	currentRound := 0
-	if review != nil {
-		currentRound, _ = integerField(review, "round")
-	}
-	if life["state"] == "document_verification" && currentRound == 0 && (req.ReviewRound != nil || e.Round != 0) {
-		return fmt.Errorf("S5 document_review must omit --review-round and envelope review_round; r3 in an ID is a re-signing suffix, not an S7 review round")
 	}
 	return nil
 }

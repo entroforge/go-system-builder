@@ -2,7 +2,6 @@ package recovery
 
 import (
 	"bytes"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"github.com/entroforge/go-system-builder/internal/pathscope"
@@ -172,13 +171,6 @@ func importSource(root string, source any) (REQBinding, []InventoryInput, error)
 		if err := validateInventory(inventory); err != nil {
 			return REQBinding{}, nil, err
 		}
-		planned, err := BuildPlan(inventory)
-		if err != nil {
-			return REQBinding{}, nil, err
-		}
-		if planned.PlanSHA256 != value.PlanSHA256 {
-			return REQBinding{}, nil, &ValidationError{Code: ErrInvalidInventory, Field: "plan_sha256", Reason: "plan hash does not match its content"}
-		}
 		return value.REQ, append([]InventoryInput(nil), value.Inputs...), nil
 	case *Plan:
 		if value == nil {
@@ -199,27 +191,23 @@ func verifyImportInputs(root string, inputs []InventoryInput) error {
 		if _, err := ensureImportFileInside(root, fullPath); err != nil {
 			return &ValidationError{Code: ErrPathOutsideRepository, Field: "input.path", Path: input.Path, Reason: "resolved input path must remain inside repository", Cause: err}
 		}
-		data, err := os.ReadFile(fullPath)
-		if err != nil {
-			return &ValidationError{Code: ErrInvalidInventory, Field: "input", Path: input.Path, Reason: "content-addressed input cannot be read", Cause: err}
-		}
-		actual := sha256Hex(data)
-		if actual != input.SHA256 {
-			return &ValidationError{Code: ErrInvalidInventory, Field: "input.sha256", Path: input.Path, Reason: fmt.Sprintf("%s: expected %s, got %s", importFindingSourceDrift, input.SHA256, actual)}
+		if _, err := os.Stat(fullPath); err != nil {
+			return &ValidationError{Code: ErrInvalidInventory, Field: "input", Path: input.Path, Reason: "original input cannot be read", Cause: err}
 		}
 	}
 	return nil
 }
 
 type importCollector struct {
-	root      string
-	binding   REQBinding
-	documents []map[string]any
-	evidence  []map[string]any
-	entities  map[string][]map[string]any
-	findings  []ImportFinding
-	docByPath map[string]map[string]any
-	docByID   map[string]map[string]any
+	root        string
+	binding     REQBinding
+	documents   []map[string]any
+	evidence    []map[string]any
+	entities    map[string][]map[string]any
+	findings    []ImportFinding
+	docByPath   map[string]map[string]any
+	docByID     map[string]map[string]any
+	docContents map[string][]byte
 }
 
 func (c *importCollector) scanDocuments() error {
@@ -267,7 +255,6 @@ func (c *importCollector) importDocument(fullPath, relative, kind string) {
 		c.addFinding(importFindingDocument, relative, fmt.Sprintf("read failed: %v", err))
 		return
 	}
-	digest := sha256Hex(data)
 	meta := parseImportMetadata(string(data))
 	id := strings.TrimSuffix(filepath.Base(filepath.FromSlash(relative)), filepath.Ext(filepath.FromSlash(relative)))
 	if relative == c.binding.Path {
@@ -304,33 +291,30 @@ func (c *importCollector) importDocument(fullPath, relative, kind string) {
 		c.addFinding(importFindingDocument, relative, "document belongs to "+declaredREQ+", selected REQ is "+c.binding.ID)
 		return
 	}
-	if declaredDigest := firstMetadata(meta, "sha256", "digest", "summary_sha256"); declaredDigest != "" && !strings.EqualFold(declaredDigest, digest) {
-		c.addFinding(importFindingDigest, relative, "document declared digest does not match file bytes")
-		return
-	}
 	document := map[string]any{
 		"id":         id,
 		"kind":       kind,
 		"path":       relative,
 		"version":    version,
-		"sha256":     digest,
 		"status":     status,
 		"generation": 1,
 	}
 	if c.docByPath == nil {
 		c.docByPath = make(map[string]map[string]any)
 		c.docByID = make(map[string]map[string]any)
+		c.docContents = make(map[string][]byte)
 	}
 	if previous := c.docByPath[relative]; previous != nil {
 		c.addFinding(importFindingDocument, relative, "duplicate canonical document path")
 		return
 	}
-	if previous := c.docByID[id]; previous != nil && previous["sha256"] != digest {
+	if previous := c.docByID[id]; previous != nil && !bytes.Equal(c.docContents[id], data) {
 		c.addFinding(importFindingDocument, relative, "duplicate document identity has conflicting bytes")
 		return
 	}
 	c.docByPath[relative] = document
 	c.docByID[id] = document
+	c.docContents[id] = append([]byte(nil), data...)
 	c.documents = append(c.documents, document)
 }
 
@@ -377,7 +361,7 @@ func (c *importCollector) importEvidence(fullPath, relative string) {
 		c.addFinding(importFindingSchema, relative, "evidence envelope is null")
 		return
 	}
-	if err := c.validateEvidenceEnvelope(envelope, relative, sha256Hex(data)); err != nil {
+	if err := c.validateEvidenceEnvelope(envelope, relative); err != nil {
 		c.addFinding(importFindingSchema, relative, err.Error())
 		return
 	}
@@ -390,20 +374,13 @@ func (c *importCollector) importEvidence(fullPath, relative string) {
 	if value := strings.ToLower(stringImportValue(envelope["status"])); value != "" {
 		status = value
 	}
-	reviewRound, hasReviewRound := integerImportValue(envelope["review_round"])
-	var review any
-	if hasReviewRound {
-		review = reviewRound
-	}
 	scopeRefs := importSubjectPaths(envelope["subject_refs"])
 	evidence := map[string]any{
 		"id":                  id,
 		"kind":                kind,
 		"path":                relative,
-		"sha256":              sha256Hex(data),
 		"status":              status,
 		"baseline_generation": integerImportValueOrZero(envelope["baseline_generation"]),
-		"review_round":        review,
 		"produced_by":         []any{producerAgent},
 		"invalidated_by":      nil,
 		"invalidation_rule":   nil,
@@ -421,7 +398,7 @@ func (c *importCollector) importEvidence(fullPath, relative string) {
 	c.evidence = append(c.evidence, evidence)
 }
 
-func (c *importCollector) validateEvidenceEnvelope(envelope map[string]any, relative, digest string) error {
+func (c *importCollector) validateEvidenceEnvelope(envelope map[string]any, relative string) error {
 	schemaVersion, err := requiredEvidenceString(envelope, "schema_version")
 	if err != nil {
 		return err
@@ -484,23 +461,11 @@ func (c *importCollector) validateEvidenceEnvelope(envelope map[string]any, rela
 	if invalidatedBy != "" {
 		return fmt.Errorf("evidence is invalidated by %s", invalidatedBy)
 	}
-	if declared := firstEnvelopeDigest(envelope); declared != "" && !strings.EqualFold(declared, digest) {
-		return fmt.Errorf("%s: envelope digest does not match file bytes", importFindingDigest)
-	}
-	if err := validateEnvelopeDigests(envelope); err != nil {
-		return err
-	}
 	if requestedEvent, err := optionalEvidenceString(envelope, "requested_event"); err != nil {
 		return err
 	} else if requestedEvent != "" {
 		if _, ok := importedEvidenceRequestedEvent[requestedEvent]; !ok {
 			return fmt.Errorf("requested_event %q is not registered in the evidence semantic vocabulary", requestedEvent)
-		}
-	}
-	if reviewRound, present := envelope["review_round"]; present && reviewRound != nil {
-		parsed, valid := integerImportValue(reviewRound)
-		if !valid || parsed < 1 {
-			return fmt.Errorf("review_round must be a positive integer or null")
 		}
 	}
 	if _, ok := envelope["subject_refs"]; !ok {
@@ -523,29 +488,11 @@ func (c *importCollector) validateEvidenceEnvelope(envelope map[string]any, rela
 		if err != nil {
 			return fmt.Errorf("%s: subject_refs[%d] %w", importFindingSubject, index, err)
 		}
-		refDigest, err := requiredEvidenceString(ref, "sha256")
-		if err != nil {
-			return fmt.Errorf("%s: subject_refs[%d] %w", importFindingSubject, index, err)
-		}
 		if err := validateRelativePath(refPath); err != nil {
 			return fmt.Errorf("%s: subject_refs[%d] path is outside repository", importFindingPath, index)
 		}
-		if err := validateEnvelopeSHA256(refDigest, "subject_refs["+strconv.Itoa(index)+"].sha256"); err != nil {
-			return err
-		}
-		fullPath := filepath.Join(c.root, filepath.FromSlash(refPath))
-		if _, err := ensureImportFileInside(c.root, fullPath); err != nil {
-			return fmt.Errorf("%s: subject_refs[%d] resolved path escapes repository", importFindingPath, index)
-		}
-		data, err := os.ReadFile(fullPath)
-		if err != nil {
-			return fmt.Errorf("%s: subject_refs[%d] cannot be read", importFindingSubject, index)
-		}
-		if sha256Hex(data) != refDigest {
-			return fmt.Errorf("%s: subject_refs[%d] digest does not match", importFindingDigest, index)
-		}
 		document, trusted := c.docByPath[refPath]
-		if !trusted || stringImportValue(document["sha256"]) != refDigest || stringImportValue(document["version"]) != refVersion {
+		if !trusted || stringImportValue(document["version"]) != refVersion {
 			return fmt.Errorf("%s: subject_refs[%d] does not reference a trusted current document", importFindingSubject, index)
 		}
 	}
@@ -554,10 +501,8 @@ func (c *importCollector) validateEvidenceEnvelope(envelope map[string]any, rela
 		"id":                  evidenceID,
 		"kind":                kind,
 		"path":                relative,
-		"sha256":              digest,
 		"status":              status,
 		"baseline_generation": generation,
-		"review_round":        reviewRoundValue(envelope),
 		"produced_by":         []any{producerAgentID},
 		"invalidated_by":      nil,
 		"invalidation_rule":   nil,
@@ -618,54 +563,6 @@ func importedEvidenceStatusValue(envelope map[string]any) (string, error) {
 	return status, nil
 }
 
-func reviewRoundValue(envelope map[string]any) any {
-	value, ok := integerImportValue(envelope["review_round"])
-	if !ok {
-		return nil
-	}
-	return value
-}
-
-func validateEnvelopeDigests(envelope map[string]any) error {
-	for _, field := range []string{"file_sha256", "envelope_sha256", "summary_sha256"} {
-		if raw, ok := envelope[field]; ok && raw != nil {
-			value, valid := raw.(string)
-			if !valid {
-				return fmt.Errorf("%s must be a string when present", field)
-			}
-			if err := validateEnvelopeSHA256(value, field); err != nil {
-				return err
-			}
-		}
-	}
-	if raw, ok := envelope["index"]; ok && raw != nil {
-		index, valid := raw.(map[string]any)
-		if !valid {
-			return fmt.Errorf("index must be an object when present")
-		}
-		if rawDigest, present := index["sha256"]; present && rawDigest != nil {
-			digest, valid := rawDigest.(string)
-			if !valid {
-				return fmt.Errorf("index.sha256 must be a string when present")
-			}
-			if err := validateEnvelopeSHA256(digest, "index.sha256"); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-func validateEnvelopeSHA256(value, field string) error {
-	if len(value) != 64 {
-		return fmt.Errorf("%s must be a lowercase SHA-256 digest", field)
-	}
-	if _, err := hex.DecodeString(value); err != nil || value != strings.ToLower(value) {
-		return fmt.Errorf("%s must be a lowercase SHA-256 digest", field)
-	}
-	return nil
-}
-
 func (c *importCollector) validateFormalEvidenceIndex(index map[string]any) error {
 	// There is no generic embedded evidence-envelope schema today. Reuse the
 	// formal Runtime state schema for the persisted evidence[] projection; the
@@ -682,7 +579,6 @@ func (c *importCollector) validateFormalEvidenceIndex(index map[string]any) erro
 	state["bound_req"] = map[string]any{
 		"path":        c.binding.Path,
 		"version":     c.binding.Version,
-		"sha256":      c.binding.SHA256,
 		"id":          c.binding.ID,
 		"status":      c.binding.Status,
 		"approved_by": "recovery",
@@ -743,7 +639,7 @@ func (c *importCollector) finish() {
 		case "task":
 			c.entities["tasks"] = append(c.entities["tasks"], map[string]any{
 				"id": id, "state": importTaskState(status), "path": document["path"],
-				"sha256": document["sha256"], "owner_agent_ids": []any{},
+				"owner_agent_ids": []any{},
 			})
 		case "bug":
 			c.entities["bugs"] = append(c.entities["bugs"], map[string]any{
@@ -860,32 +756,9 @@ func parseImportMetadata(content string) map[string]string {
 			metadata["version"] = firstWord(value)
 		case "req", "requirement", "req_id", "bound_req", "需求", "关联需求":
 			metadata["req"] = importREQReference(value)
-		case "sha256", "sha-256", "digest", "summary_sha256":
-			metadata[key] = firstWord(value)
 		}
 	}
 	return metadata
-}
-
-func firstMetadata(metadata map[string]string, keys ...string) string {
-	for _, key := range keys {
-		if value := strings.TrimSpace(metadata[key]); value != "" {
-			return value
-		}
-	}
-	return ""
-}
-
-func firstEnvelopeDigest(envelope map[string]any) string {
-	for _, key := range []string{"file_sha256", "envelope_sha256", "summary_sha256"} {
-		if value := stringImportValue(envelope[key]); value != "" {
-			return value
-		}
-	}
-	if index, ok := envelope["index"].(map[string]any); ok {
-		return stringImportValue(index["sha256"])
-	}
-	return ""
 }
 
 func importSubjectPaths(value any) []any {

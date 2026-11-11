@@ -3,7 +3,6 @@ package cli
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -129,7 +128,9 @@ func runStageAnswer(args []string, stdout, stderr io.Writer) int {
 				err = fmt.Errorf("S9 PlanReport packet issuance requires the original Main entry")
 				break
 			}
-			result, err = s.IssueRepairPlanReports(ctx, "")
+			result, err = s.IssueRepairPlanReportsPrepared(ctx, "", func(ctx context.Context, packet *workpacket.RepairPlanReportPacket) error {
+				return prepareNativeS9BriefForIssue(ctx, s.Root, packet)
+			})
 		} else if life["state"] == "bug_resolution" && life["phase"] == "fixing" && runtime.PacketEnabled(snapshot.State) {
 			if *owner != "" && *owner != "Main" {
 				err = fmt.Errorf("S9 RepairResult packet issuance requires the original Main entry")
@@ -138,7 +139,7 @@ func runStageAnswer(args []string, stdout, stderr io.Writer) int {
 			result, err = s.IssueRepairResults(ctx, "")
 		} else if life["state"] == "document_verification" && runtime.PacketEnabled(snapshot.State) && (*owner == "" || *owner == "Main") {
 			// The named recovery entry reuses the original S5 preparation.
-			// Ordinary Main observations never register or issue responsibilities.
+			// Successful Main Post events may resume this same accepted S4 handoff.
 			err = prepareS5ReviewResponsibilities(ctx, s.Root, snapshot.State)
 			// Preparation already ran the original issuer. Project its durable
 			// publication facts once, without issuing or validating sources again.
@@ -388,9 +389,6 @@ func runSavedStageAnswerHook(root string, request policy.Input, stdout, stderr i
 	if !saved {
 		return false, 0
 	}
-	if isS7ReviewResultPath(path) {
-		return saveReviewResultHook(root, request, path, stdout, stderr)
-	}
 	if isS8HypothesisResultPath(path) {
 		return saveHypothesisResultHook(root, request, path, stdout, stderr)
 	}
@@ -403,6 +401,30 @@ func runSavedStageAnswerHook(root string, request policy.Input, stdout, stderr i
 	if isS9RepairResultResolutionPath(path) {
 		return saveRepairResultResolutionHook(root, request, path, stdout, stderr)
 	}
+	// S2 can be issued at an alternate root. The Runtime's registered path,
+	// not a directory or filename convention, selects the Main responsibility.
+	if snapshot, snapshotErr := runtime.NewStore(filepath.Join(root, ".claude/loop-state.json"), filepath.Join(root, ".claude/loop-events.jsonl")).ObservationSnapshot(); snapshotErr == nil {
+		if answer, issued, verified, _ := currentIssuedPlanningAnswerPath(snapshot.State, "design"); issued && verified && samePath(path, filepath.Join(root, answer)) {
+			if !mainQuestionnaireViewer(request) {
+				return true, 0
+			}
+			if !actualPlanningAnswerSave(request, path) {
+				writePlanningPostOutput(stdout, nil, planningUnobservedSaveGuidance(root, request, path))
+				return true, 0
+			}
+			ctx, cancel := context.WithTimeout(contextForHook(request), 6*time.Second)
+			defer cancel()
+			service := &submission.Service{Root: root, StatePath: filepath.Join(root, ".claude/loop-state.json"), JournalPath: filepath.Join(root, ".claude/loop-events.jsonl"), Validator: semantic.RuntimeCandidateValidator{}}
+			r, saveErr := service.SaveDesign(ctx, path)
+			if saveErr != nil {
+				fmt.Fprintf(stderr, "design not accepted: %v\n", saveErr)
+				if r.Error == "" {
+					r.Error = saveErr.Error()
+				}
+			}
+			return true, renderStageAnswerHook(stdout, path, r, "S2")
+		}
+	}
 	rel, err := filepath.Rel(root, path)
 	if err != nil {
 		return false, 0
@@ -411,13 +433,14 @@ func runSavedStageAnswerHook(root string, request policy.Input, stdout, stderr i
 	// The path identifies a candidate responsibility, not a write. In the
 	// S2/S3 boundary an unknown tool must have changed this exact answer in
 	// its matching Pre/Post observation; reading an existing PASS is inert.
-	if (strings.Contains(rel, "/S2/") || strings.Contains(rel, "/S3/")) && !actualPlanningAnswerSave(request, path) {
+	if strings.Contains(rel, "/S3/") && !actualPlanningAnswerSave(request, path) {
 		writePlanningPostOutput(stdout, nil, planningUnobservedSaveGuidance(root, request, path))
 		return true, 0
 	}
 	workerAnswer := filepath.ToSlash(path)
+	workerCandidate := filepath.ToSlash(filepath.Join(filepath.Base(filepath.Dir(path)), filepath.Base(path)))
 	if rel != ".claude/submissions" && !strings.HasPrefix(rel, ".claude/submissions/") &&
-		!strings.HasSuffix(workerAnswer, "/"+workpacket.WorkerAnswerPath) && !strings.HasSuffix(workerAnswer, "/"+workpacket.LegacyWorkerAnswerPath) {
+		!strings.HasSuffix(workerAnswer, "/"+workpacket.WorkerAnswerPath) && !strings.HasSuffix(workerAnswer, "/"+workpacket.LegacyWorkerAnswerPath) && !workpacket.ValidWorkerAnswerPath(workerCandidate) {
 		return false, 0
 	}
 	// Legacy plan/completion inputs keep their original adapters.
@@ -429,19 +452,6 @@ func runSavedStageAnswerHook(root string, request policy.Input, stdout, stderr i
 	// boundary leaves the underlying tool allowed and emits no permission gate.
 	if !mainQuestionnaireViewer(request) && (strings.Contains(rel, "/S2/") || strings.Contains(rel, "/S3/") || strings.Contains(rel, "/S4/")) {
 		return true, 0
-	}
-	if strings.Contains(rel, "/S2/") {
-		ctx, cancel := context.WithTimeout(contextForHook(request), 6*time.Second)
-		defer cancel()
-		service := &submission.Service{Root: root, StatePath: filepath.Join(root, ".claude/loop-state.json"), JournalPath: filepath.Join(root, ".claude/loop-events.jsonl"), Validator: semantic.RuntimeCandidateValidator{}}
-		r, saveErr := service.SaveDesign(ctx, path)
-		if saveErr != nil {
-			fmt.Fprintf(stderr, "design not accepted: %v\n", saveErr)
-			if r.Error == "" {
-				r.Error = saveErr.Error()
-			}
-		}
-		return true, renderStageAnswerHook(stdout, path, r, "S2")
 	}
 	// The original packet at this exact path selects S2/S3/S4 Main authoring;
 	// native Worker events were excluded above. CWD does not invent ownership.
@@ -640,64 +650,12 @@ func registeredAcceptedS5PacketOwnerForPath(root, path string) (string, bool, er
 
 func isS7ReviewResultPath(path string) bool {
 	clean := "/" + strings.Trim(filepath.ToSlash(filepath.Clean(filepath.FromSlash(path))), "/") + "/"
-	return ((strings.Contains(clean, "/.claude/submissions/") && strings.Contains(clean, "/S7/")) || strings.Contains(clean, "/.loop-submissions/s7/")) && strings.HasSuffix(clean, "/answer.json/")
-}
-
-func saveReviewResultHook(root string, request policy.Input, path string, stdout, stderr io.Writer) (bool, int) {
-	if mainQuestionnaireViewer(request) {
-		return false, 0 // Native professional reception belongs to SubagentStop.
-	}
-	service, err := submission.New(root)
-	if err != nil {
-		return true, renderStageAnswerHook(stdout, path, submission.Receipt{ResponsibilityStatus: "not_accepted", Error: err.Error()}, "S7")
-	}
-	packet, sourceRoot, found, err := service.ReviewResultSourceForPath(path)
-	if err != nil {
-		return true, renderStageAnswerHook(stdout, path, submission.Receipt{ResponsibilityStatus: "not_accepted", Error: err.Error()}, "S7")
-	}
-	if !found {
-		return true, renderStageAnswerHook(stdout, path, submission.Receipt{ResponsibilityStatus: "not_accepted", Error: "S7 answer path has no current registered issuance"}, "S7")
-	}
-	if workpacket.ReviewResultUsesNormalAuthoring(packet) {
-		return true, 0 // New native originals are drafts until their actual Stop.
-	}
-	ctx, cancel := context.WithTimeout(contextForHook(request), 6*time.Second)
-	defer cancel()
-	owner := packet.Binding.OwnerAgentID
-	receipt, saveErr := service.SaveReviewResultFrom(ctx, owner, path, sourceRoot, nil)
-	return true, renderReviewResultSaveHook(stdout, stderr, path, receipt, saveErr)
-}
-
-func renderReviewResultSaveHook(stdout, stderr io.Writer, path string, receipt submission.Receipt, saveErr error) int {
-	if saveErr != nil {
-		writeReviewResultSaveDiagnostic(stderr, saveErr)
-		var gap *submission.ReviewResultReceiptError
-		if errors.As(saveErr, &gap) {
-			// A verified receipt is unavailable. Do not pass this committed
-			// submission through the generic not_accepted receipt default.
-			message := "S7 original submission succeeded; receipt verification remains incomplete: " + saveErr.Error() + ". " + receipt.NextAction + " Main verifies the exact original ReviewResult receipt and then resumes only its pending original outlet with runtime review-continue, or runtime audit-prepare after TR-009 entered S10. No author correction, additional save, Stop or re-dispatch is requested."
-			_ = json.NewEncoder(stdout).Encode(map[string]any{"hookSpecificOutput": map[string]any{"hookEventName": "PostToolUse", "additionalContext": message}})
-			return 0
-		}
-		if receipt.Error == "" {
-			receipt.Error = saveErr.Error()
-		}
-	}
-	return renderStageAnswerHook(stdout, path, receipt, "S7")
-}
-
-func writeReviewResultSaveDiagnostic(stderr io.Writer, saveErr error) {
-	var gap *submission.ReviewResultReceiptError
-	if errors.As(saveErr, &gap) {
-		fmt.Fprintf(stderr, "S7 original submission succeeded; receipt verification remains incomplete: %v. Main verifies the exact original receipt and resumes its pending outlet; no author correction, additional save or re-dispatch is requested.\n", saveErr)
-		return
-	}
-	fmt.Fprintf(stderr, "S7 original submission is unconfirmed: %v\n", saveErr)
+	return strings.Contains(clean, "/.loop-submissions/s7/") && strings.HasSuffix(clean, "/answer.json/")
 }
 
 func isS8HypothesisResultPath(path string) bool {
 	clean := "/" + strings.Trim(filepath.ToSlash(filepath.Clean(filepath.FromSlash(path))), "/") + "/"
-	return strings.Contains(clean, "/.claude/submissions/") && strings.Contains(clean, "/S8/") && strings.HasSuffix(clean, "/answer.json/")
+	return strings.HasSuffix(clean, "/answer.json/") && ((strings.Contains(clean, "/.claude/submissions/") && strings.Contains(clean, "/S8/")) || strings.Contains(clean, "/.claude/submissions/packet-s8-"))
 }
 
 func isS9RepairPlanReportPath(path string) bool {
@@ -1076,22 +1034,24 @@ func stageAnswerLifecycleContext(root string, request policy.Input) string {
 
 func stageS5PreparationGuidance(root string, state map[string]any) string {
 	life := mapFieldCLI(state, "lifecycle")
-	return fmt.Sprintf("S5 entry %d: DV-SPEC-CONSISTENCY and DV-TASK-EXECUTABILITY 原独立责任尚未准备完成。两项责任及 manifest/issue 由系统原入口自动准备；Main 不手工组装或登记。Main 恢复原准备：%s；manifest %s。保留 accepted S4 及已发行问卷和答案，不重交 S4；普通读取与 Stop 不补登记。方法入口 %s；准备后携带准确 view/answer/source root 派入两个独立原生上下文，登记不证明平台已启动。", stageAnswerEntry(life["phase_revision"]), submission.PlanningRecoveryCommand(root, "issue"), s5ManifestQuestionnairePath(root, state), filepath.Join(root, ".claude/skills/team-planning/SKILL.md")) + submission.PlanningDiagnostic(root, state, "preparation")
+	return fmt.Sprintf("S5 entry %d: DV-SPEC-CONSISTENCY and DV-TASK-EXECUTABILITY 原独立责任尚未准备完成。两项责任及 manifest/issue 由系统原入口自动准备；Main 不手工组装或登记。Main 恢复原准备：%s；manifest %s。保留 accepted S4 及已发行问卷和答案，不重交 S4；成功 Main Post 可沿已接收 S4 原责任续补当前缺题；Pre、失败 Post 与 Stop 不补登记。方法入口 %s；准备后携带准确 view/answer/source root 派入两个独立原生上下文，登记不证明平台已启动。", stageAnswerEntry(life["phase_revision"]), submission.PlanningRecoveryCommand(root, "issue"), s5ManifestQuestionnairePath(root, state), filepath.Join(root, ".claude/skills/team-planning/SKILL.md")) + submission.PlanningDiagnostic(root, state, "preparation")
 }
 
 // stageDesignQuestionnaireContext projects current work, not issuance proof.
 func stageDesignQuestionnaireContext(root string, snapshot runtime.Snapshot) string {
-	life, _ := snapshot.State["lifecycle"].(map[string]any)
-	baseline, _ := snapshot.State["baseline"].(map[string]any)
+	current, currentFound, currentErr := runtime.CurrentIssuedDesignPacket(snapshot.State)
+	if currentErr != nil {
+		return "S2 original responsibility is unavailable: " + currentErr.Error()
+	}
 	entities, _ := snapshot.State["entities"].(map[string]any)
 	rows, _ := entities["work_packets"].([]any)
 	for _, raw := range rows {
 		row, _ := raw.(map[string]any)
-		if row["template_id"] != "s2-design-v1" {
+		if !currentFound || row["template_id"] != "s2-design-v1" || row["packet_id"] != current.ID {
 			continue
 		}
 		packet, found, err := runtime.FindDesignPacket(snapshot.State, stringValue(row["packet_id"]))
-		if err != nil || !found || packet.Binding.RuntimeID != snapshot.State["runtime_id"] || packet.Binding.Generation != integerValue(baseline["generation"]) || packet.Binding.StageEntry != integerValue(life["phase_revision"]) {
+		if err != nil || !found {
 			continue
 		}
 		view := filepath.Join(root, packet.ViewPath)
@@ -1099,7 +1059,7 @@ func stageDesignQuestionnaireContext(root string, snapshot runtime.Snapshot) str
 		if record, accepted, err := runtime.FindSubmission(snapshot.State, packet.ID); err == nil && accepted {
 			service := &submission.Service{Root: root, StatePath: filepath.Join(root, ".claude/loop-state.json"), JournalPath: filepath.Join(root, ".claude/loop-events.jsonl")}
 			if receipt, err := service.DesignReceiptForSnapshot(snapshot, packet.ID); err == nil {
-				message := "S2 design report is already recorded at " + answer + ". " + receipt.NextAction
+				message := "S2 design report is already recorded. Original answer path: " + answer + ". " + receipt.NextAction
 				if record.ControlStatus == "pending" || record.ControlStatus == "no_transition" {
 					bound, _ := snapshot.State["bound_req"].(map[string]any)
 					metadata, _ := bound["metadata"].(map[string]any)
@@ -1109,7 +1069,7 @@ func stageDesignQuestionnaireContext(root string, snapshot runtime.Snapshot) str
 				}
 				return message + stageDesignSourceDelivery(snapshot.State) + stageDesignScopeContext(root, snapshot.State)
 			}
-			return "S2 design report is already recorded. Its current material reference cannot be read; Main must restore that material, not repeat the report."
+			return "S2 design report is already recorded. The current receipt could not be projected; Main/system should inspect the original recorded followup without repeating the report."
 		}
 		var missing []string
 		missingFiles := false
@@ -1142,7 +1102,7 @@ func stageDesignQuestionnaireContext(root string, snapshot runtime.Snapshot) str
 		}
 		recovery := "No routine issue/register/recovery command is required."
 		if missingFiles {
-			recovery = "The registered files above are missing. A successful material change retries the original preparation; for this technical gap, run " + submission.PlanningRecoveryCommand(root, "issue") + " to restore missing files while preserving existing answers. Do not construct a replacement questionnaire."
+			recovery = "The registered files above are missing. A missing view may be prepared from the original responsibility; a missing author's answer is unknown and cannot be replaced with a blank draft. Preserve any remaining material and use " + submission.PlanningRecoveryCommand(root, "issue") + " for the original preparation status."
 		}
 		delivery := stageDesignSourceDelivery(snapshot.State)
 		return "S2 current design questionnaire: read " + view + "; fill only conclusion and architecture_path in " + answer + " and save. Complete the actual architecture, relevant ADR/human direction judgment and applicable module/scenario work described in the view. Templates: " + filepath.Join(root, "docs/architecture/ARCHITECTURE-template.md") + ", " + filepath.Join(root, "docs/design/decisions/ADR-template.md") + ", " + filepath.Join(root, "docs/design/prototypes/README.md") + ". Current missing work/material: " + strings.Join(missing, "; ") + ". Empty conclusion is a draft, not failure or PASS. " + recovery + delivery + stageDesignScopeContext(root, snapshot.State)
@@ -1255,7 +1215,7 @@ func projectS6BuilderQuestionnaires(root, owner string, snapshot runtime.Snapsho
 			}
 			q := s6BuilderQuestionnaire{AgentID: e.AgentID, AssignmentID: e.AssignmentID, Workspace: true, WorkerRoot: e.Path,
 				PlatformSessionID: e.PlatformSessionID,
-				CanonicalRecord:   e.AssignmentRecord != nil || e.AssignmentRecordSHA256 != "",
+				CanonicalRecord:   e.AssignmentRecord != nil,
 				ContextPath:       filepath.Join(e.Path, filepath.FromSlash(workspace.DispatchContextPath)), SchemaPath: filepath.Join(e.Path, filepath.FromSlash(workspace.PlanSchemaPath))}
 			if paths.Plan != "" {
 				q.PlanPath = filepath.Join(e.Path, filepath.FromSlash(paths.Plan))
@@ -1305,7 +1265,7 @@ func projectS6BuilderQuestionnaires(root, owner string, snapshot runtime.Snapsho
 				continue
 			}
 			q := s6BuilderQuestionnaire{AgentID: a.OwnerAgentID, AssignmentID: a.AssignmentID, TaskID: a.TaskID, WorkerRoot: root,
-				CanonicalRecord: a.AssignmentRecord != nil || a.AssignmentRecordSHA256 != "",
+				CanonicalRecord: a.AssignmentRecord != nil,
 				ContextPath:     filepath.Join(root, filepath.FromSlash(binding.Context.Path)), SchemaPath: filepath.Join(root, filepath.FromSlash(c.Schema.Path)),
 				PlanQuestions: c.PlanQuestions, ResultQuestions: c.ResultQuestions}
 			if c.PlanPath != "" {
@@ -1524,6 +1484,18 @@ func s6AcceptedResultProgress(root string, snapshot runtime.Snapshot, q s6Builde
 		return waiting + " The current accepted professional answer is unavailable; Main owns inspection.", false
 	}
 	accepted := history[len(history)-1]
+	var notes []string
+	for _, risk := range accepted.Answer.RisksBlockers {
+		notes = append(notes, "Recorded risk/blocker: "+risk)
+	}
+	for _, deviation := range accepted.Answer.ScopeDeviations {
+		notes = append(notes, "Recorded scope deviation: "+deviation)
+	}
+	if len(notes) > 0 {
+		defer func() {
+			progress += " " + strings.Join(notes, "; ") + ". Main considers these original statements alongside the TASK and actual changes."
+		}()
+	}
 	if record.ClosingContract == nil || accepted.Answer.ClosingAssessment == nil {
 		return fmt.Sprintf("The accepted Result at %s has no recorded professional closing assessment under its original contract. Main owns inspection and the original integration/acknowledgement decision. This reminder does not request new answer fields or another Result.", q.ResultPath), false
 	}
@@ -1538,12 +1510,6 @@ func s6AcceptedResultProgress(root string, snapshot runtime.Snapshot, q s6Builde
 		if condition.Judgment != "satisfied" {
 			pending = append(pending, fmt.Sprintf("DoneWhen %d is %s: %s", condition.DoneWhenIndex, condition.Judgment, condition.Rationale))
 		}
-	}
-	for _, risk := range accepted.Answer.RisksBlockers {
-		pending = append(pending, "risk/blocker: "+risk)
-	}
-	for _, deviation := range accepted.Answer.ScopeDeviations {
-		pending = append(pending, "scope deviation: "+deviation)
 	}
 	for _, check := range record.ClosingContract.WorkerChecks {
 		status := "missing"
@@ -1617,7 +1583,7 @@ func stageReviewResultLifecycleContext(ctx context.Context, root string, request
 			last, _ := snapshot.State["last_transition"].(map[string]any)
 			eventID := stringValue(last["event_id"])
 			feedback := "Runtime records status=stale; original feedback: " + journalPath + " event=" + eventID
-			return fmt.Sprintf("S7 Main: original ReviewPlan %s is stale. Main questionnaire: %s. Original system feedback: %s. Main resolves the original baseline/Plan recovery through existing revive/revise; queued dispatch and old answers await a valid plan.", planPath, questionnaire, feedback) + " " + s7PinnedSourceRecovery(root)
+			return fmt.Sprintf("S7 Main: original ReviewPlan %s is stale. Main questionnaire: %s. Original system feedback: %s. Main updates the current original questionnaire to reflect actual professional changes.", planPath, questionnaire, feedback) + " " + s7PinnedSourceRecovery(root)
 		}
 		if ptr := review.PlanPointerFromState(snapshot.State); ptr != nil {
 			switch ptr.Status {
@@ -1796,15 +1762,7 @@ func stageReviewResultLifecycleContext(ctx context.Context, root string, request
 	if workstate.ReviewAssignmentActivity(row) != "dispatched" {
 		return fmt.Sprintf("S7 Reviewer assignment=%s is %v; Main must resolve its current disposition before authoring.", assignmentID, row["status"])
 	}
-	source, err := questionnaireSourceRoot(root, snapshot.State, packet.Binding.AssignmentID, packet.Binding.OwnerAgentID, packet.Binding.RuntimeID, packet.Binding.BaselineGeneration)
-	if err != nil {
-		return "S7 capture working directory is unavailable; Main must restore the registered Reviewer execution: " + err.Error()
-	}
-	executable := s7CaptureShellQuote(filepath.Join(root, ".claude/bin/loop-harness"))
-	capturePrefix := executable + " capture exec --root " + s7CaptureShellQuote(root) + " --assignment " + s7CaptureShellQuote(assignmentID) + " --cwd " + s7CaptureShellQuote(source) + " --"
-	stepPrefix := executable + " capture step --root " + s7CaptureShellQuote(root) + " --assignment " + s7CaptureShellQuote(assignmentID)
-	buffer := review.CaptureFile(root, packet.Binding.RuntimeID, packet.Binding.BaselineGeneration, assignmentID)
-	return fmt.Sprintf("S7 Reviewer assignment=%s: read the exact issued packet %s, fill the professional ReviewResult answer in %s, and save it. Keep the issued claim scope unchanged. Capture buffer: %s (merged by the original save consumer). Command shape: %s followed by your chosen professional check command and arguments; this prefix alone is incomplete. Observed-step command shape: %s followed by required --action and --observed professional text, and optional --evidence refs, --finding or --claim correlation; this prefix alone is incomplete. Record ordinary Findings and continue safe checks for the current required Claims.", assignmentID, view, answer, buffer, capturePrefix, stepPrefix)
+	return fmt.Sprintf("S7 Reviewer assignment=%s: read the issued packet %s, perform your assigned review, record your actual observations and Findings in the answer %s, and save it. Continue other checks when safe; report any blockers to Main.", assignmentID, view, answer)
 }
 
 func s7CaptureShellQuote(value string) string {
@@ -1856,6 +1814,19 @@ func registeredPlanningRow(state map[string]any) (map[string]any, error) {
 	}
 	entities, _ := state["entities"].(map[string]any)
 	rows, _ := entities["work_packets"].([]any)
+	if life["phase"] == "design" {
+		packet, found, err := runtime.CurrentIssuedDesignPacket(state)
+		if err != nil || !found {
+			return nil, err
+		}
+		for _, raw := range rows {
+			row, _ := raw.(map[string]any)
+			if row["template_id"] == "s2-design-v1" && row["packet_id"] == packet.ID {
+				return row, nil
+			}
+		}
+		return nil, fmt.Errorf("current S2 registered responsibility is unavailable")
+	}
 	var current map[string]any
 	for _, raw := range rows {
 		row, _ := raw.(map[string]any)

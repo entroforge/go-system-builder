@@ -32,8 +32,8 @@ func TestS6ResultMessageRejectsMachineClaimsAndUnansweredProfessionalFields(t *t
 	}
 	for _, field := range []string{"checks", "changed_paths", "reviewed_paths", "status"} {
 		message[field] = []any{}
-		if err := validate(); err == nil {
-			t.Fatalf("Worker machine claim %s accepted", field)
+		if err := validate(); err != nil {
+			t.Fatalf("unrelated Worker field %s blocked the Result: %v", field, err)
 		}
 		delete(message, field)
 	}

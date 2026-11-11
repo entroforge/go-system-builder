@@ -1,19 +1,17 @@
 package investigation
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/entroforge/go-system-builder/internal/metrics"
+	"os"
 	"path/filepath"
 	"reflect"
-	"strconv"
 	"strings"
 
 	"github.com/entroforge/go-system-builder/internal/agentauth"
-	"github.com/entroforge/go-system-builder/internal/evidence"
 	loopruntime "github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/schema"
 	"github.com/entroforge/go-system-builder/internal/semantic"
@@ -33,189 +31,212 @@ type HypothesisResultReceipt = loopruntime.HypothesisResultReceipt
 // original InvestigationCase Writer. It does not create a second result
 // store or require Hook actor/session authorization.
 func SubmitIssuedHypothesisResult(root, statePath, journalPath string, request IssuedHypothesisResultRequest) (loopruntime.Snapshot, error) {
+	snapshot, _, err := ReceiveIssuedHypothesisResult(root, statePath, journalPath, request, true)
+	return snapshot, err
+}
+
+// ReceiveIssuedHypothesisResult returns the original receipt directly, so a
+// caller does not reopen the Case to reconstruct an already-known outcome.
+// continueUnresolved comes from actual activity on the original responsibility;
+// a replay does not inspect the private answer, regardless of its conclusion.
+func ReceiveIssuedHypothesisResult(root, statePath, journalPath string, request IssuedHypothesisResultRequest, continueUnresolved bool) (loopruntime.Snapshot, HypothesisResultReceipt, error) {
 	defer metrics.Span(request.Context, "reception/s8")()
 	if strings.TrimSpace(root) == "" {
-		return loopruntime.Snapshot{}, errors.New("S8 repository root is required")
+		return loopruntime.Snapshot{}, HypothesisResultReceipt{}, errors.New("S8 repository root is required")
 	}
 	if request.PacketID == "" || request.OwnerAgentID == "" {
-		return loopruntime.Snapshot{}, errors.New("S8 packet and trusted owner are required")
+		return loopruntime.Snapshot{}, HypothesisResultReceipt{}, errors.New("S8 packet and trusted owner are required")
 	}
 	writer := loopruntime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{}).WithContext(request.Context)
 	snapshot, err := writer.Snapshot()
 	if err != nil {
-		return loopruntime.Snapshot{}, err
+		return loopruntime.Snapshot{}, HypothesisResultReceipt{}, err
 	}
 	if !loopruntime.PacketEnabled(snapshot.State) {
-		return snapshot, errors.New("S8 save requires explicit Runtime v1.2/v1.3 packet mode")
+		return snapshot, HypothesisResultReceipt{}, errors.New("S8 save requires explicit Runtime v1.2/v1.3 packet mode")
 	}
 	packet, found, err := loopruntime.FindHypothesisResultPacket(snapshot.State, request.PacketID)
 	if err != nil {
-		return snapshot, err
+		return snapshot, HypothesisResultReceipt{}, err
 	}
 	if !found || packet.Binding.OwnerAgentID != request.OwnerAgentID {
-		return snapshot, errors.New("S8 save has no exact packet issuance for the trusted owner")
+		return snapshot, HypothesisResultReceipt{}, errors.New("S8 save has no exact packet issuance for the trusted owner")
 	}
-	if err := loopruntime.VerifyHypothesisResultPacketIssue(root, snapshot.State, packet); err != nil {
-		return snapshot, err
-	}
-	// A prior acceptance changes mutable Case/Agent status. Check the original
-	// immutable receipt first so exact replay can use the registered source
-	// identity without requiring a live Worker checkout or re-running work.
 	existingReceipt, accepted, receiptErr := loopruntime.VerifiedHypothesisResultReceipt(root, snapshot.State, packet.ID, request.OwnerAgentID)
 	if receiptErr != nil {
-		return snapshot, receiptErr
+		return snapshot, HypothesisResultReceipt{}, receiptErr
 	}
-	sourceRoot, _, err := hypothesisResultSourceRoot(root, snapshot.State, packet, !accepted, request.Context)
+	// A caller with no activity on the original responsibility reuses the
+	// accepted fact directly and never reopens the author's private file.
+	// A caller that does act on the original responsibility must compare the
+	// current professional answer with the accepted object before it decides
+	// to reuse it, to continue the responsibility, or to refuse the delivery.
+	if accepted && !continueUnresolved {
+		return snapshot, existingReceipt, nil
+	}
+	// The original responsible Investigator must still hold its real working
+	// authorization before its answer may be read or written back. Continuous
+	// plan_checkpoint/one_shot dispatches keep their original execution
+	// contract; an approval-mode dispatch must pass the original activation and
+	// readback chain. This is a structural fact about the original owner, not a
+	// revision, digest or round comparison, and it produces no Runtime change.
+	if err := validateS8ApprovalMode(root, snapshot.State, request.OwnerAgentID); err != nil {
+		return snapshot, HypothesisResultReceipt{}, err
+	}
+	sourceRoot, _, err := hypothesisResultSourceRoot(root, snapshot.State, packet, false, request.Context)
 	if err != nil {
-		return snapshot, err
+		return snapshot, HypothesisResultReceipt{}, err
 	}
 	if request.SourceRoot != "" {
 		requestedRoot, err := workspace.Canonical(request.SourceRoot)
 		if err != nil {
-			return snapshot, fmt.Errorf("resolve requested S8 source root: %w", err)
+			return snapshot, HypothesisResultReceipt{}, fmt.Errorf("resolve requested S8 source root: %w", err)
 		}
 		if requestedRoot != sourceRoot {
-			return snapshot, errors.New("S8 answer source differs from the original registered execution root")
+			return snapshot, HypothesisResultReceipt{}, errors.New("S8 answer source differs from the original registered execution root")
 		}
 	}
 	if request.AuthorizeSource != nil {
 		if err := request.AuthorizeSource(root, snapshot.State); err != nil {
-			return snapshot, err
+			return snapshot, HypothesisResultReceipt{}, err
 		}
 	}
 	answerPath, err := exactHypothesisAnswerPath(sourceRoot, request.AnswerPath, packet.AnswerPath)
 	if err != nil {
-		return snapshot, err
+		return snapshot, HypothesisResultReceipt{}, err
 	}
-	authoringBytes, err := workpacket.ReadFile(sourceRoot, answerPath, hypothesisResultPacketReadLimit)
+	authoringBytes := request.frozenAnswer
+	if authoringBytes == nil {
+		authoringBytes, err = workpacket.ReadFile(sourceRoot, answerPath, hypothesisResultPacketReadLimit)
+	}
 	if err != nil {
-		return snapshot, fmt.Errorf("read exact S8 answer: %w", err)
+		if accepted && os.IsNotExist(err) {
+			return snapshot, existingReceipt, nil
+		}
+		return snapshot, HypothesisResultReceipt{}, fmt.Errorf("read exact S8 answer: %w", err)
 	}
-	answerJSON, issues := workpacket.ValidateHypothesisResultAnswer(packet, authoringBytes)
+	answer, answerJSON, issues := workpacket.ParseHypothesisResultAnswer(packet, authoringBytes)
 	if len(issues) != 0 {
-		return snapshot, &workpacket.AnswerError{Label: "S8 answer", Fields: issues}
-	}
-	answerSHA := workpacket.Digest(answerJSON)
-	var answer workpacket.HypothesisResultAnswer
-	if err := json.Unmarshal(answerJSON, &answer); err != nil {
-		return snapshot, err
-	}
-	// Bind new local observations while retaining the original author JSON and
-	// digest in the receipt. Frozen Finding references are never rebound.
-	if err := bindS8LocalEvidence(root, sourceRoot, packet, &answer, accepted); err != nil {
-		return snapshot, err
+		return snapshot, HypothesisResultReceipt{}, &workpacket.AnswerError{Label: "S8 answer", Fields: issues}
 	}
 	if accepted {
-		if err := verifyS8ReplayedLocalEvidence(root, existingReceipt, packet, answer); err != nil {
-			return snapshot, err
+		// L4-workflow-convergence.md:112 — the original consumer compares the
+		// current original answer with its current accepted object through its
+		// own professional semantics. The comparison covers only the
+		// author-changeable professional content that is actually saved.
+		// Machine facts — identifiers, timestamps, Runtime revisions and
+		// digests — never decide whether a delivery repeats an accepted one.
+		if sameS8ProfessionalAnswer(answer, existingReceipt.Answer) {
+			// An equivalent expression only skips the repeated reception and
+			// its write; the accepted fact stays exactly as it is.
+			return snapshot, existingReceipt, nil
 		}
-		if existingReceipt.AnswerSHA256 != answerSHA || existingReceipt.ExecutionRoot != sourceRoot {
-			return snapshot, errors.New("S8 packet replay conflicts with the original accepted answer/source")
+		if existingReceipt.Result != "inconclusive" {
+			// L3-S8-finding-investigation.md:235 and :445 — a genuine new
+			// expression under an already accepted packet identity must not
+			// overwrite the accepted content and must not masquerade as a
+			// replay of it. The accepted Case, result and receipt stay
+			// untouched; this delivery is reported as a new expression for the
+			// original revision process.
+			return snapshot, s8NewExpressionReceipt(packet, request), nil
 		}
-		return snapshot, nil
+		// An unresolved original responsibility continues along its own entry.
 	}
-	if request.ExpectedRevision >= 0 && snapshot.Revision != request.ExpectedRevision {
-		return snapshot, loopruntime.ErrStaleRevision
-	}
+	// G18 §2/§3.1: the Runtime write count is no longer a gate on this
+	// professional completion. A result reception used to be refused because
+	// the Runtime moved for an unrelated reason; the domain protection is the
+	// three-piece set around it:
+	//   received row — the hypothesis result receipt is the received row, and
+	//     one packet is received once (the accepted receipt above,
+	//     ensureHypothesisResultNotAlreadyOnCase and the in-CAS Case recheck);
+	//   event dedup — the acceptance commits the semantic identity
+	//     evt-investigation-case-revision-<caseID>-r<caseRevision> (and the
+	//     late retention evt-s8-late-result-<packetID>) with its idempotency
+	//     key, so the journal dedups a retried intent;
+	//   domain version — the hypothesis's own binding stays checked
+	//     (validateS8ResultResponsibility) and the Case's own revision is the
+	//     version this reception advances.
+	// A caller that names the revision it holds keeps the Runtime CAS as its
+	// explicit binding; the convention is -1 to omit the expectation.
 
+	review, _ := snapshot.State["review"].(map[string]any)
+	pointer, _ := review["investigation"].(map[string]any)
+	life, _ := snapshot.State["lifecycle"].(map[string]any)
+	if pointer == nil || pointer["case_id"] != packet.Binding.CaseID || life["state"] != "bug_resolution" || life["phase"] != "investigation" {
+		// An issued Investigator may return after its Case has been approved
+		// or its stage has advanced. Retain the original answer without
+		// rewriting the approved Case or moving the current lifecycle.
+		return receiveLateHypothesisResult(writer, snapshot, packet, sourceRoot, answerJSON, request)
+	}
 	if err := hypothesisResultLifecycle(snapshot.State); err != nil {
-		return snapshot, err
-	}
-	if err := validateS8AnswerEvidence(root, snapshot.State, packet, answer); err != nil {
-		return snapshot, err
-	}
-	if err := validateS8ApprovalMode(root, snapshot.State, request.OwnerAgentID); err != nil {
-		return snapshot, err
+		return snapshot, HypothesisResultReceipt{}, err
 	}
 	current, err := readCurrentInvestigationCase(root, snapshot.State)
 	if err != nil {
-		return snapshot, err
+		return snapshot, HypothesisResultReceipt{}, err
 	}
-	dispatches, err := resolveHypothesisDispatches(root, snapshot.State, current)
-	if err != nil {
-		return snapshot, err
+	if err := validateS8ResultResponsibility(snapshot.State, current.document, packet); err != nil {
+		return snapshot, HypothesisResultReceipt{}, err
 	}
-	dispatch, ok := findHypothesisDispatch(dispatches, packet.Binding.AssignmentID, request.OwnerAgentID)
-	if !ok {
-		return snapshot, errors.New("S8 packet no longer has the exact current registered Investigator dispatch")
+	// A fresh submission proves the same immutable Case lineage that the
+	// open-packet recovery proves. A route or a question that changed in an
+	// intermediate revision cannot be undone in the current projection, and an
+	// old issuance must not be revived by that restored projection.
+	if err := verifyS8CaseLineageContinuity(root, current, packet); err != nil {
+		return snapshot, HypothesisResultReceipt{}, err
 	}
-	if err := verifyHypothesisResultPacketCurrent(root, snapshot.State, current, dispatch, packet); err != nil {
-		return snapshot, fmt.Errorf("S8 packet %s for Case %s: %w; Main must inspect the original receipt and current Case/dispatch before resuming reception; preserve the professional answer at %s", packet.ID, packet.Binding.CaseID, err, packet.AnswerPath)
-	}
-	if err := ensureHypothesisResultNotAlreadyOnCase(current.document, packet); err != nil {
-		return snapshot, err
+	if !accepted {
+		if err := ensureHypothesisResultNotAlreadyOnCase(current.document, packet); err != nil {
+			return snapshot, HypothesisResultReceipt{}, err
+		}
 	}
 
-	commitRevision := snapshot.Revision
-	answerSHAHex := answerSHA
-	packetSHA, err := workpacket.HypothesisResultPacketDigest(packet)
-	if err != nil {
-		return snapshot, err
-	}
 	journal, _ := snapshot.State["journal"].(map[string]any)
-	acceptedEvent := fmt.Sprintf("evt-investigation-case-%s-r%d", packet.Binding.CaseID, commitRevision+1)
-	successorRevision := current.revision + 1
-	successorRef := filepath.ToSlash(filepath.Join(".claude", "review", "investigation", "cases", packet.Binding.CaseID+fmt.Sprintf("-r%d.json", successorRevision)))
+	// G18 §1: accepting a result IS the Case revision write that records it,
+	// so the receipt names the same identity the Case Writer commits — one
+	// journal event, one identity. The Case's own revision separates this
+	// write from the ingest and from every other write of the same Case; the
+	// Runtime write count never enters the identity.
+	nextCaseRevision := current.revision + 1
+	acceptedEvent := caseRevisionEventID(packet.Binding.CaseID, nextCaseRevision)
 	receipt := loopruntime.HypothesisResultReceipt{
-		Contract: hypothesisResultReceiptContract, PacketID: packet.ID, PacketSHA256: packetSHA,
-		AnswerSHA256: answerSHAHex, SubmittedAnswer: append(json.RawMessage(nil), answerJSON...),
+		Contract: hypothesisResultReceiptContract, PacketID: packet.ID,
 		OwnerAgentID: packet.Binding.OwnerAgentID, RuntimeID: packet.Binding.RuntimeID,
-		BaselineGeneration: packet.Binding.BaselineGeneration, ReviewRound: packet.Binding.ReviewRound,
-		AssignmentID: packet.Binding.AssignmentID, AssignmentSHA256: packet.Binding.AssignmentSHA256,
-		TeamID: packet.Binding.TeamID, TaskID: packet.Binding.TaskID, TaskRef: packet.Binding.TaskRef,
-		TaskSHA256: packet.Binding.TaskSHA256, ManifestRef: packet.Binding.ManifestRef, ManifestSHA256: packet.Binding.ManifestSHA256,
+		BaselineGeneration: packet.Binding.BaselineGeneration,
+		AssignmentID:       packet.Binding.AssignmentID,
+		TeamID:             packet.Binding.TeamID, TaskID: packet.Binding.TaskID, TaskRef: packet.Binding.TaskRef,
+		ManifestRef:   packet.Binding.ManifestRef,
 		ExecutionRoot: sourceRoot, IssuanceEventID: packet.IssuanceEventID,
-		AcceptedEventID:              acceptedEvent,
-		AcceptedIdempotencyKey:       fmt.Sprintf("runtime:investigation-case:%s:%d", packet.Binding.CaseID, commitRevision),
-		AcceptedAfterRuntimeRevision: commitRevision + 1,
+		AcceptedEventID:        acceptedEvent,
+		AcceptedIdempotencyKey: caseRevisionIdempotencyKey(packet.Binding.CaseID, nextCaseRevision),
+		// The Runtime revision and journal sequence stay diagnostics of where
+		// the acceptance landed; they are not part of the accepted identity.
+		AcceptedAfterRuntimeRevision: snapshot.Revision + 1,
 		AcceptedSequence:             intFieldS8(journal["last_sequence"]) + 1,
-		SuccessorCaseRef:             successorRef, SuccessorCaseRevision: successorRevision,
 	}
-	newQuestions, err := materializeS8NewHypotheses(packet.ID, answer.NewHypotheses)
-	if err != nil {
-		return snapshot, err
+	newQuestions := make([]map[string]any, 0, len(answer.NewHypotheses))
+	for _, suggestion := range answer.NewHypotheses {
+		data, err := json.Marshal(suggestion)
+		if err != nil {
+			return snapshot, HypothesisResultReceipt{}, err
+		}
+		var row map[string]any
+		if err := json.Unmarshal(data, &row); err != nil {
+			return snapshot, HypothesisResultReceipt{}, err
+		}
+		newQuestions = append(newQuestions, row)
 	}
 	result := *answer.Result
-	validateCurrent := func(lockedRoot string, state, document map[string]any, caseBytes []byte) error {
-		if !bytesEqualDigest(caseBytes, current.sha) {
-			return errors.New("S8 current Case bytes differ from the pinned preflight revision")
-		}
-		if err := validateS8RuntimeCaseRoute(state, document); err != nil {
-			return err
-		}
-		if err := hypothesisResultLifecycle(state); err != nil {
-			return err
-		}
-		if err := validateS8ApprovalMode(lockedRoot, state, request.OwnerAgentID); err != nil {
-			return err
-		}
-		if err := loopruntime.VerifyHypothesisResultPacketIssue(lockedRoot, state, packet); err != nil {
-			return err
-		}
-		lockedSourceRoot, _, err := hypothesisResultSourceRoot(lockedRoot, state, packet, true, request.Context)
-		if err != nil {
-			return err
-		}
-		if lockedSourceRoot != sourceRoot {
-			return errors.New("S8 registered execution root changed before original Case commit")
-		}
-		lockedCurrent := s8CurrentCase{document: document, bytes: caseBytes, path: current.path, sha: current.sha, revision: current.revision, findings: current.findings}
-		lockedDispatches, err := resolveHypothesisDispatches(lockedRoot, state, lockedCurrent)
-		if err != nil {
-			return err
-		}
-		lockedDispatch, ok := findHypothesisDispatch(lockedDispatches, packet.Binding.AssignmentID, request.OwnerAgentID)
-		if !ok {
-			return errors.New("S8 registered Investigator dispatch changed before original Case CAS")
-		}
-		if err := verifyHypothesisResultPacketCurrent(lockedRoot, state, lockedCurrent, lockedDispatch, packet); err != nil {
-			return err
-		}
-		return validateS8AnswerEvidence(lockedRoot, state, packet, answer)
+	validateCurrent := func(_ string, state, document map[string]any, _ []byte) error {
+		return validateS8ResultResponsibility(state, document, packet)
 	}
 	requestToOriginal := HypothesisResultRequest{
-		Context:          request.Context,
-		ExpectedRevision: snapshot.Revision, ExpectedCaseRevision: current.revision, ExpectedCaseSHA256: current.sha,
+		Context: request.Context,
+		// G18 §3.1/§4.4: the call point states the expectation as "whatever
+		// the current value is" (-1) instead of re-asserting the Runtime write
+		// count it read a moment earlier. The Writer resolves the current
+		// value; the Case's own revision below stays the domain version.
+		ExpectedRevision: -1, ExpectedCaseRevision: current.revision,
 		CaseID: packet.Binding.CaseID, HypothesisID: packet.Binding.HypothesisID, AssignmentID: packet.Binding.AssignmentID,
 		Method: answer.Method, EvidenceRefs: append([]string(nil), answer.EvidenceRefs...), SourceBoundaryRefs: append([]string(nil), answer.SourceBoundaryRefs...),
 		Observed: answer.Observed, Counterfactual: answer.CounterfactualOrDiscriminator, Result: result,
@@ -224,21 +245,87 @@ func SubmitIssuedHypothesisResult(root, statePath, journalPath string, request I
 	}
 	updated, submitErr := SubmitHypothesisResult(root, statePath, journalPath, requestToOriginal)
 	if submitErr == nil {
-		return updated, nil
+		receipt.Result, receipt.Answer = result, answerJSON
+		return updated, receipt, nil
 	}
 	// If the original Runtime Writer committed but its acknowledgement was
 	// lost, recover only from its exact durable Case receipt and journal proof.
 	latest, readErr := writer.Snapshot()
 	if readErr == nil {
 		committed, ok, verifyErr := loopruntime.VerifiedHypothesisResultReceipt(root, latest.State, packet.ID, request.OwnerAgentID)
-		if verifyErr == nil && ok && committed.AnswerSHA256 == answerSHAHex && committed.ExecutionRoot == sourceRoot {
-			return latest, nil
+		if verifyErr == nil && ok && bytes.Equal(committed.Answer, answerJSON) && committed.ExecutionRoot == sourceRoot {
+			return latest, committed, nil
 		}
 	}
-	if errors.Is(submitErr, loopruntime.ErrStaleRevision) {
-		return loopruntime.Snapshot{}, fmt.Errorf("S8 packet %s for Case %s: %w; Main must inspect the original receipt and current Case/dispatch before resuming the original reception; preserve the professional answer at %s", packet.ID, packet.Binding.CaseID, submitErr, packet.AnswerPath)
+	// G18 §3.1: the Runtime write count is no longer asserted, so a concurrent
+	// writer that committed the same Case revision is no longer detected by a
+	// version comparison. The journal's event identity detects it instead, and
+	// the reception answers the same way it answers a lost acknowledgement:
+	// re-read the current responsibility, decide whether the original business
+	// was already received, and record it against the current value.
+	concurrentCommit := readErr == nil && latest.Revision != snapshot.Revision
+	if errors.Is(submitErr, loopruntime.ErrStaleRevision) || concurrentCommit {
+		if request.ExpectedRevision < 0 && request.concurrencyRetry < 3 && (request.Context == nil || request.Context.Err() == nil) {
+			request.frozenAnswer = append([]byte(nil), authoringBytes...)
+			request.concurrencyRetry++
+			return ReceiveIssuedHypothesisResult(root, statePath, journalPath, request, continueUnresolved)
+		}
+		return loopruntime.Snapshot{}, HypothesisResultReceipt{}, fmt.Errorf("S8 packet %s for Case %s: %w; Main must inspect the original receipt and current Case/dispatch before resuming the original reception; preserve the professional answer at %s", packet.ID, packet.Binding.CaseID, submitErr, packet.AnswerPath)
 	}
-	return loopruntime.Snapshot{}, submitErr
+	return loopruntime.Snapshot{}, HypothesisResultReceipt{}, submitErr
+}
+
+// receiveLateHypothesisResult retains an independently issued responsibility
+// after a newer Case became current. It does not alter the current Case pointer.
+func receiveLateHypothesisResult(writer *loopruntime.Store, current loopruntime.Snapshot, packet workpacket.HypothesisResultPacket, sourceRoot string, answerJSON []byte, request IssuedHypothesisResultRequest) (loopruntime.Snapshot, HypothesisResultReceipt, error) {
+	life, _ := current.State["lifecycle"].(map[string]any)
+	cursor := map[string]any{"state": life["state"], "phase": life["phase"]}
+	journal, _ := current.State["journal"].(map[string]any)
+	// G18 §1: the late retention is named by its own responsibility (the
+	// issued packet) and carries no Runtime write count. One issued packet
+	// keeps one accepted late answer, so this identity stays unique and stays
+	// stable across a retried late delivery.
+	eventID := "evt-s8-late-result-" + packet.ID
+	key := "runtime:s8:late-result:" + packet.ID
+	late := workpacket.HypothesisLateResult{Answer: json.RawMessage(append([]byte(nil), answerJSON...)), ExecutionRoot: sourceRoot,
+		AcceptedEventID: eventID, AcceptedIdempotencyKey: key, AcceptedAfterRuntimeRevision: current.Revision + 1, AcceptedSequence: intFieldS8(journal["last_sequence"]) + 1}
+	next, err := writer.Update(current.Revision, loopruntime.Mutation{EventID: eventID, TransitionID: "S8-LATE-RESULT", Event: "hypothesis_result_received",
+		Actor: "orchestrator", IdempotencyKey: key, RuntimeID: packet.Binding.RuntimeID, BaselineGeneration: packet.Binding.BaselineGeneration,
+		From: cursor, To: cursor, RetainLastTransition: true, OccurredAt: request.OccurredAt,
+		Apply: func(state map[string]any) error {
+			entities, _ := state["entities"].(map[string]any)
+			rows, _ := entities["work_packets"].([]any)
+			for _, item := range rows {
+				row, _ := item.(map[string]any)
+				if row["packet_id"] != packet.ID {
+					continue
+				}
+				binding, _ := row["binding"].(map[string]any)
+				if binding["case_id"] != packet.Binding.CaseID || binding["assignment_id"] != packet.Binding.AssignmentID || binding["owner_agent_id"] != packet.Binding.OwnerAgentID {
+					return errors.New("S8 original late responsibility changed")
+				}
+				encoded, err := json.Marshal(late)
+				if err != nil {
+					return err
+				}
+				var entry map[string]any
+				if err := json.Unmarshal(encoded, &entry); err != nil {
+					return err
+				}
+				prior, _ := row["late_results"].([]any)
+				row["late_results"] = append(prior, entry)
+				return nil
+			}
+			return errors.New("S8 original late responsibility is unavailable")
+		}})
+	if err != nil {
+		return loopruntime.Snapshot{}, HypothesisResultReceipt{}, err
+	}
+	receipt, found, err := loopruntime.VerifiedHypothesisResultReceipt("", next.State, packet.ID, packet.Binding.OwnerAgentID)
+	if err != nil || !found {
+		return next, HypothesisResultReceipt{}, fmt.Errorf("S8 late result was saved but its original receipt is unavailable: %v", err)
+	}
+	return next, receipt, nil
 }
 
 func validateS8ApprovalMode(root string, state map[string]any, owner string) error {
@@ -253,12 +340,126 @@ func validateS8ApprovalMode(root string, state map[string]any, owner string) err
 		if mode == "plan_checkpoint" || mode == "one_shot" {
 			return nil
 		}
+		if mode != "" && mode != "plan_approval_required" {
+			return fmt.Errorf("document submission requires a registered plan/activation chain")
+		}
 		// Explicit approval-mode and legacy dispatches retain their original
 		// approved activation/readback chain. Continuous plan_checkpoint
 		// work uses the issued professional Case questionnaire directly.
-		return agentauth.ValidateWorkingAuthorization(root, state, owner)
+		//
+		// The gate asks whether that authorization fact exists, not whether the
+		// Agent still sits in the working state: an Investigator that was
+		// really activated and really worked keeps its original late delivery
+		// after it leaves that state.
+		return s8ApprovalAuthorizationFact(root, state, agent, owner)
 	}
 	return fmt.Errorf("S8 Investigator %s is not registered", owner)
+}
+
+// s8ApprovalAuthorizationFact verifies that the original approval-mode
+// Investigator holds a real activation and readback chain. It reads the
+// existing agentauth ledger — the registered activation_ref, readback_ref and
+// the approved readback message id — and adds no second authorization record.
+// The Agent's current activity state is deliberately not part of this
+// judgement, so a genuinely activated Investigator is not refused for having
+// finished or left its working state.
+func s8ApprovalAuthorizationFact(root string, state map[string]any, agent map[string]any, owner string) error {
+	ref, _ := agent["activation_ref"].(string)
+	if ref == "" {
+		return fmt.Errorf("S8 Investigator %s has no original activation", owner)
+	}
+	data, err := workpacket.ReadFile(root, ref, 1<<20)
+	if err != nil {
+		return err
+	}
+	if err := schema.NewValidator(root).ValidateBytes("agent-message.schema.json", data); err != nil {
+		return err
+	}
+	var activation agentauth.Message
+	if err := json.Unmarshal(data, &activation); err != nil {
+		return err
+	}
+	if activation.MessageType != "activation" || activation.AgentID != owner || activation.RuntimeID != state["runtime_id"] {
+		return fmt.Errorf("activation does not belong to this Agent")
+	}
+	readbackRef, _ := agent["readback_ref"].(string)
+	if readbackRef == "" {
+		return fmt.Errorf("S8 Investigator %s has no original readback", owner)
+	}
+	readbackData, err := workpacket.ReadFile(root, readbackRef, 1<<20)
+	if err != nil {
+		return err
+	}
+	if err := schema.NewValidator(root).ValidateBytes("agent-message.schema.json", readbackData); err != nil {
+		return err
+	}
+	var prior agentauth.Message
+	if err := json.Unmarshal(readbackData, &prior); err != nil {
+		return err
+	}
+	if prior.MessageType != "readback_response" || prior.AgentID != owner || prior.RuntimeID != state["runtime_id"] || prior.TaskID != activation.TaskID {
+		return fmt.Errorf("readback does not belong to this activation")
+	}
+	return agentauth.VerifyActivationReadbackChain(root, agent, activation)
+}
+
+// sameS8ProfessionalAnswer compares the current authored answer with the
+// accepted object through the original consumer's own professional fields. It
+// covers only the author-changeable professional content that is actually
+// saved. Machine facts — identifiers, timestamps, Runtime revisions and
+// digests — never decide whether a delivery repeats an accepted one.
+func sameS8ProfessionalAnswer(current workpacket.HypothesisResultAnswer, accepted json.RawMessage) bool {
+	if len(accepted) == 0 {
+		return false
+	}
+	var prior workpacket.HypothesisResultAnswer
+	if err := json.Unmarshal(accepted, &prior); err != nil {
+		return false
+	}
+	return reflect.DeepEqual(normalizeS8ProfessionalAnswer(current), normalizeS8ProfessionalAnswer(prior))
+}
+
+// normalizeS8ProfessionalAnswer treats an omitted and an empty professional
+// collection as the same expressed responsibility.
+func normalizeS8ProfessionalAnswer(answer workpacket.HypothesisResultAnswer) workpacket.HypothesisResultAnswer {
+	if len(answer.EvidenceRefs) == 0 {
+		answer.EvidenceRefs = nil
+	}
+	if len(answer.SourceBoundaryRefs) == 0 {
+		answer.SourceBoundaryRefs = nil
+	}
+	if len(answer.ExplainsFindingIDs) == 0 {
+		answer.ExplainsFindingIDs = nil
+	}
+	if len(answer.DoesNotExplain) == 0 {
+		answer.DoesNotExplain = nil
+	}
+	if len(answer.NewHypotheses) == 0 {
+		answer.NewHypotheses = nil
+	}
+	return answer
+}
+
+// s8NewExpressionReceipt describes a delivery that the original consumer did
+// not accept under the original packet identity. It keeps the original
+// responsibility identity and carries no accepted fact: the successor Case
+// stays empty, so the reception layer reports the delivery as not accepted
+// instead of lending the earlier receipt to a new expression.
+func s8NewExpressionReceipt(packet workpacket.HypothesisResultPacket, request IssuedHypothesisResultRequest) HypothesisResultReceipt {
+	return HypothesisResultReceipt{
+		Contract:           hypothesisResultReceiptContract,
+		PacketID:           packet.ID,
+		OwnerAgentID:       request.OwnerAgentID,
+		RuntimeID:          packet.Binding.RuntimeID,
+		BaselineGeneration: packet.Binding.BaselineGeneration,
+		AssignmentID:       packet.Binding.AssignmentID,
+		TeamID:             packet.Binding.TeamID,
+		TaskID:             packet.Binding.TaskID,
+		TaskRef:            packet.Binding.TaskRef,
+		ManifestRef:        packet.Binding.ManifestRef,
+		ExecutionRoot:      request.SourceRoot,
+		IssuanceEventID:    packet.IssuanceEventID,
+	}
 }
 
 // IssuedHypothesisResultReceipt is a read-only reconstruction from the
@@ -296,9 +497,9 @@ func validateHypothesisSubmissionBinding(state map[string]any, request Hypothesi
 	r := request.typedReceipt
 	if b.CaseID != request.CaseID || b.HypothesisID != request.HypothesisID || b.AssignmentID != request.AssignmentID ||
 		r.Contract != hypothesisResultReceiptContract || r.PacketID != request.typedPacket.ID || r.OwnerAgentID != b.OwnerAgentID ||
-		r.RuntimeID != b.RuntimeID || r.BaselineGeneration != b.BaselineGeneration || r.ReviewRound != b.ReviewRound ||
-		r.AssignmentID != b.AssignmentID || r.AssignmentSHA256 != b.AssignmentSHA256 || r.TeamID != b.TeamID ||
-		r.TaskID != b.TaskID || r.TaskRef != b.TaskRef || r.TaskSHA256 != b.TaskSHA256 || r.ManifestRef != b.ManifestRef || r.ManifestSHA256 != b.ManifestSHA256 ||
+		r.RuntimeID != b.RuntimeID || r.BaselineGeneration != b.BaselineGeneration ||
+		r.AssignmentID != b.AssignmentID || r.TeamID != b.TeamID ||
+		r.TaskID != b.TaskID || r.TaskRef != b.TaskRef || r.ManifestRef != b.ManifestRef ||
 		r.IssuanceEventID != request.typedPacket.IssuanceEventID {
 		return errors.New("S8 packet/receipt identity differs from the target Hypothesis")
 	}
@@ -332,231 +533,6 @@ func exactHypothesisAnswerPath(sourceRoot, requested, expected string) (string, 
 	return path, nil
 }
 
-func validateS8AnswerEvidence(root string, state map[string]any, packet workpacket.HypothesisResultPacket, answer workpacket.HypothesisResultAnswer) error {
-	refs, err := remainingS8AnswerEvidenceRefs(root, &packet, answer.EvidenceRefs)
-	if err != nil {
-		return err
-	}
-	for _, question := range answer.NewHypotheses {
-		questionRefs := question.EvidenceRefs
-		if packet.Binding.ObservationBatchRef != "" {
-			current, err := readCurrentInvestigationCase(root, state)
-			if err != nil {
-				return err
-			}
-			questionRefs, err = remainingFindingQuestionRefs(root, state, current.document, question.SourceFindingIDs, questionRefs)
-			if err != nil {
-				return err
-			}
-		}
-		refs = append(refs, questionRefs...)
-	}
-	if packet.Binding.ObservationBatchRef == "" {
-		data, err := workpacket.ReadFile(root, packet.Binding.CaseRef, hypothesisResultPacketReadLimit)
-		if err != nil || workpacket.Digest(data) != packet.Binding.CaseSHA256 {
-			return fmt.Errorf("S8 original human Case bytes/SHA differ: %v", err)
-		}
-		var document map[string]any
-		if err := json.Unmarshal(data, &document); err != nil {
-			return err
-		}
-		source, err := humanCaseSource(root, state, document)
-		if err != nil {
-			return err
-		}
-		remaining := withoutHumanSource(refs, source)
-		if len(remaining) > 0 {
-			if err := ValidateEvidenceRefs(remaining, EvidenceAttestationOptions{AllowPaths: true, State: state, Root: root, RequireSHA: true, RequireReviewRound: packet.Binding.ReviewRound}); err != nil {
-				return fmt.Errorf("S8 answer evidence references: %w", err)
-			}
-		}
-		boundaryError := func(ref string) error {
-			return &workpacket.AnswerError{Label: "S8 human source boundary", Fields: []workpacket.FieldError{{Pointer: "/answer/source_boundary_refs", Expected: "the frozen original human report", Observed: ref, Repair: "Cite the supplied original human decision ID or exact path; do not invent a Finding or Batch."}}}
-		}
-		if len(answer.SourceBoundaryRefs) == 0 {
-			return boundaryError("empty")
-		}
-		for _, ref := range answer.SourceBoundaryRefs {
-			if !humanSourceRef(ref, source) {
-				return boundaryError(ref)
-			}
-		}
-	} else {
-		if len(refs) > 0 {
-			if err := ValidateEvidenceRefs(refs, EvidenceAttestationOptions{AllowPaths: true, State: state, Root: root, RequireSHA: true, RequireReviewRound: packet.Binding.ReviewRound}); err != nil {
-				return fmt.Errorf("S8 answer evidence references: %w", err)
-			}
-		}
-		if err := validateS8SourceBoundaryRefs(root, packet, answer.SourceBoundaryRefs); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// Only exact sources imported from the original verified Finding may bypass
-// index lookup. Follow-up questions separately verify their own selected
-// Findings; arbitrary new answer paths retain the original evidence contract. The packet consumer verifies issuance/continuity
-// before calling this helper and again inside the original Writer.
-func remainingS8AnswerEvidenceRefs(root string, packet *workpacket.HypothesisResultPacket, refs []string) ([]string, error) {
-	frozen := map[string]bool{}
-	if packet != nil {
-		for _, ref := range packet.Inputs.EvidenceRefs {
-			if ref.Attestation == "finding_source" && ref.Origin == "finding" {
-				frozen[ref.Ref] = true
-			}
-		}
-	}
-	remaining := make([]string, 0, len(refs))
-	for _, ref := range refs {
-		if !frozen[ref] {
-			remaining = append(remaining, ref)
-			continue
-		}
-		if err := evidence.ValidateFindingReference(root, ref); err != nil {
-			return nil, fmt.Errorf("S8 answer original Finding source %q: %w", ref, err)
-		}
-	}
-	return remaining, nil
-}
-
-func validateS8SourceBoundaryRefs(root string, packet workpacket.HypothesisResultPacket, refs []string) error {
-	if len(refs) == 0 {
-		return errors.New("S8 source_boundary_refs must cite frozen source evidence")
-	}
-	findingByID := make(map[string]map[string]any, len(packet.Inputs.Findings))
-	for _, finding := range packet.Inputs.Findings {
-		var document map[string]any
-		if err := json.Unmarshal(finding.Document, &document); err != nil {
-			return err
-		}
-		findingByID[finding.FindingID] = document
-	}
-	allowed := make(map[string]bool, len(findingByID))
-	for id := range findingByID {
-		allowed["finding:"+id] = true
-	}
-	batchBytes, err := workpacket.ReadFile(root, packet.Binding.ObservationBatchRef, hypothesisResultPacketReadLimit)
-	if err != nil || workpacket.Digest(batchBytes) != packet.Binding.ObservationBatchSHA256 {
-		return fmt.Errorf("S8 original ObservationBatch bytes/SHA differ while checking boundaries: %v", err)
-	}
-	if err := schema.NewEmbeddedValidator().ValidateBytes("observation-batch.schema.json", batchBytes); err != nil {
-		return err
-	}
-	var batch struct {
-		ClaimCoverageSummary struct {
-			BlockedClaims []struct {
-				EvidenceRefs []string `json:"evidence_refs"`
-			} `json:"blocked_claims"`
-		} `json:"claim_coverage_summary"`
-	}
-	if err := json.Unmarshal(batchBytes, &batch); err != nil {
-		return err
-	}
-	for _, blocked := range batch.ClaimCoverageSummary.BlockedClaims {
-		for _, ref := range blocked.EvidenceRefs {
-			allowed[ref] = true
-		}
-	}
-	for _, ref := range refs {
-		if allowed[ref] {
-			continue
-		}
-		if !strings.HasPrefix(ref, "finding:") {
-			return fmt.Errorf("S8 source boundary %q is neither a frozen Finding encounter nor a sealed blocked-Claim reference", ref)
-		}
-		parts := strings.SplitN(strings.TrimPrefix(ref, "finding:"), "#", 2)
-		finding := findingByID[parts[0]]
-		if finding == nil {
-			return fmt.Errorf("S8 source boundary %q names no frozen Case Finding", ref)
-		}
-		encounter, ok := finding["encounter"].(map[string]any)
-		if !ok || encounter == nil {
-			return fmt.Errorf("S8 source boundary %q has no original Finding encounter", ref)
-		}
-		if len(parts) == 1 {
-			continue // finding:<id> identifies the full frozen encounter.
-		}
-		if !strings.HasPrefix(parts[1], "/encounter/") {
-			return fmt.Errorf("S8 source boundary %q is not an encounter JSON Pointer", ref)
-		}
-		value, found := resolveS8JSONPointer(finding, parts[1])
-		if !found || value == nil {
-			return fmt.Errorf("S8 source boundary %q does not resolve in the frozen Finding", ref)
-		}
-	}
-	return nil
-}
-
-func resolveS8JSONPointer(document any, pointer string) (any, bool) {
-	if pointer == "" {
-		return document, true
-	}
-	if !strings.HasPrefix(pointer, "/") {
-		return nil, false
-	}
-	current := document
-	for _, encoded := range strings.Split(pointer[1:], "/") {
-		var token strings.Builder
-		for i := 0; i < len(encoded); i++ {
-			if encoded[i] != '~' {
-				token.WriteByte(encoded[i])
-				continue
-			}
-			if i+1 >= len(encoded) {
-				return nil, false
-			}
-			i++
-			switch encoded[i] {
-			case '0':
-				token.WriteByte('~')
-			case '1':
-				token.WriteByte('/')
-			default:
-				return nil, false
-			}
-		}
-		key := token.String()
-		switch value := current.(type) {
-		case map[string]any:
-			var ok bool
-			current, ok = value[key]
-			if !ok {
-				return nil, false
-			}
-		case []any:
-			index, err := strconv.Atoi(key)
-			if err != nil || index < 0 || index >= len(value) || strconv.Itoa(index) != key {
-				return nil, false
-			}
-			current = value[index]
-		default:
-			return nil, false
-		}
-	}
-	return current, true
-}
-
-func materializeS8NewHypotheses(packetID string, authored []workpacket.HypothesisNewQuestion) ([]map[string]any, error) {
-	rows := make([]map[string]any, 0, len(authored))
-	for i, question := range authored {
-		sum := sha256.Sum256([]byte(packetID + "\x00" + strconv.Itoa(i)))
-		suffix := hex.EncodeToString(sum[:])
-		rows = append(rows, map[string]any{
-			"hypothesis_id":      "hypothesis-s8-" + suffix,
-			"assignment_id":      "assignment-s8-" + suffix,
-			"statement":          strings.TrimSpace(question.Statement),
-			"invariant":          strings.TrimSpace(question.Invariant),
-			"discriminator":      strings.TrimSpace(question.Discriminator),
-			"expected_outcomes":  map[string]any{"support": strings.TrimSpace(question.ExpectedOutcomes.Support), "refute": strings.TrimSpace(question.ExpectedOutcomes.Refute)},
-			"source_finding_ids": stringSliceAny(question.SourceFindingIDs),
-			"evidence_refs":      stringSliceAny(question.EvidenceRefs),
-			"status":             "open",
-		})
-	}
-	return rows, nil
-}
-
 func ensureHypothesisResultNotAlreadyOnCase(document map[string]any, packet workpacket.HypothesisResultPacket) error {
 	rows, err := objectArrayAllowEmpty(document["hypothesis_results"], "InvestigationCase.hypothesis_results")
 	if err != nil {
@@ -570,7 +546,18 @@ func ensureHypothesisResultNotAlreadyOnCase(document map[string]any, packet work
 	return nil
 }
 
-func bytesEqualDigest(data []byte, expected string) bool {
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:]) == expected
+// validateS8ResultResponsibility checks only the original responsibility. It
+// does not reopen manifests, evidence, sibling results or historical Cases.
+func validateS8ResultResponsibility(state, document map[string]any, packet workpacket.HypothesisResultPacket) error {
+	if document["case_id"] != packet.Binding.CaseID || document["status"] != "investigating" {
+		return errors.New("S8 result no longer belongs to the current investigating Case")
+	}
+	question, err := uniqueHypothesis(document, packet.Binding.HypothesisID)
+	if err != nil {
+		return err
+	}
+	if question["assignment_id"] != packet.Binding.AssignmentID || !oneOf(stringField(question["status"]), "open", "inconclusive") {
+		return errors.New("S8 result no longer belongs to the original open Assignment")
+	}
+	return nil
 }

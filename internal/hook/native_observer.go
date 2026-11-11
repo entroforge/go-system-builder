@@ -1,11 +1,11 @@
 package hook
 
 import (
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/entroforge/go-system-builder/internal/policy"
-	"github.com/entroforge/go-system-builder/internal/review"
 )
 
 const (
@@ -45,14 +45,24 @@ func NativeObserverDecision(input policy.Input, elapsed time.Duration) policy.De
 	}
 }
 
+var observerSecretPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)password\s*[:=]`),
+	regexp.MustCompile(`(?i)api[_-]?key\s*[:=]`),
+	regexp.MustCompile(`(?i)secret\s*[:=]`),
+	regexp.MustCompile(`(?i)bearer\s+[A-Za-z0-9._-]{12,}`),
+	regexp.MustCompile(`(?i)token\s*[:=]\s*[A-Za-z0-9._-]{8,}`),
+}
+
 func boundedObserverValue(value string) string {
 	const limit = 240
 	value = strings.TrimSpace(value)
 	// Inspect the complete external field before truncation can separate a
 	// credential from its marker. Reuse the existing finite capture policy;
 	// withholding audit text neither rejects the tool nor rewrites authority.
-	if err := review.SanitizeCapture(review.CaptureStep{Observed: value}); err != nil {
-		return "[withheld: capture secret pattern]"
+	for _, pattern := range observerSecretPatterns {
+		if pattern.MatchString(value) {
+			return "[withheld: capture secret pattern]"
+		}
 	}
 	if len(value) <= limit {
 		return value

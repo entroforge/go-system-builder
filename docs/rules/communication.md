@@ -33,9 +33,9 @@ Agent to hand-author a generic status.
 
 ## Subagent Boundary
 
-Subagents receive work only through a fingerprinted assignment and phase-one
-request. They do not negotiate requirements with the user, infer omitted scope
-from chat, self-activate, or broaden their assignment.
+Subagents receive the actual assignment, responsibility and available materials.
+The original handoff provides the relevant paths and context; it does not require
+a fingerprint or a separate phase-one proof.
 
 Read-back, activation, completion, team planning, BUG handling, and clean-round
 procedures are owned by:

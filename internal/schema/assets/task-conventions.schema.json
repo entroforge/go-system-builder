@@ -37,7 +37,7 @@
       "type": "array",
       "items": {
         "type": "object",
-        "additionalProperties": false,
+        "additionalProperties": true,
         "required": [
           "path",
           "source_mode",
@@ -47,10 +47,6 @@
           "path": {
             "type": "string",
             "minLength": 1
-          },
-          "sha256": {
-            "type": "string",
-            "pattern": "^[a-f0-9]{64}$"
           },
           "source_mode": {
             "enum": [
@@ -78,9 +74,7 @@
               }
             },
             "then": {
-              "required": [
-                "sha256"
-              ]
+              "required": []
             }
           }
         ]
@@ -129,12 +123,11 @@
   "$defs": {
     "reference": {
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "kind",
         "id",
-        "path",
-        "sha256"
+        "path"
       ],
       "properties": {
         "kind": {
@@ -160,10 +153,6 @@
         "version": {
           "type": "string",
           "minLength": 1
-        },
-        "sha256": {
-          "type": "string",
-          "pattern": "^[a-f0-9]{64}$"
         }
       },
       "allOf": [
@@ -188,20 +177,15 @@
     },
     "example": {
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
-        "path",
-        "sha256"
+        "path"
       ],
       "properties": {
         "path": {
           "type": "string",
           "minLength": 1,
           "pattern": "^[^\\\\:\\x00]+$"
-        },
-        "sha256": {
-          "type": "string",
-          "pattern": "^[a-f0-9]{64}$"
         }
       }
     },

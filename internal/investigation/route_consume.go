@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/entroforge/go-system-builder/internal/reviewmeta"
 	"github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/semantic"
 )
@@ -32,9 +33,20 @@ func ConsumeCaseRoute(root, statePath, journalPath string, request ConsumeRouteR
 	if err != nil {
 		return runtime.Snapshot{}, fmt.Errorf("read Runtime before route consumption: %w", err)
 	}
-	if request.ExpectedRevision >= 0 && current.Revision != request.ExpectedRevision {
-		return runtime.Snapshot{}, fmt.Errorf("%w: expected Runtime revision %d but it is %d; next: runtime investigation status --case-id %s", runtime.ErrStaleRevision, request.ExpectedRevision, current.Revision, request.CaseID)
-	}
+	// G18 §2/§3.1: the Runtime write count is no longer a gate on this
+	// professional completion. A route consumption used to be refused because
+	// the Runtime moved for an unrelated reason; the domain protection is the
+	// three-piece set around it:
+	//   received row — the consumed route is the received row and one Case
+	//     route is consumed once (the route_consumed_at check below and the
+	//     in-CAS route recheck);
+	//   event dedup — the consumption commits the semantic identity
+	//     evt-s8-route-consume-<caseID> and its idempotency key, so the
+	//     journal dedups a retried intent;
+	//   domain version — the Case's own identity and its persisted route stay
+	//     the versions checked here.
+	// A caller that names the revision it holds keeps the Runtime CAS as its
+	// explicit binding; the convention is -1 to omit the expectation.
 	review, ok := current.State["review"].(map[string]any)
 	if !ok || review == nil {
 		return runtime.Snapshot{}, errors.New("Runtime review section is missing; restore state.review before consuming the Case route")
@@ -62,13 +74,19 @@ func ConsumeCaseRoute(root, statePath, journalPath string, request ConsumeRouteR
 		actor = "orchestrator"
 	}
 	writer := runtime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{})
-	commitRevision := runtimeCommitRevision(request.ExpectedRevision, current.State)
+	// G18 §1: the route consumption is named by its own responsibility (the
+	// Case) and carries no Runtime write count. One Case route is consumed
+	// once — the consumption records route_consumed_at on the pointer — so this
+	// identity stays unique and stays stable across a retried consumption.
+	eventID := "evt-s8-route-consume-" + request.CaseID
 	return updateRuntime(writer, request.ExpectedRevision, runtime.Mutation{
-		EventID:                fmt.Sprintf("evt-s8-route-consume-%s-r%d", request.CaseID, commitRevision+1),
-		TransitionID:           "S8-ROUTE-CONSUME",
-		Event:                  "investigation_route_consumed",
-		Actor:                  actor,
-		IdempotencyKey:         fmt.Sprintf("runtime:s8:route-consume:%s:%d", request.CaseID, commitRevision),
+		EventID:      eventID,
+		TransitionID: "S8-ROUTE-CONSUME",
+		Event:        "investigation_route_consumed",
+		Actor:        actor,
+		// G18 §1.3: the idempotency key carries the responsibility coordinate
+		// (the Case) and the intent key (the consumed route).
+		IdempotencyKey:         fmt.Sprintf("runtime:s8:route-consume:%s:%s", request.CaseID, route),
 		RuntimeID:              stringField(current.State["runtime_id"]),
 		EvidenceIDs:            []string{stringField(pointer["path"])},
 		From:                   routeCursor(current.State),
@@ -76,7 +94,6 @@ func ConsumeCaseRoute(root, statePath, journalPath string, request ConsumeRouteR
 		RequestID:              "s8-route-consume",
 		BaselineGeneration:     baselineGenerationValue(current.State),
 		GateID:                 "S8-ROUTE-CONSUME",
-		GateFingerprint:        "sha256:s8-route-consume-v1",
 		ProducerResponsibility: "S8 Route Consumer",
 		OccurredAt:             at,
 		Apply: func(state map[string]any) error {
@@ -89,15 +106,13 @@ func ConsumeCaseRoute(root, statePath, journalPath string, request ConsumeRouteR
 			active["route_consumer"] = "S8-ROUTE-CONSUME"
 			switch route {
 			case "s7_no_change":
-				round := integerValueOrZero(review["round"]) + 1
-				review["round"] = round
+				delete(review, "round")
 				review["clean_round"] = nil
 				review["plan"] = nil
 				review["claims"] = map[string]any{}
 				review["assignments"] = map[string]any{}
-				review["observation_batch"] = nil
 				review["investigation"] = nil
-				review["round_entry"] = map[string]any{"transition_id": "S8-ROUTE-CONSUME", "round": round, "baseline_generation": baselineGenerationValue(state), "change_impact_ref": nil}
+				review["round_entry"] = map[string]any{"transition_id": "S8-ROUTE-CONSUME", "plan_id": reviewmeta.NewPlanID(stringField(state["runtime_id"]), eventID), "baseline_generation": baselineGenerationValue(state), "change_impact_ref": nil}
 				setLifecycleValue(state, "verification", "running")
 			case "s2_spec_rework":
 				active["status"] = "closed"

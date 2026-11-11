@@ -30,7 +30,7 @@ func prepareNativeBinding(t *testing.T, f stageAnswerFixture, owner string, extr
 }
 
 func TestNativeContextBindingFreezesAcrossWorkingStateAndRejectsSourceDrift(t *testing.T) {
-	f := newStageAnswerFixture(t)
+	f := newHistoricalStageAnswerFixture(t)
 	p := f.packets[0]
 	b := prepareNativeBinding(t, f, p.Binding.Owner)
 	if _, present := b["owned_check_commands"]; present {
@@ -45,12 +45,12 @@ func TestNativeContextBindingFreezesAcrossWorkingStateAndRejectsSourceDrift(t *t
 		t.Fatal("binding retry consumed another generation/commit")
 	}
 	actual, initialCapture := explicitContextRead(t, f, p.Binding.Owner)
-	if actual.Path != ref["path"] || actual.SHA256 != ref["sha256"] {
+	if actual.Path != ref["path"] {
 		t.Fatal("lifecycle did not consume frozen binding")
 	}
-	f.begin(t, p, nil)
+	f.beginHistorical(t, p)
 	actual, _ = explicitContextRead(t, f, p.Binding.Owner)
-	if actual.Path != ref["path"] || actual.SHA256 != ref["sha256"] {
+	if actual.Path != ref["path"] {
 		t.Fatal("working state silently rebuilt captured profile")
 	}
 
@@ -71,6 +71,19 @@ func TestNativeContextBindingFreezesAcrossWorkingStateAndRejectsSourceDrift(t *t
 		t.Fatalf("historical capture was mistaken for live authority: live=%+v capture=%v", live, capture["agent_state"])
 	}
 
+	// The blueprint removes source digest proofs: the frozen binding stays
+	// authoritative and the framework must not claim the installed bytes are
+	// unchanged. An edited installed source therefore neither invalidates nor
+	// rebuilds the binding (L4-stage-form.md:51/62/64,
+	// L4-workflow-convergence.md:250).
+	frozenPath := filepath.Join(f.root, ref["path"].(string))
+	frozenBefore, err := os.ReadFile(frozenPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, present := ref["sha256"]; present {
+		t.Fatalf("frozen context still registers a source digest: %+v", ref)
+	}
 	source := filepath.Join(f.root, ".claude/skills/document-verification/SKILL.md")
 	original, err := os.ReadFile(source)
 	if err != nil {
@@ -81,10 +94,29 @@ func TestNativeContextBindingFreezesAcrossWorkingStateAndRejectsSourceDrift(t *t
 	var out, errout bytes.Buffer
 	before := stageSnapshot(t, f.root).Revision
 	code := cli.Run([]string{"runtime", "assignment-context", "prepare", "--root", f.root, "--agent-id", p.Binding.Owner}, nil, &out, &errout)
-	if code == 0 || stageSnapshot(t, f.root).Revision != before || !strings.Contains(errout.String(), "document-verification") {
-		t.Fatalf("source drift did not preserve binding with accurate source feedback: %d %s", code, &errout)
+	if code != 0 {
+		t.Fatalf("frozen binding was invalidated by an installed-source edit: %d %s", code, &errout)
+	}
+	if stageSnapshot(t, f.root).Revision != before {
+		t.Fatal("installed-source edit consumed another generation/commit")
+	}
+	frozenAfter, err := os.ReadFile(frozenPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(frozenBefore, frozenAfter) {
+		t.Fatal("installed-source edit rebuilt the frozen profile")
 	}
 	os.WriteFile(source, original, 0600)
+
+	// A missing frozen context is still a real fact the framework reports.
+	os.Remove(frozenPath)
+	out.Reset()
+	errout.Reset()
+	if code := cli.Run([]string{"runtime", "assignment-context", "prepare", "--root", f.root, "--agent-id", p.Binding.Owner}, nil, &out, &errout); code == 0 || !strings.Contains(errout.String(), "unavailable") {
+		t.Fatalf("missing frozen context was accepted: %d %s", code, &errout)
+	}
+	os.WriteFile(frozenPath, frozenBefore, 0600)
 	restored := prepareNativeBinding(t, f, p.Binding.Owner)
 	restoredBytes, _ := json.Marshal(restored)
 	if !bytes.Equal(data, restoredBytes) {
@@ -102,8 +134,8 @@ func TestNativeContextBindingNamedRevisionUsesExactReceivedPredecessor(t *testin
 	if code := cli.Run(args, nil, &out, &errout); code == 0 || stageSnapshot(t, f.root).Revision != before {
 		t.Fatal("generic profile refresh was accepted")
 	}
-	f.begin(t, p, nil)
-	receipt := saveStageHook(t, f.root, f.root, p.Binding.Owner, p.AnswerPath, completedDraft(p, "pass"))
+	f.startNative(t, p)
+	receipt := saveNativeStageStop(t, f.root, f.root, p.Binding.Owner, p.AnswerPath, completedDraft(p, "pass"))
 	var next workpacket.Packet
 	issued := stageCLI(t, "runtime", "stage-answer", "revise", "--root", f.root, "--previous", receipt.SubmissionKey, "--reason", "Re-evaluate the original frozen dependency finding")
 	json.Unmarshal([]byte(issued), &next)
@@ -189,29 +221,31 @@ func TestNativeContextBindingCheckpointPreservesFixedFactsAndRejectsMissingSourc
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Recovery reads already established facts: it does not re-authenticate the
+	// frozen source by digest and no longer requires the original preparation
+	// proof (L4-stage-form.md:62/72, L4-workflow-convergence.md:250).
 	os.WriteFile(path, []byte("changed fixed metadata"), 0600)
-	if err := runtime.ValidateCheckpointIndices(f.root, snap.State, journal); err == nil {
-		t.Fatal("checkpoint restored another/lost fixed profile source")
+	if err := runtime.ValidateCheckpointIndices(f.root, snap.State, journal); err != nil {
+		t.Fatalf("checkpoint re-authenticated a frozen source digest: %v", err)
 	}
 	os.WriteFile(path, source, 0600)
 	var events []map[string]any
 	for _, line := range bytes.Split(bytes.TrimSpace(journal), []byte("\n")) {
 		var event map[string]any
 		json.Unmarshal(line, &event)
-		if event["transition_id"] == "CONTEXT-PREPARE" {
-			event["transition_id"] = "UNRELATED-METADATA"
-			event["idempotency_key"] = "unrelated-metadata-key"
-		}
 		events = append(events, event)
 	}
-	var filtered bytes.Buffer
-	for _, event := range events {
-		data, _ := json.Marshal(event)
-		filtered.Write(data)
-		filtered.WriteByte('\n')
+	if len(events) == 0 {
+		t.Fatal("prepared context produced no journal events")
 	}
-	if err := runtime.ValidateCheckpointIndices(f.root, snap.State, filtered.Bytes()); err == nil || !strings.Contains(err.Error(), "original preparation journal") {
-		t.Fatalf("fixed profile source without original prepare journal was accepted or failed for another reason: %v", err)
+	var truncated bytes.Buffer
+	for _, event := range events[:len(events)-1] {
+		data, _ := json.Marshal(event)
+		truncated.Write(data)
+		truncated.WriteByte('\n')
+	}
+	if err := runtime.ValidateCheckpointIndices(f.root, snap.State, truncated.Bytes()); err == nil {
+		t.Fatal("checkpoint accepted a journal whose tail no longer matches the saved Runtime")
 	}
 }
 
@@ -239,7 +273,7 @@ func TestContextRoleRenderReturnsActualCandidateWithoutChangingAssets(t *testing
 		t.Fatal(err)
 	}
 	generated := []byte(result["generated_role"].(string))
-	if result["enabled"] != false || workpacket.Digest(generated) != result["generated_sha256"] || len(result["core_skills"].([]any)) != 4 {
+	if result["enabled"] != false || len(generated) == 0 || len(result["core_skills"].([]any)) != 4 {
 		t.Fatal("invalid candidate or false enabled claim")
 	}
 	after, _ := os.ReadFile(rolePath)
@@ -247,7 +281,7 @@ func TestContextRoleRenderReturnsActualCandidateWithoutChangingAssets(t *testing
 		t.Fatal("render candidate changed installed role or Runtime")
 	}
 	source := result["source_ref"].(map[string]any)
-	if source["path"] != ".claude/agents/backend-builder.md" || source["sha256"] != workpacket.Digest(original) {
+	if source["path"] != ".claude/agents/backend-builder.md" {
 		t.Fatal("role candidate guessed its source")
 	}
 }
@@ -272,5 +306,42 @@ func TestNativeContextBindingWithoutPacketIndicesPublishesOriginalCheckpoint(t *
 	}
 	if err := runtime.ValidateCheckpointRestore(f.root, pair); err != nil {
 		t.Fatalf("native-only original checkpoint restore rejected: %v", err)
+	}
+}
+
+// G18: the context binding event identity is the owner and the context
+// generation, never the Runtime write count.
+func TestNativeContextBindingEventIdentityCarriesNoWriteCount(t *testing.T) {
+	f := newStageAnswerFixture(t)
+	p := f.packets[0]
+	prepareNativeBinding(t, f, p.Binding.Owner)
+	journal, err := os.ReadFile(filepath.Join(f.root, ".claude", "loop-events.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := ""
+	for _, line := range strings.Split(strings.TrimSpace(string(journal)), "\n") {
+		var event map[string]any
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			t.Fatal(err)
+		}
+		if event["transition_id"] != "CONTEXT-PREPARE" {
+			continue
+		}
+		found, _ = event["event_id"].(string)
+		key, _ := event["idempotency_key"].(string)
+		if !strings.HasPrefix(key, "runtime:context:") {
+			t.Fatalf("context idempotency key = %q, want the runtime:context shape", key)
+		}
+	}
+	if found == "" {
+		t.Fatal("CONTEXT-PREPARE journal event missing")
+	}
+	if !strings.HasPrefix(found, "evt-context-") {
+		t.Fatalf("context event id = %q, want the evt-context shape", found)
+	}
+	// The identity ends with the context generation, never with a write count.
+	if !strings.HasSuffix(found, "-g1") {
+		t.Fatalf("context event id = %q, want the generation coordinate at its end", found)
 	}
 }

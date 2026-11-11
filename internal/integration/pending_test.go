@@ -9,28 +9,24 @@ import (
 	"github.com/entroforge/go-system-builder/internal/policy"
 )
 
-func TestPendingAcknowledgementRequiresExactCurrentReportBinding(t *testing.T) {
-	cp := Checkpoint{State: StateVerified, TestedHead: "original-tested-head", CompletionReportPath: "current/report.json", CompletionReportSHA256: "current-sha"}
-	a := hookctx.AssignmentContext{CompletionAckRef: "original/ack.json", AcknowledgedReports: map[string]string{"old/report.json": "old-sha"}}
+func TestPendingAcknowledgementUsesCurrentReportAndActualAck(t *testing.T) {
+	cp := Checkpoint{State: StateVerified, CompletionReportPath: "current/report.json"}
+	a := hookctx.AssignmentContext{CompletionAckRef: "original/ack.json", CompletionRef: "old/report.json"}
 	if acknowledgedReport(a, cp) {
-		t.Fatal("old ACK released another report")
+		t.Fatal("another report must not be acknowledged")
 	}
-	a.AcknowledgedReports[cp.CompletionReportPath] = "old-sha"
-	if acknowledgedReport(a, cp) {
-		t.Fatal("old ACK released changed bytes")
-	}
-	a.AcknowledgedReports[cp.CompletionReportPath] = cp.CompletionReportSHA256
+	a.CompletionRef = cp.CompletionReportPath
 	if !acknowledgedReport(a, cp) {
-		t.Fatal("original matching ACK binding was ignored")
+		t.Fatal("current report and actual ACK were not accepted")
 	}
 	cp.State = StatePreserved
 	if acknowledgedReport(a, cp) {
-		t.Fatal("old ACK hid a current failed integration")
+		t.Fatal("ACK hid a failed integration")
 	}
 	cp.State = StateVerified
 	a.CompletionAckRef = ""
 	if acknowledgedReport(a, cp) {
-		t.Fatal("digest alone manufactured original ACK")
+		t.Fatal("missing ACK was accepted")
 	}
 }
 
@@ -45,22 +41,22 @@ func TestPendingCheckpointPathUsesAlreadyResolvedCurrentRecord(t *testing.T) {
 	}
 	assignment := hookctx.AssignmentContext{
 		AssignmentID: "assignment-pending", AssignmentRecord: &ref,
-		AssignmentRecordSHA256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-		AssignmentRevision:     2,
+		AssignmentRevision: 2,
 	}
 	want := CheckpointPathForRecord("/repo", ref)
 	got, err := pendingCheckpointPath("/repo", loaded, assignment)
 	if err != nil || got != want || got == CheckpointPath("/repo", "loop-pending", 4, "assignment-pending") {
 		t.Fatalf("canonical pending path = %q, err %v; want revision slot %q", got, err, want)
 	}
-	assignment.AssignmentRecordSHA256 = ""
+	assignment.AssignmentRecord = nil
 	if _, err := pendingCheckpointPath("/repo", loaded, assignment); err == nil {
-		t.Fatal("incomplete canonical projection must not fall back to the legacy r1 checkpoint path")
+		t.Fatal("revision without a Record must not fall back to the legacy r1 checkpoint path")
 	}
-	assignment = hookctx.AssignmentContext{AssignmentID: "legacy-assignment"}
-	loaded.BaselineGeneration = 1
-	if got, err := pendingCheckpointPath("/repo", loaded, assignment); err != nil || got != CheckpointPath("/repo", "loop-pending", 1, "legacy-assignment") {
-		t.Fatalf("legacy pending path = %q, err %v", got, err)
+	wrongRef := ref
+	wrongRef.RuntimeID = "another-runtime"
+	assignment.AssignmentRecord = &wrongRef
+	if _, err := pendingCheckpointPath("/repo", loaded, assignment); err == nil {
+		t.Fatal("Record from another Runtime must not use this pending slot")
 	}
 }
 
@@ -70,17 +66,16 @@ func TestPendingRejectsCheckpointFromAnotherRecordRevision(t *testing.T) {
 		AssignmentRecord: &assignmentrecord.RecordReference{
 			RuntimeID: "loop-pending", BaselineGeneration: 4, AssignmentID: "assignment-pending", Revision: 2,
 		},
-		AssignmentRecordSHA256: "2222222222222222222222222222222222222222222222222222222222222222",
 	}
 	oldRef := assignmentrecord.RecordReference{
 		RuntimeID: "loop-pending", BaselineGeneration: 4, AssignmentID: "assignment-pending", Revision: 1,
 	}
-	old := Checkpoint{AssignmentRecord: &oldRef, AssignmentRecordSHA256: "1111111111111111111111111111111111111111111111111111111111111111"}
+	old := Checkpoint{AssignmentRecord: &oldRef}
 	if err := validatePendingCheckpointRecordBinding(old, current); err == nil {
 		t.Fatal("pending accepted an early checkpoint copied from the predecessor revision")
 	}
 	old.CanonicalMainFacts = &assignmentresult.MainFacts{Binding: assignmentresult.ResultBinding{
-		AssignmentRecord: oldRef, AssignmentRecordSHA256: old.AssignmentRecordSHA256,
+		AssignmentRecord: oldRef,
 	}}
 	if err := validatePendingCheckpointRecordBinding(old, current); err == nil {
 		t.Fatal("pending accepted predecessor Main facts under the current revision path")

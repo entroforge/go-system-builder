@@ -2,7 +2,6 @@ package cli
 
 import (
 	"bytes"
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -33,6 +32,26 @@ func TestInstallInvalidSourceDoesNotPublishRuntime(t *testing.T) {
 	}
 	if _, e := os.Stat(root); !os.IsNotExist(e) {
 		t.Fatalf("invalid source published target: %v", e)
+	}
+}
+
+func TestInstallRejectsSymlinkReleaseRootWithoutPublishing(t *testing.T) {
+	base := t.TempDir()
+	release := filepath.Join(base, "release")
+	if err := os.Mkdir(release, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(base, "release-link")
+	if err := os.Symlink(release, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	target := filepath.Join(base, "project")
+	var out, stderr bytes.Buffer
+	if code := runInstall([]string{"--source", link, "--root", target}, &out, &stderr); code == 0 {
+		t.Fatal("symlink release root accepted")
+	}
+	if _, err := os.Stat(target); !os.IsNotExist(err) {
+		t.Fatalf("failed install published target: %v", err)
 	}
 }
 
@@ -99,47 +118,24 @@ func TestS10ProjectionUsesInstalledCanonicalPaths(t *testing.T) {
 	}
 }
 
-func TestReleaseManifestRejectsCorruptMissingAndExtraFiles(t *testing.T) {
-	for _, mode := range []string{"intact", "corrupt", "missing", "extra", "symlink"} {
-		t.Run(mode, func(t *testing.T) {
-			root := t.TempDir()
-			p := filepath.Join(root, "asset.txt")
-			if err := os.WriteFile(p, []byte("asset"), 0644); err != nil {
-				t.Fatal(err)
-			}
-			files, err := installInventory(root, packageManifest)
-			if err != nil {
-				t.Fatal(err)
-			}
-			data, err := json.Marshal(map[string]any{"schema_version": 1, "files": files})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(filepath.Join(root, packageManifest), data, 0644); err != nil {
-				t.Fatal(err)
-			}
-			switch mode {
-			case "corrupt":
-				err = os.WriteFile(p, []byte("changed"), 0644)
-			case "missing":
-				err = os.Remove(p)
-			case "extra":
-				err = os.WriteFile(filepath.Join(root, "extra"), []byte("extra"), 0644)
-			case "symlink":
-				if err = os.Remove(p); err == nil {
-					err = os.Symlink(filepath.Join(root, packageManifest), p)
-				}
-				if err != nil {
-					t.Skipf("symlinks unavailable: %v", err)
-				}
-			}
-			if err != nil {
-				t.Fatal(err)
-			}
-			err = verifyInstallManifest(root)
-			if (mode == "intact") != (err == nil) {
-				t.Fatalf("%s validation: %v", mode, err)
-			}
-		})
+func TestInstallCopyRejectsSymlinkWithoutFollowingIt(t *testing.T) {
+	root := t.TempDir()
+	outside := filepath.Join(root, "outside")
+	if err := os.WriteFile(outside, []byte("original"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(root, "source")
+	if err := os.Mkdir(source, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(source, "link")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if err := copyInstallTree(source, filepath.Join(root, "target")); err == nil {
+		t.Fatal("copy followed a symlink")
+	}
+	data, err := os.ReadFile(outside)
+	if err != nil || string(data) != "original" {
+		t.Fatalf("outside file changed: %q %v", data, err)
 	}
 }

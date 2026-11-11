@@ -37,9 +37,9 @@
 
 ### 3. evidence —— 证据
 
-- 支持结论的具体证据（文件/制品/digest，不接受"凭印象"）：
+- 支持结论的具体来源或观察（文件、制品或实际结果）：
   {例如 `docs/requirements/REQ-039.md` 顶部 ui_impact 字段、
-  `.claude/evidence/change-impact.json` sha256=…}
+  `.claude/evidence/change-impact.json` 的原实际引用}
 - 每条证据如何被 `source_refs` 引用：{列表，与 Claim.source_refs 一致}
 
 ### 4. alternative —— 已考虑的替代结论

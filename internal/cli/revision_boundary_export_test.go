@@ -13,7 +13,7 @@ import (
 func PrepareNativeRevisionAtSnapshotForTest(root, base string, snapshot runtime.Snapshot, record assignmentrecord.Record, files fileview.Reader) (int, string, string) {
 	var out, diagnostic bytes.Buffer
 	code := runS6PrepareRevision(s6PrepareRevisionInput{
-		NativeDelivery: true, BaseCommit: base, Root: root,
+		BaseCommit: base, Root: root,
 		State: snapshot.State, StateRevision: snapshot.Revision, Files: files,
 		IntentKey: "revision-concurrency-boundary", AssignmentID: record.AssignmentID,
 		TaskID: record.Task.ID, Role: record.RoleFamily, AgentID: "native-revision-boundary-r2",

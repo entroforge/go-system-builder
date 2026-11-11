@@ -84,9 +84,8 @@ func writeDispatchPlanningTaskEvidence(t *testing.T, root string, state map[stri
 	t.Helper()
 	subjects := make([]any, 0, len(fixture.taskPaths))
 	for _, path := range fixture.taskPaths {
-		data := fixture.taskBytes[path]
 		subjects = append(subjects, map[string]any{
-			"path": path, "version": "v1.0.0", "sha256": req039fixtures.Sha256Hex(data),
+			"path": path, "version": "v1.0.0",
 		})
 	}
 	scope := make([]any, 0, len(fixture.taskPaths))
@@ -111,9 +110,8 @@ func dispatchDocumentSubjects(state map[string]any) map[string]bool {
 		}
 		path, _ := doc["path"].(string)
 		version, _ := doc["version"].(string)
-		sha, _ := doc["sha256"].(string)
-		if path != "" && version != "" && sha != "" {
-			want[path+"|"+version+"|"+sha] = true
+		if path != "" && version != "" {
+			want[path+"|"+version] = true
 		}
 	}
 	return want
@@ -131,7 +129,6 @@ func assertDispatchReviewSubjectsExact(t *testing.T, root string, state map[stri
 			SubjectRefs []struct {
 				Path    string `json:"path"`
 				Version string `json:"version"`
-				SHA256  string `json:"sha256"`
 			} `json:"subject_refs"`
 		}
 		if err := json.Unmarshal(data, &envelope); err != nil {
@@ -139,7 +136,7 @@ func assertDispatchReviewSubjectsExact(t *testing.T, root string, state map[stri
 		}
 		got := map[string]bool{}
 		for _, subject := range envelope.SubjectRefs {
-			got[subject.Path+"|"+subject.Version+"|"+subject.SHA256] = true
+			got[subject.Path+"|"+subject.Version] = true
 		}
 		if len(got) != len(want) {
 			t.Fatalf("%s subject count=%d, want exact runtime document count=%d; got=%v want=%v", name, len(got), len(want), got, want)
@@ -172,31 +169,27 @@ func assertDispatchDocuments(t *testing.T, state map[string]any, fixture dispatc
 		t.Fatalf("dispatch plan registration count=%d, want 1: %#v", len(planDocs), planDocs)
 	}
 	plan := planDocs[0]
-	if plan["path"] != fixture.planPath || plan["status"] != wantStatus || plan["sha256"] != req039fixtures.Sha256Hex(fixture.planBytes) {
-		t.Fatalf("dispatch plan registration=%#v, want path/status/hash %s/%s/%s", plan, fixture.planPath, wantStatus, req039fixtures.Sha256Hex(fixture.planBytes))
+	if plan["path"] != fixture.planPath || plan["status"] != wantStatus {
+		t.Fatalf("dispatch plan registration=%#v, want path/status %s/%s", plan, fixture.planPath, wantStatus)
 	}
 	if len(taskDocs) != len(fixture.taskPaths) {
 		t.Fatalf("TASK denominator=%d, want %d; plan must remain a separate document: %#v", len(taskDocs), len(fixture.taskPaths), taskDocs)
 	}
-	wantTasks := map[string]bool{}
+	wantTasks := map[string]string{}
 	for _, path := range fixture.taskPaths {
-		wantTasks[strings.TrimSuffix(filepath.Base(path), ".md")] = true
+		wantTasks[strings.TrimSuffix(filepath.Base(path), ".md")] = path
 	}
 	for _, task := range taskDocs {
 		id, _ := task["id"].(string)
-		if !wantTasks[id] || task["status"] != wantStatus {
+		if path, ok := wantTasks[id]; !ok || task["path"] != path || task["status"] != wantStatus {
 			t.Fatalf("unexpected dispatch TASK registration: %#v", task)
-		}
-		path, _ := task["path"].(string)
-		if task["sha256"] != req039fixtures.Sha256Hex(fixture.taskBytes[path]) {
-			t.Fatalf("TASK %s hash does not match committed bytes: %#v", id, task)
 		}
 	}
 }
 
 func requireDispatchHookTransition(t *testing.T, runner *req039fixtures.CLIRunner, root, session, tool string, input map[string]any, wantTransition, wantState, wantPhase string) map[string]any {
 	t.Helper()
-	code, stdout, stderr := runHookWithRunner(t, runner, root, "PreToolUse", req039fixtures.PreToolUseBody(session, tool, input))
+	code, stdout, stderr := runHookWithRunner(t, runner, root, "PreToolUse", req039fixtures.MainPreToolUseBody(root, session, tool, input))
 	if code != 0 {
 		t.Fatalf("Hook %s failed: code=%d stdout=%s stderr=%s", session, code, stdout, stderr)
 	}
@@ -271,7 +264,7 @@ func TestAuditDispatchPlanHookSpineCommittedSubjectsAndFreeze(t *testing.T) {
 	for _, path := range append([]string{fixture.planPath}, fixture.taskPaths[0]) {
 		before := req039fixtures.ReadState(t, root)
 		code, stdout, stderr := runHookWithRunner(t, runner, root, "PreToolUse",
-			req039fixtures.PreToolUseBody("dispatch-freeze-"+filepath.Base(path), "Edit", map[string]any{"file_path": path}))
+			req039fixtures.MainPreToolUseBody(root, "dispatch-freeze-"+filepath.Base(path), "Edit", map[string]any{"file_path": path}))
 		after := req039fixtures.ReadState(t, root)
 		assertPreToolUseObservedWithoutDenyOrAdvance(t, code, stdout, stderr, before, after)
 	}

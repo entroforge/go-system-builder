@@ -1,11 +1,7 @@
 package runtime_test
 
 import (
-	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,12 +11,12 @@ import (
 	"github.com/entroforge/go-system-builder/internal/schema"
 )
 
-func TestRecordEvidenceAppendsFingerprintedEvidenceWithCAS(t *testing.T) {
+func TestRecordDocumentEvidenceKeepsResponsibilityWithoutReviewRound(t *testing.T) {
 	root := t.TempDir()
 	statePath := filepath.Join(root, "loop-state.json")
 	journalPath := filepath.Join(root, "loop-events.jsonl")
 	writeExampleRuntime(t, statePath)
-	if err := os.WriteFile(filepath.Join(root, "REV-001.md"), []byte(`{"schema_version":"1.0.0","evidence_id":"EV-DOCUMENT-001","kind":"document_review","runtime_id":"loop-REQ-002-example","baseline_generation":1,"producer_agent_id":"document-verifier","producer_responsibility":"DV-TRUTH-AUDIT"}`), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "REV-001.md"), []byte(`{"schema_version":"1.0.0","evidence_id":"EV-DOCUMENT-001","kind":"document_review","runtime_id":"loop-REQ-002-example","baseline_generation":1,"producer_agent_id":"document-verifier","producer_responsibility":"DV-TRUTH-AUDIT","review_round":3}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -47,8 +43,14 @@ func TestRecordEvidenceAppendsFingerprintedEvidenceWithCAS(t *testing.T) {
 	if entry["id"] != "EV-DOCUMENT-001" || entry["status"] != "valid" {
 		t.Fatalf("unexpected evidence entry: %#v", entry)
 	}
-	if entry["sha256"] == "" {
-		t.Fatal("evidence fingerprint must be recorded")
+	if entry["path"] != "REV-001.md" || entry["responsibility_id"] != "DV-TRUTH-AUDIT" {
+		t.Fatalf("original responsibility was not recorded: %#v", entry)
+	}
+	if _, exists := entry["review_round"]; exists {
+		t.Fatalf("irrelevant old review round was recorded: %#v", entry)
+	}
+	if _, exists := entry["sha256"]; exists {
+		t.Fatalf("obsolete source digest was recorded: %#v", entry)
 	}
 }
 
@@ -104,6 +106,76 @@ func TestRecordEvidenceAcceptsChangeImpactEvidence(t *testing.T) {
 	evidence, _ := next.State["evidence"].([]any)
 	if len(evidence) != 1 || evidence[0].(map[string]any)["kind"] != "change_impact" {
 		t.Fatalf("unexpected change impact evidence: %#v", evidence)
+	}
+}
+
+func TestRecordEvidenceRejectsRepeatedIdentityWithoutWritingRuntime(t *testing.T) {
+	root := t.TempDir()
+	statePath := filepath.Join(root, "loop-state.json")
+	journalPath := filepath.Join(root, "loop-events.jsonl")
+	writeExampleRuntime(t, statePath)
+	if err := os.WriteFile(filepath.Join(root, "REV-001.md"), []byte(`{"schema_version":"1.0.0","evidence_id":"EV-DOCUMENT-001","kind":"document_review","runtime_id":"loop-REQ-002-example","baseline_generation":1,"producer_agent_id":"document-verifier","producer_responsibility":"DV-TRUTH-AUDIT","review_round":3}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	request := runtime.EvidenceRequest{
+		ExpectedRevision: -1,
+		ID:               "EV-DOCUMENT-001",
+		Kind:             "document_review",
+		Path:             "REV-001.md",
+		ProducedBy:       []string{"document-verifier"},
+		ResponsibilityID: "DV-TRUTH-AUDIT",
+		Validator:        testCandidateValidator(),
+	}
+	if _, err := runtime.RecordEvidence(root, statePath, journalPath, request); err != nil {
+		t.Fatalf("RecordEvidence failed: %v", err)
+	}
+	stateBefore, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	journalBefore, err := os.ReadFile(journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// G18 reverse assertion: the evidence identity is the event identity, so a
+	// repeated record of the same evidence id is still rejected by the
+	// duplicate evidence guard and writes no Runtime fact and no journal fact.
+	if _, err := runtime.RecordEvidence(root, statePath, journalPath, request); err == nil || !strings.Contains(err.Error(), "is already registered") {
+		t.Fatalf("repeated evidence id was not rejected as a duplicate: %v", err)
+	}
+	stateAfter, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	journalAfter, err := os.ReadFile(journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(stateBefore) != string(stateAfter) || string(journalBefore) != string(journalAfter) {
+		t.Fatal("repeated evidence id wrote a new Runtime fact")
+	}
+	// G18 reverse assertion: the event id names the evidence identity and
+	// carries no Runtime write count.
+	ids := map[string]int{}
+	for _, line := range strings.Split(strings.TrimSpace(string(journalAfter)), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var event map[string]any
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			t.Fatal(err)
+		}
+		if id, ok := event["event_id"].(string); ok {
+			ids[id]++
+		}
+	}
+	if ids["evt-evidence-EV-DOCUMENT-001"] != 1 {
+		t.Fatalf("evidence event identity was not written exactly once: %v", ids)
+	}
+	for id := range ids {
+		if strings.HasPrefix(id, "evt-evidence-") && strings.Contains(id, "-r") {
+			t.Fatalf("evidence event id still carries a Runtime write count: %q", id)
+		}
 	}
 }
 
@@ -196,14 +268,13 @@ func writeExampleRuntime(t *testing.T, path string) {
 // artifact without --review-round used to persist review_round=null, which the
 // s10 board immediately reports as a stale binding. The envelope already
 // carries the round, so RecordEvidence must inherit it.
-func TestRecordEvidenceS10InheritsReviewRoundFromEnvelope(t *testing.T) {
+func TestRecordEvidenceS10KeepsOriginalPlanWithoutReviewRound(t *testing.T) {
 	root := t.TempDir()
 	statePath := filepath.Join(root, "loop-state.json")
 	journalPath := filepath.Join(root, "loop-events.jsonl")
 	writeExampleRuntime(t, statePath)
 
-	// The fixture's real responsibility must match its system envelope. The
-	// caller still omits ReviewRound: inheritance, not duplicate author input.
+	// Use the original Plan responsibility without an obsolete review round.
 	stateData, err := os.ReadFile(statePath)
 	if err != nil {
 		t.Fatal(err)
@@ -213,7 +284,7 @@ func TestRecordEvidenceS10InheritsReviewRoundFromEnvelope(t *testing.T) {
 		t.Fatal(err)
 	}
 	current["runtime_id"] = "loop-test"
-	current["review"].(map[string]any)["round"] = 2
+	current["review"].(map[string]any)["round_entry"] = map[string]any{"plan_id": "review-plan-s10", "transition_id": "TR-006", "baseline_generation": 1, "change_impact_ref": nil}
 	stateData, err = json.MarshalIndent(current, "", "  ")
 	if err != nil {
 		t.Fatal(err)
@@ -224,11 +295,11 @@ func TestRecordEvidenceS10InheritsReviewRoundFromEnvelope(t *testing.T) {
 
 	manifest := map[string]any{
 		"schema_version": "1.0.0", "manifest_type": "acceptance",
-		"runtime_id": "loop-test", "baseline_generation": 1, "review_round": 2,
+		"runtime_id": "loop-test", "baseline_generation": 1, "review_plan_id": "review-plan-s10",
 		"coverage_inventory": []any{map[string]any{
 			"id": "REQ-AC-1", "category": "requirement",
 			"source_refs": []any{"REV-001.md#ac"}, "expected": "e", "oracle": "o",
-			"owner": "Acceptance", "evidence_refs": []any{"EV-CLEAN"}, "disposition": "pass",
+			"owner": "Acceptance", "evidence_refs": []any{"test://original-observation"}, "disposition": "pass",
 		}, map[string]any{
 			"id": "CON-N-A", "category": "contract",
 			"source_refs": []any{"REV-001.md#contract"}, "expected": "n/a scope",
@@ -245,15 +316,15 @@ func TestRecordEvidenceS10InheritsReviewRoundFromEnvelope(t *testing.T) {
 		"counterevidence": []any{
 			map[string]any{
 				"id": "CE-1", "inventory_id": "REQ-AC-1", "question": "q?",
-				"evidence_refs": []any{"EV-CLEAN"}, "outcome": "pass",
+				"evidence_refs": []any{"test://original-observation"}, "outcome": "pass",
 			},
 			map[string]any{
 				"id": "CE-2", "inventory_id": "CON-N-A", "question": "why n/a?",
-				"evidence_refs": []any{"EV-CLEAN"}, "outcome": "not_applicable",
+				"evidence_refs": []any{"test://original-observation"}, "outcome": "not_applicable",
 			},
 			map[string]any{
 				"id": "CE-3", "inventory_id": "PATH-N-A", "question": "which paths moved?",
-				"evidence_refs": []any{"EV-CLEAN"}, "outcome": "pass",
+				"evidence_refs": []any{"test://original-observation"}, "outcome": "pass",
 			},
 		},
 		"risks": []any{}, "technical_debt": []any{}, "blocking_findings": []any{},
@@ -263,29 +334,17 @@ func TestRecordEvidenceS10InheritsReviewRoundFromEnvelope(t *testing.T) {
 			"unowned_risk_count": 0, "untracked_debt_count": 0, "blocking_finding_count": 0,
 		},
 	}
-	clean := map[string]any{
-		"schema_version": "1.0.0", "clean_round_id": "clean-round-r2",
-		"conclusion": "pass", "evaluated_at": "2026-07-29T00:00:00Z",
-		"evaluated_by": "round-consumer", "evidence_id": "EV-CLEAN",
-		"kind": "clean_round", "producer_agent_id": "round-consumer",
-		"producer_responsibility": "Clean Round Evaluator",
-		"review_round":            2, "runtime_id": "loop-test",
-	}
 	manifestData, _ := json.Marshal(manifest)
-	cleanData, _ := json.Marshal(clean)
-	for name, data := range map[string][]byte{"m.json": manifestData, "clean.json": cleanData} {
-		if err := os.WriteFile(filepath.Join(root, name), data, 0o644); err != nil {
-			t.Fatal(err)
-		}
+	if err := os.WriteFile(filepath.Join(root, "m.json"), manifestData, 0o644); err != nil {
+		t.Fatal(err)
 	}
 	envelope := map[string]any{
 		"schema_version": "1.0.0", "kind": "acceptance_record",
 		"evidence_id": "acc-record-r2", "runtime_id": "loop-test",
-		"baseline_generation": 1, "review_round": 2,
+		"baseline_generation": 1, "review_plan_id": "review-plan-s10",
 		"producer_agent_id": "orchestrator", "producer_responsibility": "Acceptance",
 		"conclusion": "pass", "created_at": "2026-07-29T00:00:00Z",
-		"audit_manifest_path":   "m.json",
-		"audit_manifest_sha256": sha256ForTest(manifestData),
+		"audit_manifest_path": "m.json",
 	}
 	envData, _ := json.Marshal(envelope)
 	envPath := filepath.Join(root, "acc-env.json")
@@ -293,23 +352,8 @@ func TestRecordEvidenceS10InheritsReviewRoundFromEnvelope(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Register the referenced clean-round evidence first so the manifest's
-	// evidence_refs resolve during the S10 artifact validation.
-	if _, err := runtime.RecordEvidence(root, statePath, journalPath, runtime.EvidenceRequest{
-		ExpectedRevision: 1,
-		ID:               "EV-CLEAN",
-		Kind:             "clean_round",
-		Path:             "clean.json",
-		ProducedBy:       []string{"round-consumer"},
-		ResponsibilityID: "Clean Round Evaluator",
-		ReviewRound:      func() *int { v := 2; return &v }(),
-		Validator:        testCandidateValidator(),
-	}); err != nil {
-		t.Fatalf("RecordEvidence(clean) failed: %v", err)
-	}
-
 	next, err := runtime.RecordEvidence(root, statePath, journalPath, runtime.EvidenceRequest{
-		ExpectedRevision: 2,
+		ExpectedRevision: 1,
 		ID:               "acc-record-r2",
 		Kind:             "acceptance",
 		Path:             "acc-env.json",
@@ -324,9 +368,11 @@ func TestRecordEvidenceS10InheritsReviewRoundFromEnvelope(t *testing.T) {
 	for _, raw := range next.State["evidence"].([]any) {
 		item := raw.(map[string]any)
 		if item["id"] == "acc-record-r2" {
-			got := fmt.Sprintf("%v", item["review_round"])
-			if got != "2" {
-				t.Fatalf("acceptance entry review_round = %s, want 2 (inherited from envelope)", got)
+			if item["review_plan_id"] != "review-plan-s10" {
+				t.Fatalf("acceptance lost its original Plan: %v", item)
+			}
+			if _, exists := item["review_round"]; exists {
+				t.Fatalf("acceptance recorded obsolete review round: %v", item)
 			}
 			found = true
 			break
@@ -335,38 +381,7 @@ func TestRecordEvidenceS10InheritsReviewRoundFromEnvelope(t *testing.T) {
 	if !found {
 		t.Fatal("acceptance evidence entry not found after registration")
 	}
-	t.Run("conflicting explicit recording round", func(t *testing.T) {
-		envelope["evidence_id"] = "acc-conflicting-round"
-		freshEnvelope, err := json.Marshal(envelope)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(envPath, freshEnvelope, 0644); err != nil {
-			t.Fatal(err)
-		}
-		stateBefore, err := os.ReadFile(statePath)
-		if err != nil {
-			t.Fatal(err)
-		}
-		journalBefore, err := os.ReadFile(journalPath)
-		if err != nil {
-			t.Fatal(err)
-		}
-		wrongRound := 7
-		_, err = runtime.RecordEvidence(root, statePath, journalPath, runtime.EvidenceRequest{
-			ExpectedRevision: -1, ID: "acc-conflicting-round", Kind: "acceptance", Path: "acc-env.json",
-			ReviewRound: &wrongRound, ProducedBy: []string{"orchestrator"}, ResponsibilityID: "Acceptance", Validator: testCandidateValidator(),
-		})
-		if err == nil || !strings.Contains(err.Error(), "S10 recording review round") {
-			t.Errorf("conflicting caller round overrode the existing report association: %v", err)
-		}
-		stateAfter, _ := os.ReadFile(statePath)
-		journalAfter, _ := os.ReadFile(journalPath)
-		if !bytes.Equal(stateBefore, stateAfter) || !bytes.Equal(journalBefore, journalAfter) {
-			t.Error("conflicting recording round changed Runtime or journal")
-		}
-	})
-	for _, field := range []string{"runtime_id", "baseline_generation", "review_round", "coverage_inventory"} {
+	for _, field := range []string{"runtime_id", "baseline_generation", "coverage_inventory"} {
 		t.Run("report association "+field, func(t *testing.T) {
 			original := manifest[field]
 			defer func() { manifest[field] = original }()
@@ -416,9 +431,4 @@ func TestRecordEvidenceS10InheritsReviewRoundFromEnvelope(t *testing.T) {
 			}
 		})
 	}
-}
-
-func sha256ForTest(data []byte) string {
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:])
 }

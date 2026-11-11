@@ -14,6 +14,8 @@ import (
 
 	"github.com/entroforge/go-system-builder/internal/fileview"
 	runtimepkg "github.com/entroforge/go-system-builder/internal/runtime"
+	"github.com/entroforge/go-system-builder/internal/schema"
+	"github.com/entroforge/go-system-builder/internal/semantic"
 	"github.com/entroforge/go-system-builder/internal/transition"
 	"github.com/entroforge/go-system-builder/internal/workpacket"
 )
@@ -30,7 +32,7 @@ func TestVerifiedContractPacketSourcesProjectsAcceptedFrozenSources(t *testing.T
 	}
 	want := make(map[string]workpacket.Subject, expected)
 	for _, design := range fixture.packet.Inputs.Designs {
-		want[design.Path] = workpacket.Subject{Path: design.Path, Version: design.Version, SHA256: design.SHA256}
+		want[design.Path] = workpacket.Subject{Path: design.Path, Version: design.Version}
 	}
 	for _, source := range fixture.packet.Inputs.Sources {
 		want[source.Path] = source
@@ -46,11 +48,11 @@ func TestVerifiedContractPacketSourcesProjectsAcceptedFrozenSources(t *testing.T
 		envelopeSubjects[subject.Path] = subject
 	}
 	for _, fact := range facts {
-		source, ok := want[fact.Path]
+		_, ok := want[fact.Path]
 		if !ok {
 			t.Fatalf("projected non-frozen source %s", fact.Path)
 		}
-		if fact.Kind != "source" || fact.Status != "frozen" || fact.Generation != fixture.packet.Binding.Generation || fact.SHA256 != source.SHA256 {
+		if fact.Kind != "source" || fact.Status != "frozen" || fact.Generation != fixture.packet.Binding.Generation {
 			t.Errorf("source fact identity for %s = %#v", fact.Path, fact)
 		}
 		if fact.Version != envelopeSubjects[fact.Path].Version {
@@ -84,11 +86,10 @@ func TestVerifiedContractPacketSourcesProjectsAcceptedFrozenSources(t *testing.T
 func TestVerifiedContractPacketFactsUsesRecordedDeliveryWithoutRecheckingDisk(t *testing.T) {
 	fixture := newContractPacketSubjectFixture(t, false, true)
 	state := fixture.input.Snapshot.State
-	staleContract := []byte("previous registered bytes")
 	documents := state["documents"].([]any)
 	state["documents"] = append(documents, map[string]any{
 		"id": "SYNC-001", "kind": "contract", "path": "docs/dev/contracts/SYNC-001.md",
-		"version": "v0.9.0", "sha256": workpacket.Digest(staleContract), "status": "locked", "generation": 1,
+		"version": "v0.9.0", "status": "locked", "generation": 1,
 	})
 	facts, accepted, err := verifiedContractPacketFacts(fixture.input)
 	if err != nil {
@@ -106,7 +107,7 @@ func TestVerifiedContractPacketFactsUsesRecordedDeliveryWithoutRecheckingDisk(t 
 		if !ok {
 			t.Fatalf("original S3 delivery omitted fact for %s: %#v", path, facts)
 		}
-		if fact.Status != "locked" || fact.SHA256 == "" || fact.Version != "v1.0.0" {
+		if fact.Status != "locked" || fact.Version != "v1.0.0" {
 			t.Errorf("S3 delivered fact for %s = %#v", path, fact)
 		}
 	}
@@ -174,7 +175,7 @@ func TestPacketModeS3DoesNotUseUnacceptedLockedDiskOutputs(t *testing.T) {
 	}
 }
 
-func TestVerifiedContractPacketSourcesRejectsChangedReceiptBytes(t *testing.T) {
+func TestVerifiedContractPacketSourcesReadsRecordedReceiptWithAdditionalSubject(t *testing.T) {
 	fixture := newContractPacketSubjectFixture(t, true)
 	unknownPath := "docs/architecture/data-model/unregistered.json"
 	unknownBytes := []byte(`{"source":"not in original S3 closure"}`)
@@ -186,7 +187,7 @@ func TestVerifiedContractPacketSourcesRejectsChangedReceiptBytes(t *testing.T) {
 	}
 	refs := envelope["subject_refs"].([]any)
 	refs = append(refs, map[string]any{
-		"path": unknownPath, "version": "v999", "sha256": workpacket.Digest(unknownBytes),
+		"path": unknownPath, "version": "v999",
 	})
 	envelope["subject_refs"] = refs
 	fixture.envelopeBytes, _ = json.Marshal(envelope)
@@ -194,8 +195,8 @@ func TestVerifiedContractPacketSourcesRejectsChangedReceiptBytes(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := verifiedContractPacketSources(fixture.input); err == nil || !strings.Contains(err.Error(), "envelope") {
-		t.Fatalf("accepted changed receipt bytes without its registered hash: %v", err)
+	if _, err := verifiedContractPacketSources(fixture.input); err != nil {
+		t.Fatalf("additional subject became a hash qualification: %v", err)
 	}
 }
 
@@ -230,15 +231,7 @@ func TestVerifiedContractPacketSourcesDoesNotRecheckRecordedDirectoryMembership(
 	})
 }
 
-func TestVerifiedContractPacketSourcesNeedsAcceptedAnswerHashAndEnvelopeReader(t *testing.T) {
-	t.Run("answer hash", func(t *testing.T) {
-		fixture := newContractPacketSubjectFixture(t, true)
-		fixture.submissionRow["content_sha256"] = workpacket.Digest([]byte("different answer"))
-		if _, err := verifiedContractPacketSources(fixture.input); err == nil || !strings.Contains(err.Error(), "professional answer") {
-			t.Fatalf("accepted a submission with a different professional answer hash: %v", err)
-		}
-	})
-
+func TestVerifiedContractPacketSourcesUsesOriginalEnvelopeReader(t *testing.T) {
 	t.Run("read-only original envelope view", func(t *testing.T) {
 		fixture := newContractPacketSubjectFixture(t, true)
 		fixture.input.Files = readOnlyContractSubjectView{root: fixture.root}
@@ -280,17 +273,17 @@ func newContractPacketSubjectFixture(t *testing.T, withModule bool, acceptedMode
 
 	state := map[string]any{
 		"schema_version": "1.2.0",
-		"runtime_id":     "runtime-qualitygate-contract-sources",
+		"runtime_id":     "loop-qualitygate-contract-sources",
 		"configuration":  map[string]any{"optimization": map[string]any{"packet": true}},
 		"baseline":       map[string]any{"generation": 1},
 		"lifecycle":      map[string]any{"state": "planning", "phase": "contracts", "phase_revision": 3},
 		"bound_req": map[string]any{
-			"id": "REQ-001", "path": reqPath, "version": "v1.0.0", "sha256": workpacket.Digest([]byte(req)), "status": "locked",
+			"id": "REQ-001", "path": reqPath, "version": "v1.0.0", "status": "locked",
 			"workspace": map[string]any{"project_root": root},
 		},
 		"documents": []any{
-			map[string]any{"id": "REQ-001", "kind": "req", "path": reqPath, "version": "v1.0.0", "sha256": workpacket.Digest([]byte(req)), "status": "locked", "generation": 1},
-			map[string]any{"id": "ARCHITECTURE-001", "kind": "design", "path": designPath, "version": "v1.0.0", "sha256": workpacket.Digest([]byte(design)), "status": "locked", "generation": 1},
+			map[string]any{"id": "REQ-001", "kind": "req", "path": reqPath, "version": "v1.0.0", "status": "locked", "generation": 1},
+			map[string]any{"id": "ARCHITECTURE-001", "kind": "design", "path": designPath, "version": "v1.0.0", "status": "locked", "generation": 1},
 		},
 	}
 	inputs, err := runtimepkg.ResolveContractInputs(root, state, fileview.Disk{Root: root})
@@ -326,13 +319,13 @@ func newContractPacketSubjectFixture(t *testing.T, withModule bool, acceptedMode
 		},
 	}
 	artifacts := []workpacket.Reference{
-		{Path: indexPath, Version: "v1.0.0", SHA256: workpacket.Digest(indexBytes)},
-		{Path: contractPath, Version: "v1.0.0", SHA256: workpacket.Digest(contractBytes)},
+		{Path: indexPath, Version: "v1.0.0"},
+		{Path: contractPath, Version: "v1.0.0"},
 	}
 	if len(acceptedModels) > 0 && acceptedModels[0] {
 		for path, data := range map[string]string{"docs/architecture/data-model/order.schema.json": `{"type":"object"}`, "docs/architecture/data-model/order-example.json": `{"id":"accepted-example"}`} {
 			writeContractPacketSubjectFile(t, root, path, data)
-			artifacts = append(artifacts, workpacket.Reference{Path: path, SHA256: workpacket.Digest([]byte(data))})
+			artifacts = append(artifacts, workpacket.Reference{Path: path})
 		}
 	}
 
@@ -347,37 +340,7 @@ func newContractPacketSubjectFixture(t *testing.T, withModule bool, acceptedMode
 	}
 	evidencePath := ".claude/evidence/planning-contract.json"
 	writeContractPacketSubjectFile(t, root, evidencePath, string(envelopeBytes))
-	answerDigest, err := workpacket.ContractAnswerDigest(answer)
-	if err != nil {
-		t.Fatal(err)
-	}
-	key := workpacket.Digest([]byte("submission:" + packet.ID))
-	submission := runtimepkg.SubmissionRecord{
-		Key: key, PacketID: packet.ID, Owner: "Main", ContentHash: answerDigest, EvidenceID: evidenceID,
-		FollowupID: workpacket.Digest([]byte(key + ":after-domain")), ControlStatus: "pending",
-		OriginState: "planning", OriginPhase: "contracts", OriginEntry: packet.Binding.StageEntry,
-	}
-	packetRow := jsonObject(t, packet)
-	submissionRow := jsonObject(t, submission)
-	evidenceRow := map[string]any{
-		"id": evidenceID, "kind": "planning_contract", "path": evidencePath, "sha256": workpacket.Digest(envelopeBytes),
-		"status": "valid", "baseline_generation": 1, "responsibility_id": "Orchestrator",
-		"produced_by": []any{"Main"}, "invalidated_by": nil,
-	}
-	state["entities"] = map[string]any{
-		"work_packets": []any{packetRow}, "submissions": []any{submissionRow},
-	}
-	state["evidence"] = []any{evidenceRow}
-	if err := os.MkdirAll(filepath.Join(root, ".claude"), 0700); err != nil {
-		t.Fatal(err)
-	}
-	stateBytes, err := json.Marshal(state)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, ".claude", "loop-state.json"), stateBytes, 0600); err != nil {
-		t.Fatal(err)
-	}
+	state, submissionRow, evidenceRow := recordOriginalContractForGate(t, root, state, packet, answer, evidenceID, evidencePath)
 
 	return &contractPacketSubjectFixture{
 		root:   root,
@@ -453,7 +416,7 @@ func (v readOnlyContractSubjectView) ReadFile(path string) ([]byte, error) {
 }
 
 func TestVerifiedContractPacketFactsReportsMissingReceiptAndCurrentREQ(t *testing.T) {
-	for _, mode := range []string{"missing receipt", "registered hash mismatch", "different current REQ"} {
+	for _, mode := range []string{"missing receipt", "different current REQ"} {
 		t.Run(mode, func(t *testing.T) {
 			fixture := newContractPacketSubjectFixture(t, false)
 			switch mode {
@@ -461,8 +424,6 @@ func TestVerifiedContractPacketFactsReportsMissingReceiptAndCurrentREQ(t *testin
 				if err := os.Remove(filepath.Join(fixture.root, fixture.evidencePath)); err != nil {
 					t.Fatal(err)
 				}
-			case "registered hash mismatch":
-				fixture.evidenceRow["sha256"] = workpacket.Digest([]byte("other receipt"))
 			case "different current REQ":
 				fixture.input.Snapshot.State["bound_req"].(map[string]any)["version"] = "v2.0.0"
 			}
@@ -473,7 +434,7 @@ func TestVerifiedContractPacketFactsReportsMissingReceiptAndCurrentREQ(t *testin
 	}
 }
 
-func TestVerifiedContractPacketFactsReportsActualGitRefMovement(t *testing.T) {
+func TestVerifiedContractPacketFactsSurviveLaterGitRefMovement(t *testing.T) {
 	fixture := newContractPacketSubjectFixture(t, false)
 	git := func(args ...string) {
 		t.Helper()
@@ -495,7 +456,133 @@ func TestVerifiedContractPacketFactsReportsActualGitRefMovement(t *testing.T) {
 	writeContractPacketSubjectFile(t, fixture.root, "docs/changed.md", "# Actual later committed work\n")
 	git("add", "docs/changed.md")
 	git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "Later committed professional work")
-	if _, accepted, err := verifiedContractPacketFacts(fixture.input); !accepted || err == nil || !strings.Contains(err.Error(), "file source moved: refs/heads/accepted") {
-		t.Fatalf("actual ref movement lost its original feedback: %v %v", accepted, err)
+	if _, accepted, err := verifiedContractPacketFacts(fixture.input); !accepted || err != nil {
+		t.Fatalf("later ref movement erased the original accepted responsibility: %v %v", accepted, err)
+	}
+}
+
+// recordOriginalContractForGate obtains the durable reception and its followup
+// from the original Runtime Writer, using the actual issued answer and checker.
+func recordOriginalContractForGate(t *testing.T, root string, source map[string]any, packet workpacket.ContractPacket, answer workpacket.ContractAnswer, evidenceID, evidencePath string) (map[string]any, map[string]any, map[string]any) {
+	t.Helper()
+	data, err := schema.ReadAsset("loop-state.example.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var state map[string]any
+	if err := json.Unmarshal(data, &state); err != nil {
+		t.Fatal(err)
+	}
+	state["schema_version"] = "1.2.0"
+	state["runtime_id"] = packet.Binding.RuntimeID
+	state["revision"] = 0
+	state["lifecycle"] = map[string]any{"state": "planning", "phase": "contracts", "phase_revision": packet.Binding.StageEntry}
+	state["journal"] = map[string]any{"path": ".claude/loop-events.jsonl", "last_sequence": 0, "last_event_id": nil}
+	state["configuration"].(map[string]any)["optimization"] = map[string]any{"packet": true}
+	req := packet.Binding.Requirement
+	state["bound_req"] = map[string]any{"id": req.ID, "path": req.Path, "version": req.Version, "status": "locked", "approved_by": "user", "approved_at": "2026-06-18T00:00:00Z", "metadata": map[string]any{"ui_impact": "none"}, "workspace": map[string]any{"project_root": root, "dev_branch": "test-development", "release_upstream": "main"}}
+	state["documents"] = source["documents"]
+	entities := state["entities"].(map[string]any)
+	entities["work_packets"] = []any{jsonObject(t, packet)}
+	entities["submissions"] = []any{}
+	state["evidence"] = []any{}
+	definition, err := os.ReadFile(filepath.Join("..", "..", "docs", "control", "loop-definition.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeContractPacketSubjectFile(t, root, "docs/control/loop-definition.json", string(definition))
+	stateBytes, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(root, ".claude", "loop-state.json")
+	journalPath := filepath.Join(root, ".claude", "loop-events.jsonl")
+	if err := os.WriteFile(statePath, stateBytes, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(journalPath, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	draft := packet.Draft
+	draft.Answer = answer
+	answerJSON, err := json.Marshal(draft)
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths := append([]string{*answer.IndexPath}, answer.ContractPaths...)
+	files := fileview.Disk{Root: root}
+	result, err := runtimepkg.RecordEvidence(root, statePath, journalPath, runtimepkg.EvidenceRequest{
+		ExpectedRevision: 0, ID: evidenceID, Kind: "planning_contract", Path: evidencePath,
+		ProducedBy: []string{"Main"}, ResponsibilityID: "Orchestrator", Validator: semantic.RuntimeCandidateValidator{},
+		Submission: &runtimepkg.SubmissionRequest{PacketID: packet.ID, Owner: "Main", AnswerJSON: answerJSON, Files: files,
+			Authorize: func(root string, _ map[string]any) error {
+				checked, err := semantic.ContractsCheckBatch(root, files, req, paths)
+				if err != nil {
+					return err
+				}
+				if checked.Contracts == 0 || len(checked.Problems) != 0 {
+					return fmt.Errorf("original contracts check: %+v", checked)
+				}
+				return nil
+			}},
+	})
+	if err != nil {
+		t.Fatalf("record original contract through Writer: %v", err)
+	}
+	result, err = runtimepkg.NewStore(statePath, journalPath).Snapshot()
+	if err != nil {
+		t.Fatalf("read original committed Runtime: %v", err)
+	}
+	record, found, err := runtimepkg.FindSubmission(result.State, packet.ID)
+	if err != nil || !found {
+		t.Fatalf("Writer did not retain original reception: %t %v", found, err)
+	}
+	for _, raw := range result.State["evidence"].([]any) {
+		row, _ := raw.(map[string]any)
+		if row["id"] == record.EvidenceID {
+			return result.State, jsonObject(t, record), row
+		}
+	}
+	t.Fatal("Writer did not retain the associated evidence")
+	return nil, nil, nil
+}
+
+func TestAcceptedContractFactsIgnoreHistoricalMachineEnvelopeFields(t *testing.T) {
+	fixture := newContractPacketSubjectFixture(t, true)
+	values := []any{nil, "old", float64(7), []any{"old"}, map[string]any{"old": true}}
+	for index, value := range values {
+		t.Run(fmt.Sprintf("variant-%d", index), func(t *testing.T) {
+			var envelope map[string]any
+			if err := json.Unmarshal(fixture.envelopeBytes, &envelope); err != nil {
+				t.Fatal(err)
+			}
+			envelope["runtime_id"] = value
+			envelope["evidence_id"] = value
+			envelope["historical_extension"] = value
+			if subjects, ok := envelope["subject_refs"].([]any); ok && len(subjects) > 0 {
+				subjects[0].(map[string]any)["sha256"] = value
+			}
+			data, err := json.Marshal(envelope)
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(fixture.root, filepath.FromSlash(fixture.evidencePath))
+			if err := os.WriteFile(path, data, 0600); err != nil {
+				t.Fatal(err)
+			}
+			facts, accepted, err := verifiedContractPacketFacts(fixture.input)
+			if err != nil || !accepted || len(facts) == 0 {
+				t.Fatalf("actual accepted responsibility blocked by machine metadata: %v %v", accepted, err)
+			}
+			input := fixture.input
+			input.GateID, input.TransitionID = "GATE-PLANNING-CONTRACTS-COMPLETE", "PTR-PLAN-02"
+			result, err := newContractPacketGateEvaluator(t).Evaluate(context.Background(), input)
+			if err != nil || result.Status != StatusSatisfied {
+				t.Fatalf("original S3 followup was blocked by machine metadata: %+v %v", result, err)
+			}
+			if after, err := os.ReadFile(path); err != nil || string(after) != string(data) {
+				t.Fatalf("original professional record changed: %v", err)
+			}
+		})
 	}
 }

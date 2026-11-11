@@ -2,7 +2,6 @@ package assignment
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -86,6 +85,13 @@ func CompleteTaskWithReceipt(
 		if len(data) > canonicalResultMessageLimit {
 			return loopruntime.Snapshot{}, ResultAcceptanceReceipt{}, fmt.Errorf("completion message exceeds the 1 MiB limit")
 		}
+		// G18 §3.2: the canonical S6 consumer does not assert a Runtime write
+		// count. The caller's expected revision is dropped here (-1 is the
+		// omission marker), so a legitimate professional completion is not
+		// refused because the Runtime moved for an unrelated reason. The
+		// received row, the journal-level dedup and the Assignment Record's own
+		// revision remain the protection of this acceptance.
+		request.ExpectedRevision = -1
 		return completeCanonicalTaskWithReceipt(root, statePath, journalPath, request, data)
 	}
 	snapshot, err := completeTaskLegacy(root, statePath, journalPath, request, data)
@@ -145,8 +151,7 @@ func completeTaskLegacy(
 	if message.RuntimeID != "" && message.RuntimeID != runtimeID {
 		return loopruntime.Snapshot{}, fmt.Errorf("completion message runtime does not match current runtime")
 	}
-	commitRevision, err := commitRevision(request.ExpectedRevision, current)
-	if err != nil {
+	if _, err := commitRevision(request.ExpectedRevision, current); err != nil {
 		return loopruntime.Snapshot{}, err
 	}
 	baseline, _ := current["baseline"].(map[string]any)
@@ -190,8 +195,8 @@ func completeTaskLegacy(
 	if err != nil {
 		return loopruntime.Snapshot{}, fmt.Errorf("encode completion envelope: %w", err)
 	}
-	// The persisted bytes (trailing newline included) are what the
-	// evidence index fingerprints — hash exactly what lands on disk.
+	// The original report is retained at its actual evidence path; registering
+	// the responsibility does not require authenticating its bytes.
 	envelopeBytes := append(envelopeData, '\n')
 	envelopeAbs := filepath.Join(root, filepath.FromSlash(envelopeRel))
 	if err := os.MkdirAll(filepath.Dir(envelopeAbs), 0o755); err != nil {
@@ -200,7 +205,6 @@ func completeTaskLegacy(
 	if err := os.WriteFile(envelopeAbs, envelopeBytes, 0o644); err != nil {
 		return loopruntime.Snapshot{}, fmt.Errorf("write completion envelope: %w", err)
 	}
-	envelopeSHA := sha256Of(envelopeBytes)
 
 	occurredAt := request.OccurredAt
 	if occurredAt.IsZero() {
@@ -217,11 +221,15 @@ func completeTaskLegacy(
 
 	store := loopruntime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{}).WithContext(request.Context)
 	mutation := loopruntime.Mutation{
-		EventID:            fmt.Sprintf("evt-complete-%s-%s-r%d", request.AgentID, message.TaskID, commitRevision+1),
+		// The identity of a Builder Result is the reporting Agent and the
+		// domain delivery it registers. The delivery id is the domain's own
+		// "which submission" number derived from the accepted delivery history
+		// (G18 §2); the Runtime write counter is an audit coordinate only.
+		EventID:            fmt.Sprintf("evt-complete-%s-%s", request.AgentID, evidenceID),
 		TransitionID:       "BUILDER-RESULT",
 		Event:              "completion_reported",
 		Actor:              "orchestrator",
-		IdempotencyKey:     fmt.Sprintf("runtime:complete:%s:%s:%d", request.AgentID, message.TaskID, commitRevision),
+		IdempotencyKey:     fmt.Sprintf("runtime:complete:%s:%s", request.AgentID, evidenceID),
 		RuntimeID:          runtimeID,
 		BaselineGeneration: generation,
 		From:               cursor,
@@ -230,6 +238,18 @@ func completeTaskLegacy(
 		Message: fmt.Sprintf("Registered the canonical Builder Result for %s (completion evidence %s)",
 			message.TaskID, evidenceID),
 		OccurredAt: occurredAt,
+		// G18 §1/§3.2: the identity of a Builder Result names the reporting
+		// Agent and the delivery it registers, so the same delivery presented
+		// twice produces the same event id. The journal's global event-id
+		// uniqueness check runs before the Apply closure, so without this
+		// judgment the caller would receive a storage message instead of the
+		// domain's own outcome. The store calls the Precheck under its lock,
+		// after the revision CAS, so a repeated delivery keeps the domain
+		// outcome and the refused delivery writes neither Runtime state nor a
+		// journal fact.
+		Precheck: func(state map[string]any) error {
+			return completionDeliveryRefusal(state, request, message, agentTransitions, taskTransitions, evidenceID)
+		},
 		Apply: func(state map[string]any) error {
 			if err := applyCompletionAgent(state, request, message, agentTransitions, envelopeRel, occurredAt); err != nil {
 				return err
@@ -237,13 +257,149 @@ func completeTaskLegacy(
 			if err := applyCompletionTask(state, message, taskTransitions, envelopeRel, occurredAt); err != nil {
 				return err
 			}
-			if err := appendCompletionEvidence(state, evidenceID, envelopeRel, envelopeSHA, request.AgentID, generation, message.ChangedPaths, occurredAt); err != nil {
+			if err := appendCompletionEvidence(state, evidenceID, envelopeRel, request.AgentID, generation, message.ChangedPaths, occurredAt); err != nil {
 				return err
 			}
 			return dispatch.ReconcilePressure(root, state)
 		},
 	}
 	return updateRuntime(store, request.ExpectedRevision, mutation)
+}
+
+// completionDeliveryRefusal is the read-only mirror of the Apply closure's
+// completion judgments. The Apply closure keeps the authority under
+// concurrency; this mirror is what the mutation's Precheck runs, so a repeated
+// delivery keeps the domain's own outcome instead of the journal's global
+// event-id collision.
+//
+// The judgments run in the Apply closure's order, so the first refusal is the
+// same one the Apply closure produces. The mirror writes nothing: it reads
+// the Runtime state and leaves both the Runtime and the journal untouched.
+func completionDeliveryRefusal(
+	state map[string]any,
+	request CompletionRequest,
+	message completionMessage,
+	agentTransitions agentEntityTransitionsResolver,
+	taskTransitions taskEntityTransitionsResolver,
+	evidenceID string,
+) error {
+	if err := completionAgentRefusal(state, request, message, agentTransitions); err != nil {
+		return err
+	}
+	if err := completionTaskRefusal(state, message, taskTransitions); err != nil {
+		return err
+	}
+	return completionEvidenceRefusal(state, evidenceID)
+}
+
+// completionAgentRefusal mirrors the Agent judgment the Apply closure runs
+// first: the reporting Agent must exist, must own the TASK and must be able
+// to record the Builder Result. A repeated Result on an Agent that already
+// reported stays acceptable — the Agent keeps reporting and the latest Result
+// ref replaces the previous one — while a completed Assignment refuses every
+// further Result until an explicit revision names the next attempt.
+func completionAgentRefusal(
+	state map[string]any,
+	request CompletionRequest,
+	message completionMessage,
+	agentTransitions agentEntityTransitionsResolver,
+) error {
+	entities, ok := state["entities"].(map[string]any)
+	if !ok {
+		return fmt.Errorf("runtime entities must be an object")
+	}
+	agents, _ := entities["agents"].([]any)
+	for _, raw := range agents {
+		agent, _ := raw.(map[string]any)
+		if agent["id"] != request.AgentID {
+			continue
+		}
+		taskIDs, _ := agent["task_ids"].([]any)
+		if !stringArrayContains(taskIDs, message.TaskID) {
+			return fmt.Errorf("completion message TASK is outside assignment")
+		}
+		version := fmt.Sprint(state["schema_version"])
+		projection, err := workstate.AgentProjection(agent, version)
+		if err != nil {
+			return fmt.Errorf("resolve completion Agent activity: %w", err)
+		}
+		currentState := projection.Activity
+		if currentState == "reported" || currentState == "done" {
+			if workstate.Unified(version) && currentState == "done" {
+				return fmt.Errorf("completed Assignment requires an explicit revision before accepting another Result")
+			}
+			return nil
+		}
+		if _, found := agentTransitions.resolve(currentState, "completion_reported"); !found {
+			return fmt.Errorf(
+				"completion requires working state (canonical Agent states: spawned, reading, understanding_submitted, understanding_approved, activated, working, reported, done, blocked, stopped), agent is %s",
+				currentState)
+		}
+		return nil
+	}
+	return fmt.Errorf("Agent %s is not registered", request.AgentID)
+}
+
+// completionTaskRefusal mirrors the TASK judgment the Apply closure runs
+// after the Agent judgment. A TASK that already reached review or done keeps
+// its lifecycle state and only advances its canonical Result reference.
+func completionTaskRefusal(
+	state map[string]any,
+	message completionMessage,
+	taskTransitions taskEntityTransitionsResolver,
+) error {
+	entities, ok := state["entities"].(map[string]any)
+	if !ok {
+		return fmt.Errorf("runtime entities must be an object")
+	}
+	tasks, _ := entities["tasks"].([]any)
+	for _, raw := range tasks {
+		task, _ := raw.(map[string]any)
+		if task["id"] != message.TaskID {
+			continue
+		}
+		version := fmt.Sprint(state["schema_version"])
+		projection, err := workstate.TaskProjection(task, version)
+		if err != nil {
+			return fmt.Errorf("resolve completion TASK activity: %w", err)
+		}
+		currentState := projection.Activity
+		switch currentState {
+		case "review", "done":
+			return nil
+		}
+		if _, found := taskTransitions.resolve(currentState, "builder_reported"); !found {
+			return fmt.Errorf(
+				"TASK %s cannot accept a Builder Result from state %s (canonical Task states: candidate, reviewed, locked, in_progress, review, blocked, done, cancelled)",
+				message.TaskID, currentState)
+		}
+		return nil
+	}
+	// No task row: agent-centric completion still stands; the batch gate
+	// evaluates the registered document batch, not entity rows.
+	return nil
+}
+
+// completionEvidenceRefusal mirrors the evidence judgment the Apply closure
+// runs last: one delivery identity is registered once. A delivery that names
+// an identity the Runtime already holds is a conflict rather than a new
+// submission, and the domain refuses it with its own message.
+//
+// A re-delivery of the same completion is not that conflict: the evidence id
+// escalates per accepted submission, so a re-delivery names a new delivery
+// identity and stays acceptable.
+func completionEvidenceRefusal(state map[string]any, evidenceID string) error {
+	items, ok := state["evidence"].([]any)
+	if !ok {
+		return fmt.Errorf("runtime evidence must be an array")
+	}
+	for _, raw := range items {
+		item, _ := raw.(map[string]any)
+		if item != nil && item["id"] == evidenceID {
+			return fmt.Errorf("evidence %s is already registered", evidenceID)
+		}
+	}
+	return nil
 }
 
 // applyCompletionAgent advances the agent row exactly like the
@@ -379,7 +535,7 @@ func applyCompletionTask(
 // index with the same field shape RecordEvidence produces.
 func appendCompletionEvidence(
 	state map[string]any,
-	evidenceID, envelopeRel, envelopeSHA, agentID string,
+	evidenceID, envelopeRel, agentID string,
 	generation int,
 	changedPaths []string,
 	occurredAt time.Time,
@@ -408,10 +564,8 @@ func appendCompletionEvidence(
 		"id":                  evidenceID,
 		"kind":                "completion_report",
 		"path":                envelopeRel,
-		"sha256":              envelopeSHA,
 		"status":              "valid",
 		"baseline_generation": generation,
-		"review_round":        nil,
 		"produced_by":         []any{agentID},
 		"invalidated_by":      nil,
 		"invalidation_rule":   nil,
@@ -425,7 +579,7 @@ func appendCompletionEvidence(
 }
 
 // taskSubjectRefs binds the completion envelope to the registered TASK
-// document (path/version/sha256) when the batch registration carries one.
+// document (path/version) when the batch registration carries one.
 func taskSubjectRefs(state map[string]any, generation int, taskID string) []any {
 	documents, _ := state["documents"].([]any)
 	for _, raw := range documents {
@@ -439,15 +593,9 @@ func taskSubjectRefs(state map[string]any, generation int, taskID string) []any 
 		return []any{map[string]any{
 			"path":    document["path"],
 			"version": document["version"],
-			"sha256":  document["sha256"],
 		}}
 	}
 	return []any{}
-}
-
-func sha256Of(data []byte) string {
-	sum := sha256.Sum256(data)
-	return fmt.Sprintf("%x", sum[:])
 }
 
 // completionEvidenceID returns the canonical id for a TASK's Builder

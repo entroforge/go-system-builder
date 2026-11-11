@@ -2,9 +2,9 @@ package cli
 
 import (
 	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -17,6 +17,7 @@ import (
 
 	"github.com/entroforge/go-system-builder/internal/investigation"
 	"github.com/entroforge/go-system-builder/internal/policy"
+	loopreview "github.com/entroforge/go-system-builder/internal/review"
 	"github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/workpacket"
 )
@@ -41,19 +42,10 @@ type investigationLeadQuestion struct {
 
 func stageInvestigationLeadQuestionnaireContext(root string, request policy.Input, snapshot runtime.Snapshot) (context string) {
 	// Contract review and an approved S9 handoff no longer ask Main to
-	// register an investigation route. Keep that budget with its own work.
+	// register an investigation route.
 	if context := stageInvestigationLeadContractContext(root, request, snapshot); context != "" {
 		return context
 	}
-	defer func() {
-		if context == "" || !mainQuestionnaireViewer(request) || strings.Contains(context, "S8 investigation reentry budget:") {
-			return
-		}
-		_, document, _, err := investigationLeadSource(root, snapshot.State)
-		if err == nil && document != nil {
-			context += investigationLeadBudgetContext(root, snapshot.State, document)
-		}
-	}()
 
 	if context := stageInvestigationLeadDispositionContext(root, request, snapshot); context != "" {
 		return context + " Optional registered evidence examples (the route keeps its original reference semantics): " + investigationLeadEvidenceIndexContext(root, snapshot.State)
@@ -63,7 +55,7 @@ func stageInvestigationLeadQuestionnaireContext(root string, request policy.Inpu
 	}
 	paths := investigationLeadQuestionnairePaths(root, snapshot.State)
 	if len(paths) == 0 {
-		return "S8 Main questionnaire cannot resolve its current recorded source path (sealed S7 Batch or explicit human defect decision). Main must resolve this system material gap; do not invent a Batch or guess an answer path."
+		return "S8 Main questionnaire cannot resolve its original accepted Findings or actual human defect decision. Main must resolve this system material gap; do not invent a Batch or guess an answer path."
 	}
 	batch, document, batchRef, err := investigationLeadSource(root, snapshot.State)
 	if err != nil {
@@ -72,7 +64,7 @@ func stageInvestigationLeadQuestionnaireContext(root string, request policy.Inpu
 	path := paths[0]
 	human := investigationLeadHumanSource(snapshot.State)
 	var draft any = investigationLeadIntakeAnswer{}
-	questions := "Read the sealed Batch and immutable Findings, including encounter boundaries and capture gaps. Fill grouping_rationale: why this exact Finding set is a provisional causal investigation group, then save this file. Case identity, source set and versions are supplied by the original intake consumer."
+	questions := "Read the accepted Findings, including encounter boundaries and capture gaps. Fill grouping_rationale: why these accepted Findings are a provisional causal investigation group, then save this file. Case identity, source set and versions are supplied by the original intake consumer."
 	if human != nil {
 		questions = "Read the actual human defect decision and its reason. Fill grouping_rationale with your professional investigation framing of that reported problem, then save this intake. Do not invent Findings, a sealed Batch or a root-cause conclusion; the original intake records a provisional Case."
 	}
@@ -87,12 +79,12 @@ func stageInvestigationLeadQuestionnaireContext(root string, request policy.Inpu
 			rows = append(rows, investigationLeadQuestion{ExpectedOutcomes: map[string]string{"support": "", "refute": ""}, SourceFindingIDs: []string{}, EvidenceRefs: []string{}})
 		}
 		draft = rows
-		questions = "Each array row is one falsifiable causal question: fill statement, invariant, discriminator, expected_outcomes as an object with support/refute strings, source_finding_ids as Finding IDs, and evidence_refs as the selected Findings’ frozen evidence_refs reused unchanged, registered evidence IDs, already captured S8 path references, or real execution anchors described below. Both reference fields are string arrays. The issued Investigator question supplies the general product/spec/test/config read-only boundary. Put this discriminator’s specific experiment scope, stop conditions and inconclusive conditions in discriminator; put concrete supporting/refuting observations in expected_outcomes.support/refute. Do not invent scope or stop_condition fields. Consider credible competing mechanisms; do not manufacture an alternative merely to fill rows. Select the professional division of work; agent_id is optional when no owner has been selected. Existing hypothesis_id values are supplied from the Case; new rows need no ID, and rows may be reordered. Save this file to register the questions and their original Investigator dispatches. Main must then use the platform to actually start/resume the named investigators; registration does not prove a platform launch."
+		questions = "Each array row is one falsifiable causal question: fill statement, invariant, discriminator, expected_outcomes as an object with support/refute strings, source_finding_ids as Finding IDs, and evidence_refs as actual existing evidence IDs, original Finding references, or real readable file paths; no evidence registration, source capture or hash is required. A new question may select an already accepted late Finding by its actual ID to include it in this Case; leave it for later if it does not belong to this investigation. Both reference fields are string arrays. The issued Investigator question supplies the general product/spec/test/config read-only boundary. Put this discriminator’s specific experiment scope, stop conditions and inconclusive conditions in discriminator; put concrete supporting/refuting observations in expected_outcomes.support/refute. Do not invent scope or stop_condition fields. Consider credible competing mechanisms; do not manufacture an alternative merely to fill rows. Select the professional division of work; agent_id is optional when no owner has been selected. Existing hypothesis_id values are supplied from the Case; new rows need no ID, and rows may be reordered. Save this file to register the questions and their original Investigator dispatches. Main must then use the platform to actually start/resume the named investigators; registration does not prove a platform launch."
 	}
 	if human != nil && document != nil {
-		questions = "Fill each actual causal question using statement, invariant, discriminator and expected_outcomes (support/refute strings). source_finding_ids may stay [] when no actual Findings exist; evidence_refs may use the actual human decision ID/path shown here. Other references retain their existing semantics. The issued question supplies the general product/spec/test/config read-only boundary. Put specific experiment scope, stop conditions and inconclusive conditions in discriminator, with support/refute observations in expected_outcomes; do not invent scope or stop_condition fields. No invented competing hypothesis is required. Save, then Main actually dispatches the chosen investigators."
+		questions = "Fill each actual causal question using statement, invariant, discriminator and expected_outcomes (support/refute strings). source_finding_ids may stay [] when no actual Findings exist; a new question may select an already accepted late Finding by its actual ID to include it in this Case, or leave it for later. evidence_refs may use the actual human decision ID/path shown here. Other references retain their existing semantics. The issued question supplies the general product/spec/test/config read-only boundary. Put specific experiment scope, stop conditions and inconclusive conditions in discriminator, with support/refute observations in expected_outcomes; do not invent scope or stop_condition fields. No invented competing hypothesis is required. Save, then Main actually dispatches the chosen investigators."
 	}
-	if repairLeadPreparationEvent(request.Event) {
+	if investigationLeadPreparationEvent(request.Event) {
 		var err error
 		if rows, questions := draft.([]investigationLeadQuestion); questions {
 			err = prepareInvestigationLeadQuestions(path, rows)
@@ -103,14 +95,14 @@ func stageInvestigationLeadQuestionnaireContext(root string, request policy.Inpu
 			return fmt.Sprintf("S8 Main questionnaire could not be prepared at %s: %v", path, err)
 		}
 	}
-	if !repairLeadPreparationEvent(request.Event) && questionnaireMissing(path) {
+	if !investigationLeadPreparationEvent(request.Event) && questionnaireMissing(path) {
 		return "S8 Main questionnaire: " + path + ". Not prepared yet; the next Main SessionStart or PreToolUse will create the draft. This event is read-only. " + questions
 	}
 	var sources strings.Builder
 	if human != nil {
 		fmt.Fprintf(&sources, "Human defect decision %s: %s. Actual reason: %s. ", stringValue(human["id"]), resolveRootPath(root, batchRef), stringValue(batch["reason"]))
 	} else {
-		fmt.Fprintf(&sources, "Batch: %s. ", resolveRootPath(root, batchRef))
+		fmt.Fprintf(&sources, "Accepted Finding source: %s. ", resolveRootPath(root, batchRef))
 	}
 	ids := stringSliceAny(batch["finding_ids"])
 	for _, row := range objectSliceAny(mapFieldCLI(snapshot.State, "entities")["findings"]) {
@@ -122,12 +114,19 @@ func stageInvestigationLeadQuestionnaireContext(root string, request policy.Inpu
 	}
 	if document != nil {
 		fmt.Fprintf(&sources, "Current Case: %s. ", resolveRootPath(root, stringValue(investigationPointer(snapshot.State)["path"])))
+		caseIDs := stringSliceAny(document["source_finding_ids"])
+		for _, row := range loopreview.RoundFindings(snapshot.State) {
+			id := stringValue(row["finding_id"])
+			if id != "" && !slices.Contains(caseIDs, id) {
+				fmt.Fprintf(&sources, "Additional accepted Finding %s: %s. ", id, resolveRootPath(root, stringValue(row["path"])))
+			}
+		}
 		if human == nil {
 			sources.WriteString(investigationLeadEvidenceReferenceContext(root, snapshot.State))
 		}
 	}
 	routeHint := ""
-	if routePaths := investigationLeadDispositionPaths(root, snapshot.State); len(routePaths) != 0 && !investigationLeadReentryExhausted(snapshot.State, document) {
+	if routePaths := investigationLeadDispositionPaths(root, snapshot.State); len(routePaths) != 0 {
 		routeHint = " Current professional route entry: " + routePaths[0] + ". Main may choose an earlier specification/REQ/duplicate/investigate_more disposition there; the original route consumer checks its actual conditions."
 	}
 	return "S8 Main questionnaire: " + path + ". " + sources.String() + questions + routeHint
@@ -137,10 +136,10 @@ func stageInvestigationLeadQuestionnaireContext(root string, request policy.Inpu
 // no attestation, registration or new qualification check; the original save
 // consumer still checks the referenced evidence and physical source bytes.
 func investigationLeadEvidenceReferenceContext(root string, state map[string]any) string {
-	return investigationLeadFindingReferencesContext(root, state) + "For Hypothesis.evidence_refs only: values may reuse the selected Findings’ frozen evidence_refs unchanged, or registered evidence IDs or real existing execution anchors (test://<actual-run-or-check> only for an execution that actually exists). Unbound Finding/evidence file paths are reading sources; a bare path is not a registered or captured Hypothesis evidence reference. Already captured S8 path:<shared-evidence-path>#sha256=<fixed-digest> references from accepted Case results may also be reused unchanged; do not copy hashes from elsewhere or register an alias. Do not invent an execution anchor to fill a question. The original Hypothesis consumer verifies applicability and source SHA on save. " + investigationLeadEvidenceIndexContext(root, state)
+	return investigationLeadFindingReferencesContext(root, state) + "Use actual Finding, decision and file references to explain the question. Reuse existing reference forms unchanged; no alias registration, capture or hash is required. " + investigationLeadEvidenceIndexContext(root, state)
 }
 
-// Read the immutable Finding selected by the original Batch; never derive an
+// Read the accepted original Finding; never derive an
 // evidence alias or digest. Save remains responsible for source applicability.
 func investigationLeadFindingReferencesContext(root string, state map[string]any) string {
 	batch, _, _, err := investigationLeadSource(root, state)
@@ -154,7 +153,7 @@ func investigationLeadFindingReferencesContext(root string, state map[string]any
 		if !slices.Contains(selected, id) {
 			continue
 		}
-		finding, err := investigationLeadReadObject(root, stringValue(row["path"]), stringValue(row["sha256"]))
+		finding, err := investigationLeadReadObject(root, stringValue(row["path"]))
 		if err != nil {
 			fmt.Fprintf(&out, "Finding %s frozen source needs Main/system recovery: %v. ", id, err)
 			continue
@@ -176,24 +175,23 @@ func investigationLeadContinueQuestionsContext(root string, state map[string]any
 func investigationLeadEvidenceIndexContext(root string, state map[string]any) string {
 	var out strings.Builder
 	generation := tolerantInt(mapFieldCLI(state, "baseline")["generation"])
-	round := tolerantInt(mapFieldCLI(state, "review")["round"])
 	var ids []string
 	for _, row := range objectSliceAny(state["evidence"]) {
 		id, path := stringValue(row["id"]), stringValue(row["path"])
-		if id == "" || path == "" || strings.TrimSpace(stringValue(row["status"])) != "valid" || tolerantInt(row["baseline_generation"]) != generation || (round > 0 && tolerantInt(row["review_round"]) != round) {
+		if id == "" || path == "" || strings.TrimSpace(stringValue(row["status"])) != "valid" || tolerantInt(row["baseline_generation"]) != generation {
 			continue
 		}
 		if invalidated := row["invalidated_by"]; invalidated != nil && invalidated != "" {
 			continue
 		}
 		if len(ids) == 0 {
-			fmt.Fprintf(&out, "Recorded valid evidence for current generation %d / round %d (existing Runtime metadata for source lookup): ", generation, round)
+			fmt.Fprintf(&out, "Recorded valid evidence for current generation %d (existing Runtime metadata for source lookup): ", generation)
 		}
 		fmt.Fprintf(&out, "%s -> %s; ", id, resolveRootPath(root, path))
 		ids = append(ids, id)
 	}
 	if len(ids) == 0 {
-		out.WriteString("No valid current-generation/current-round evidence IDs are recorded. This does not invalidate the supplied frozen sources or accepted S8 file evidence; use the reference forms described for the current field.")
+		out.WriteString("No valid current-generation evidence IDs are recorded. This does not invalidate the supplied frozen sources or accepted S8 file evidence; use the reference forms described for the current field.")
 	} else {
 		example, _ := json.Marshal([]string{ids[0]})
 		fmt.Fprintf(&out, "Available registered-ID array example: evidence_refs=%s; read the corresponding path when assessing that evidence.", example)
@@ -248,38 +246,41 @@ func investigationLeadCurrent(state map[string]any) bool {
 
 // The explicit TR-027 source is an actual human decision, never a sealed Batch.
 func investigationLeadHumanSource(state map[string]any) map[string]any {
-	if mapFieldCLI(state, "review")["observation_batch"] != nil {
+	pointer := investigationPointer(state)
+	if pointer == nil && stringValue(mapFieldCLI(state, "last_transition")["transition_id"]) != "TR-027" {
+		return nil
+	}
+	if pointer != nil && len(stringSliceAny(pointer["source_finding_ids"])) > 0 {
 		return nil
 	}
 	rows := stateEvidence(state)
 	for i := len(rows) - 1; i >= 0; i-- {
 		row, _ := rows[i].(map[string]any)
-		if stringValue(row["kind"]) != "human_decision" || integerValue(row["baseline_generation"]) != integerValue(nestedStateValue(state, "baseline", "generation")) || integerValue(row["review_round"]) != integerValue(nestedStateValue(state, "review", "round")) {
-			continue
-		}
-		if stringValue(row["consumed_by"]) == "TR-027" {
+		if stringValue(row["kind"]) == "human_decision" && integerValue(row["baseline_generation"]) == integerValue(nestedStateValue(state, "baseline", "generation")) && stringValue(row["consumed_by"]) == "TR-027" {
 			return row
 		}
-		return nil
 	}
 	return nil
 }
 
-// Select only existing authority references. The original domain consumers
-// perform their full baseline, exact-set, evidence and CAS validation on save.
+// Source references point to the actual accepted Finding or human report.
 func investigationLeadBatchReference(state map[string]any) (string, string) {
-	review := mapFieldCLI(state, "review")
-	if batch, _ := review["observation_batch"].(map[string]any); batch != nil {
-		return stringValue(batch["path"]), stringValue(batch["sha256"])
-	}
 	if human := investigationLeadHumanSource(state); human != nil {
-		return stringValue(human["path"]), stringValue(human["sha256"])
+		return stringValue(human["path"]), ""
 	}
-	rows := objectSliceAny(state["evidence"])
-	for i := len(rows) - 1; i >= 0; i-- {
-		if stringValue(rows[i]["kind"]) == "observation_batch" && stringValue(rows[i]["status"]) == "valid" {
-			return stringValue(rows[i]["path"]), stringValue(rows[i]["sha256"])
+	findings := loopreview.RoundFindings(state)
+	if pointer := investigationPointer(state); pointer != nil {
+		original := stringSliceAny(pointer["source_finding_ids"])
+		for _, id := range original {
+			for _, finding := range findings {
+				if finding["finding_id"] == id {
+					return stringValue(finding["path"]), ""
+				}
+			}
 		}
+	}
+	if len(findings) > 0 {
+		return stringValue(findings[0]["path"]), ""
 	}
 	return "", ""
 }
@@ -295,18 +296,17 @@ func investigationLeadQuestionnairePathsForQuestions(root string, state map[stri
 	if !investigationLeadCurrent(state) {
 		return nil
 	}
-	ref, sha := investigationLeadBatchReference(state)
+	ref, _ := investigationLeadBatchReference(state)
 	id := stringValue(state["runtime_id"])
 	generation := integerValue(mapFieldCLI(state, "baseline")["generation"])
-	round := integerValue(mapFieldCLI(state, "review")["round"])
-	if ref == "" || len(sha) != 64 || id == "" || generation < 1 || round < 1 {
+	if ref == "" || id == "" || generation < 1 {
 		return nil
 	}
 	name := "intake.json"
 	if investigationPointer(state) != nil {
 		name = "hypotheses.json"
 	}
-	path := filepath.Join(root, ".claude", "submissions", "s8", dispatchSlug(id), fmt.Sprintf("g%d", generation), fmt.Sprintf("r%d", round), sha, name)
+	path := filepath.Join(s8OriginalSourceDir(root, id, generation, ref), name)
 	absolute, err := filepath.Abs(path)
 	if err != nil {
 		return nil
@@ -314,13 +314,10 @@ func investigationLeadQuestionnairePathsForQuestions(root string, state map[stri
 	return []string{absolute}
 }
 
-func investigationLeadReadObject(root, ref, sha string) (map[string]any, error) {
+func investigationLeadReadObject(root, ref string) (map[string]any, error) {
 	data, err := workpacket.ReadFile(root, ref, 20<<20)
 	if err != nil {
 		return nil, err
-	}
-	if workpacket.Digest(data) != sha {
-		return nil, fmt.Errorf("original source %s SHA differs from its Runtime reference", ref)
 	}
 	if err := workpacket.ValidateUniqueJSON(data); err != nil {
 		return nil, err
@@ -331,7 +328,7 @@ func investigationLeadReadObject(root, ref, sha string) (map[string]any, error) 
 }
 
 func investigationLeadSource(root string, state map[string]any) (map[string]any, map[string]any, string, error) {
-	ref, sha := investigationLeadBatchReference(state)
+	ref, _ := investigationLeadBatchReference(state)
 	if human := investigationLeadHumanSource(state); human != nil {
 		data, err := workpacket.ReadFile(root, ref, 20<<20)
 		if err != nil {
@@ -359,18 +356,28 @@ func investigationLeadSource(root string, state map[string]any) (map[string]any,
 		}
 		return decision, document, ref, nil
 	}
-	batch, err := investigationLeadReadObject(root, ref, sha)
-	if err != nil {
-		return nil, nil, ref, err
+	findings := loopreview.RoundFindings(state)
+	if len(findings) == 0 {
+		return nil, nil, ref, fmt.Errorf("no accepted Finding or human report is available")
 	}
+	ids := make([]string, 0, len(findings))
+	for _, finding := range findings {
+		ids = append(ids, stringValue(finding["finding_id"]))
+	}
+	source := map[string]any{"finding_ids": ids}
 	var document map[string]any
 	if pointer := investigationPointer(state); pointer != nil {
-		document, err = investigationLeadReadObject(root, stringValue(pointer["path"]), stringValue(pointer["sha256"]))
-		if err == nil && (document["case_id"] != pointer["case_id"] || document["observation_batch_id"] != batch["observation_batch_id"] || document["observation_batch_sha256"] != sha) {
-			err = fmt.Errorf("current Case and sealed Batch source differ")
+		var err error
+		document, err = investigationLeadReadObject(root, stringValue(pointer["path"]))
+		if err != nil {
+			return nil, nil, ref, err
 		}
+		if document["case_id"] != pointer["case_id"] {
+			return nil, nil, ref, fmt.Errorf("current Case path describes another investigation")
+		}
+		source["finding_ids"] = document["source_finding_ids"]
 	}
-	return batch, document, ref, err
+	return source, document, ref, nil
 }
 
 func runSavedInvestigationLeadQuestionnaire(root string, request policy.Input, stdout, stderr io.Writer) (bool, int) {
@@ -404,7 +411,7 @@ func runSavedInvestigationLeadQuestionnaire(root string, request policy.Input, s
 		return false, 0
 	}
 	feedback := func(message string) (bool, int) { return true, repairLeadFeedback(stdout, path, message) }
-	batch, document, _, err := investigationLeadSource(root, snapshot.State)
+	_, document, _, err := investigationLeadSource(root, snapshot.State)
 	if err != nil {
 		return feedback("S8 original source could not be read: " + err.Error())
 	}
@@ -424,7 +431,7 @@ func runSavedInvestigationLeadQuestionnaire(root string, request policy.Input, s
 			if investigationLeadHumanSource(snapshot.State) != nil {
 				return feedback("S8 grouping_rationale is incomplete: explain the provisional investigation of the actual human-reported problem, then save this same intake.")
 			}
-			return feedback("S8 grouping_rationale is incomplete: explain why the sealed Finding set is a provisional investigation group, then save.")
+			return feedback("S8 grouping_rationale is incomplete: explain why the actual Findings form a provisional investigation group, then save.")
 		}
 		if document != nil {
 			if stringValue(document["grouping_rationale"]) != strings.TrimSpace(answer.GroupingRationale) {
@@ -432,7 +439,7 @@ func runSavedInvestigationLeadQuestionnaire(root string, request policy.Input, s
 			}
 			return feedback("S8 grouping was already received in the original Case. Repeated save did not write Runtime. Next Main questionnaire: " + paths[0])
 		}
-		next, err := investigation.Ingest(root, statePath, journalPath, investigation.IngestRequest{ExpectedRevision: snapshot.Revision, GroupingRationale: answer.GroupingRationale, OccurredAt: time.Now().UTC()})
+		next, err := investigation.Ingest(root, statePath, journalPath, investigation.IngestRequest{ExpectedRevision: -1, GroupingRationale: answer.GroupingRationale, OccurredAt: time.Now().UTC()})
 		if err != nil {
 			return feedback("S8 original intake validation: " + err.Error())
 		}
@@ -462,15 +469,28 @@ func runSavedInvestigationLeadQuestionnaire(root string, request policy.Input, s
 			}
 		}
 		if q.HypothesisID == "" {
-			professional := *q
-			professional.AgentID = ""
-			encoded, _ := json.Marshal(professional)
-			sourceID := stringValue(batch["observation_batch_id"])
-			if human := investigationLeadHumanSource(snapshot.State); human != nil {
-				sourceID = stringValue(human["id"])
+			// Allocate within the actual Case; previously issued IDs remain untouched.
+			caseID := stringValue(document["case_id"])
+			for n := 1; ; n++ {
+				candidate := fmt.Sprintf("hypothesis-%s-%d", caseID, n)
+				used := false
+				for _, h := range objectSliceAny(document["hypotheses"]) {
+					if stringValue(h["hypothesis_id"]) == candidate {
+						used = true
+						break
+					}
+				}
+				for _, current := range questions {
+					if current.HypothesisID == candidate {
+						used = true
+						break
+					}
+				}
+				if !used {
+					q.HypothesisID = candidate
+					break
+				}
 			}
-			digest := sha256.Sum256(append([]byte(sourceID+"\x00"), encoded...))
-			q.HypothesisID = "hypothesis-" + hex.EncodeToString(digest[:])
 		}
 	}
 	if referencesChanged {
@@ -500,11 +520,42 @@ func runSavedInvestigationLeadQuestionnaire(root string, request policy.Input, s
 		}
 		if registered == nil {
 			outcomes := map[string]any{"support": q.ExpectedOutcomes["support"], "refute": q.ExpectedOutcomes["refute"]}
-			current, err = investigation.RegisterHypothesis(root, statePath, journalPath, investigation.HypothesisRequest{ExpectedRevision: current.Revision, CaseID: stringValue(document["case_id"]), HypothesisID: q.HypothesisID, AssignmentID: "assignment-" + q.HypothesisID, Statement: q.Statement, Invariant: q.Invariant, Discriminator: q.Discriminator, ExpectedOutcomes: outcomes, SourceFindingIDs: q.SourceFindingIDs, EvidenceRefs: q.EvidenceRefs})
-			if err != nil {
-				return feedback(fmt.Sprintf("S8 question %d original Hypothesis validation: %v. Earlier registered questions remain in the Case; save again to finish only outstanding work.", index+1, err))
+			for attempt := 0; ; attempt++ {
+				current, err = investigation.RegisterHypothesis(root, statePath, journalPath, investigation.HypothesisRequest{ExpectedRevision: -1, CaseID: stringValue(document["case_id"]), HypothesisID: q.HypothesisID, AssignmentID: "assignment-" + q.HypothesisID, Statement: q.Statement, Invariant: q.Invariant, Discriminator: q.Discriminator, ExpectedOutcomes: outcomes, SourceFindingIDs: q.SourceFindingIDs, EvidenceRefs: q.EvidenceRefs})
+				if !errors.Is(err, runtime.ErrStaleRevision) || attempt >= 3 {
+					break
+				}
+				current, err = runtime.NewStore(statePath, journalPath).Snapshot()
+				if err != nil {
+					break
+				}
+				_, document, _, err = investigationLeadSource(root, current.State)
+				if err != nil {
+					break
+				}
+				if document == nil {
+					err = errors.New("current Case is unavailable after concurrent update")
+					break
+				}
+				for _, h := range objectSliceAny(document["hypotheses"]) {
+					if stringValue(h["hypothesis_id"]) == q.HypothesisID {
+						registered = h
+						break
+					}
+				}
+				if registered != nil {
+					if !investigationLeadSameQuestion(q, investigationLeadQuestionFromCase(registered)) {
+						return feedback(fmt.Sprintf("S8 question %d conflicts with its already registered responsibility; no content was overwritten.", index+1))
+					}
+					break
+				}
 			}
-			registered = map[string]any{"hypothesis_id": q.HypothesisID, "assignment_id": "assignment-" + q.HypothesisID}
+			if err != nil {
+				return feedback(fmt.Sprintf("S8 question %d original Hypothesis validation: %v. Earlier registered questions remain in the Case; Main/system resumes only outstanding registration through the original current-question observer; do not resave unchanged professional content.", index+1, err))
+			}
+			if registered == nil {
+				registered = map[string]any{"hypothesis_id": q.HypothesisID, "assignment_id": "assignment-" + q.HypothesisID}
+			}
 		}
 		owner, details, exists, err := investigationLeadDispatch(root, current.State, registered)
 		if err != nil {
@@ -521,11 +572,11 @@ func runSavedInvestigationLeadQuestionnaire(root string, request policy.Input, s
 			var out, diagnostic bytes.Buffer
 			code := runRuntimeInvestigationDispatch([]string{"--root", root, "--case-id", stringValue(document["case_id"]), "--hypothesis-id", q.HypothesisID, "--agent-id", owner}, &out, &diagnostic)
 			if code != 0 {
-				return feedback(fmt.Sprintf("S8 question %d is registered; its original dispatch is still outstanding: %s. Preserve this answer and save again after resolving that source; completed registrations will be reused.", index+1, strings.TrimSpace(diagnostic.String())))
+				return feedback(fmt.Sprintf("S8 question %d is registered; its original dispatch is still outstanding: %s. Preserve this answer. Main/system resolves this source and the original current-question observer resumes only the missing dispatch; completed registrations remain accepted.", index+1, strings.TrimSpace(diagnostic.String())))
 			}
 			var result map[string]any
 			if err := json.Unmarshal(out.Bytes(), &result); err != nil {
-				return feedback("S8 original dispatch committed, but its response could not be read; save again to read the original registration.")
+				return feedback("S8 original dispatch committed, but its response could not be read; Main/system reads the original registration and continues only missing preparation; do not resave this answer.")
 			}
 			details = fmt.Sprintf("owner=%s TASK=%s task=%s manifest=%s", owner, stringValue(result["task_id"]), resolveRootPath(root, stringValue(result["task_path"])), resolveRootPath(root, stringValue(result["manifest_path"])))
 		}
@@ -543,7 +594,7 @@ func investigationLeadDecode(data []byte, value any) error {
 // The script-save observer only needs to distinguish untouched machine drafts
 // from professional edits. Invalid JSON remains the original consumer's work.
 func investigationLeadQuestionnaireHasProfessionalContent(path string, data []byte) bool {
-	if strings.HasPrefix(filepath.Base(path), "s8-repair-delegation-") {
+	if filepath.Base(path) == "s8-repair-delegation.json" {
 		var answer repairDelegationApplicationAnswer
 		return investigationLeadDecode(data, &answer) != nil || strings.TrimSpace(answer.Decision) != ""
 	}
@@ -622,7 +673,7 @@ func investigationLeadDispatch(root string, state map[string]any, hypothesis map
 		if stringValue(team["kind"]) != "investigator" {
 			continue
 		}
-		manifest, err := investigationLeadReadObject(root, stringValue(team["manifest_ref"]), stringValue(team["manifest_sha256"]))
+		manifest, err := investigationLeadReadObject(root, stringValue(team["manifest_ref"]))
 		if err != nil {
 			return "", "", false, err
 		}
@@ -635,7 +686,7 @@ func investigationLeadDispatch(root string, state map[string]any, hypothesis map
 				if !slices.Contains(stringSliceAny(task["owner_agent_ids"]), owner) {
 					continue
 				}
-				doc, err := investigationLeadReadObject(root, stringValue(task["path"]), stringValue(task["sha256"]))
+				doc, err := investigationLeadReadObject(root, stringValue(task["path"]))
 				if err != nil {
 					return "", "", false, err
 				}
@@ -649,22 +700,21 @@ func investigationLeadDispatch(root string, state map[string]any, hypothesis map
 	return "", "", false, nil
 }
 
-func investigationLeadBudgetContext(root string, state, document map[string]any) string {
-	budget, err := investigation.InvestigationReentryBudget(state, document)
-	if err != nil {
-		return " S8 investigation reentry budget: Main/system must resolve " + err.Error()
-	}
-	context := fmt.Sprintf(" S8 investigation reentry budget: used=%d, limit=%d, remaining=%d. This counts consecutive investigate_more route registrations, not questions, results or S7 rounds.", budget.Used, budget.Limit, budget.Remaining)
-	if budget.Exhausted {
-		context += " Reentry limit reached: do not register investigate_more again. Preserve accepted facts. " + investigationLeadContinueQuestionsContext(root, state) + " If still unresolved, Main explains the actual gap to the human; do not invent a route or increase S7 budget."
-	}
-	return context
+func investigationLeadPreparationEvent(event string) bool {
+	return event == "ReviewResultAccepted" || repairLeadPreparationEvent(event)
 }
 
-func investigationLeadReentryExhausted(state, document map[string]any) bool {
-	if document == nil {
-		return false
+// s8OriginalSourceDir locates a responsibility from its actual Runtime and source.
+// Components are reversible and split so long original identifiers remain usable.
+func s8OriginalSourceDir(root, runtimeID string, generation int, source string) string {
+	value := base64.RawURLEncoding.EncodeToString([]byte(runtimeID + "\x00" + source))
+	parts := []string{root, ".claude", "submissions", "s8", fmt.Sprintf("g%d", generation), "source"}
+	for len(value) > 120 {
+		parts = append(parts, value[:120])
+		value = value[120:]
 	}
-	budget, err := investigation.InvestigationReentryBudget(state, document)
-	return err == nil && budget.Exhausted
+	if value != "" {
+		parts = append(parts, value)
+	}
+	return filepath.Join(parts...)
 }

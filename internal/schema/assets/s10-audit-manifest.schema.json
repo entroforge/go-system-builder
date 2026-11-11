@@ -19,9 +19,7 @@
     "baseline_generation": {
       "type": "integer"
     },
-    "review_round": {
-      "type": "integer"
-    },
+    "review_plan_id": { "type": "string" },
     "coverage_inventory": {
       "type": "array",
       "items": {

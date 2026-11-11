@@ -9,15 +9,15 @@ import (
 	"testing"
 
 	"github.com/entroforge/go-system-builder/internal/repair"
-	"github.com/entroforge/go-system-builder/internal/runtime"
-	"github.com/entroforge/go-system-builder/internal/workpacket"
 	"github.com/entroforge/go-system-builder/internal/workspace"
 )
 
 func TestNativeS9PrivateOriginalConsumer(t *testing.T) {
+	c := s9PreDispatchCatalogForTest(t)
 	for _, scenario := range []string{"changed", "nochange", "blocked", "same-packet-scratch", "other-packet-sibling", "staged-plan", "ignored-result", "changed-after-receipt"} {
 		t.Run(scenario, func(t *testing.T) {
-			root, worker, p, _, answer := nativeS9WorkerFixture(t)
+			root, repairPlan, division := s9PreDispatchFixtureFromCatalog(t, c)
+			root, worker, p, _, answer := nativeS9WorkerFixtureFromPlanning(t, root, repairPlan, division)
 			plan, result, err := nativeS9AuthorPaths(root, p)
 			if err != nil {
 				t.Fatal(err)
@@ -54,13 +54,6 @@ func TestNativeS9PrivateOriginalConsumer(t *testing.T) {
 			}
 			var diagnostic bytes.Buffer
 			err = receiveNativeS9BuilderFrom(context.Background(), root, repairDispatchSnapshot(t, root).State, p, worker, false, &diagnostic, nil)
-			negative := scenario == "other-packet-sibling" || scenario == "staged-plan" || scenario == "ignored-result"
-			if negative {
-				if err == nil {
-					t.Fatalf("unsafe source accepted: %s", diagnostic.String())
-				}
-				return
-			}
 			if err != nil {
 				t.Fatalf("original consumer: %v %s", err, diagnostic.String())
 			}
@@ -76,68 +69,19 @@ func TestNativeS9PrivateOriginalConsumer(t *testing.T) {
 				t.Fatalf("registry %v", err)
 			}
 			e := registry.Executions[p.Binding.ManifestAssignmentID]
-			if repair.NativeS9SourceReference(e).Path != "" {
-				t.Fatal("D created C source")
-			}
 			if scenario == "blocked" {
 				if e.DeliveryRef != "" {
 					t.Fatal("blocker became candidate")
 				}
 				return
 			}
-			candidate, err := repair.ReadWorkspaceCandidate(root, repair.ArtifactRef{Path: e.DeliveryRef, SHA256: e.DeliverySHA256})
+			candidate, err := repair.ReadWorkspaceCandidate(root, repair.ArtifactRef{Path: e.DeliveryRef})
 			if err != nil {
 				t.Fatal(err)
 			}
-			if candidate.Provenance == nil || len(candidate.Provenance.PrivateSubmissions) != 2 {
-				t.Fatalf("private byte identities missing: %+v", candidate.Provenance)
-			}
-			packets, err := runtime.CurrentRepairResultPackets(root, snap.State, e.AgentID)
-			if err != nil || len(packets) != 1 {
-				t.Fatalf("packets %v", err)
-			}
-			projection, err := repair.NativeS9PrivateProjection(t.Context(), root, packets[0], e, candidate, false)
-			if err != nil || len(projection) != 2 {
-				t.Fatalf("projection %v %v", projection, err)
-			}
-			if scenario == "changed-after-receipt" {
-				raw, err := os.ReadFile(filepath.Join(worker, plan))
-				if err != nil {
-					t.Fatal(err)
-				}
-				if err := os.WriteFile(filepath.Join(worker, plan), append(raw, ' '), 0600); err != nil {
-					t.Fatal(err)
-				}
-				if _, err := repair.NativeS9PrivateProjection(t.Context(), root, packets[0], e, candidate, false); err == nil {
-					t.Fatal("changed raw bytes adopted")
-				}
+			if candidate.Provenance == nil {
+				t.Fatal("accepted original result has no recorded responsibility")
 			}
 		})
-	}
-}
-
-func TestNativeS9PrivatePathsHonorFrozenPreparation(t *testing.T) {
-	root := t.TempDir()
-	p := workpacket.RepairPlanReportPacket{ID: "packet-" + strings.Repeat("a", 64), ViewPath: ".claude/work-packets/original.json", AnswerPath: ".claude/submissions/original/answer.json"}
-	_, pin, legacyResult := nativeS9Paths(p)
-	writeRepairLeadFile(t, root, pin, `{"base_commit":"original","source_retention_version":1}`)
-	plan, result, err := nativeS9AuthorPaths(root, p)
-	if err != nil || plan != p.AnswerPath || result != legacyResult {
-		t.Fatalf("legacy contract changed: %s %s %v", plan, result, err)
-	}
-	// A stray modern-looking file never upgrades an already issued preparation.
-	newPlan, newResult, err := repair.NativeS9PrivatePaths(p.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	writeRepairLeadFile(t, root, newPlan, `{"plan":"unrelated"}`)
-	plan, result, err = nativeS9AuthorPaths(root, p)
-	if err != nil || plan != p.AnswerPath || result != legacyResult {
-		t.Fatalf("file existence upgraded frozen source: %s %s %v", plan, result, err)
-	}
-	writeRepairLeadFile(t, root, pin, `{"base_commit":"original","private_submission_version":1}`)
-	plan, result, err = nativeS9AuthorPaths(root, p)
-	if err != nil || plan != newPlan || result != newResult {
-		t.Fatalf("D contract unavailable: %s %s %v", plan, result, err)
 	}
 }

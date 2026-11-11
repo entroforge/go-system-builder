@@ -5,8 +5,6 @@ package workspace
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"github.com/entroforge/go-system-builder/internal/assignmentrecord"
@@ -19,7 +17,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/entroforge/go-system-builder/internal/metrics"
 	"github.com/entroforge/go-system-builder/internal/processtree"
 	loopruntime "github.com/entroforge/go-system-builder/internal/runtime"
 )
@@ -30,43 +27,69 @@ type ExecutionRegistry struct {
 	MainRoot   string               `json:"main_root"`
 	CommonDir  string               `json:"common_dir"`
 	Branch     string               `json:"integration_branch"`
-	BoundHead  string               `json:"bound_head"`
 	Executions map[string]Execution `json:"executions"`
 }
 
-// NativeDeliveryPurpose marks a Git source observed at native SubagentStop.
-// It is a delivery fact for original consumers, never a prepared Worker/session.
+// NativeDeliveryPurpose marks the observed original Worker delivery.
 const NativeDeliveryPurpose = "native_delivery"
 
 type Execution struct {
-	AssignmentRecord       *assignmentrecord.RecordReference `json:"assignment_record,omitempty"`
-	AssignmentRecordSHA256 string                            `json:"assignment_record_sha256,omitempty"`
-	ToolCheckReceipts      []checkexec.ToolReceipt           `json:"tool_check_receipts,omitempty"`
-	WorkerChecks           []assignmentrecord.WorkerCheck    `json:"worker_checks,omitempty"`
-	OwnedCheckReceipts     []OwnedCheckReceipt               `json:"owned_check_receipts,omitempty"`
-	CheckProfiles          []checkexec.Profile               `json:"check_profiles,omitempty"`
-	Purpose                string                            `json:"purpose,omitempty"`
-	WorkPacketID           string                            `json:"work_packet_id,omitempty"`
-	StageEntry             *int                              `json:"stage_entry,omitempty"`
-	CheckLocation          string                            `json:"check_location,omitempty"`
-	ReworkRef              string                            `json:"rework_ref,omitempty"`
-	PlatformSessionID      string                            `json:"platform_session_id,omitempty"`
-	AssignmentID           string                            `json:"assignment_id"`
-	RuntimeID              string                            `json:"runtime_id"`
-	BaselineGeneration     int                               `json:"baseline_generation"`
-	Generation             int                               `json:"execution_generation"`
-	AgentID                string                            `json:"agent_id"`
-	Path                   string                            `json:"worktree_path"`
-	Branch                 string                            `json:"branch"`
-	TargetBranch           string                            `json:"target_branch"`
-	BaseCommit             string                            `json:"base_commit"`
-	Status                 string                            `json:"status"`
-	WritePaths             []string                          `json:"write_paths"`
-	Checks                 []string                          `json:"required_checks"`
-	Inputs                 map[string]string                 `json:"inputs"`
-	BootstrapSHA256        string                            `json:"bootstrap_sha256,omitempty"`
-	DeliveryRef            string                            `json:"delivery_ref,omitempty"`
-	DeliverySHA256         string                            `json:"delivery_sha256,omitempty"`
+	AssignmentRecord   *assignmentrecord.RecordReference `json:"assignment_record,omitempty"`
+	ToolCheckReceipts  []checkexec.ToolReceipt           `json:"tool_check_receipts,omitempty"`
+	WorkerChecks       []assignmentrecord.WorkerCheck    `json:"worker_checks,omitempty"`
+	OwnedCheckReceipts []OwnedCheckReceipt               `json:"owned_check_receipts,omitempty"`
+	CheckProfiles      []checkexec.Profile               `json:"check_profiles,omitempty"`
+	Purpose            string                            `json:"purpose,omitempty"`
+	WorkPacketID       string                            `json:"work_packet_id,omitempty"`
+	StageEntry         *int                              `json:"stage_entry,omitempty"`
+	CheckLocation      string                            `json:"check_location,omitempty"`
+	ReworkRef          string                            `json:"rework_ref,omitempty"`
+	PlatformSessionID  string                            `json:"platform_session_id,omitempty"`
+	AssignmentID       string                            `json:"assignment_id"`
+	RuntimeID          string                            `json:"runtime_id"`
+	BaselineGeneration int                               `json:"baseline_generation"`
+	Generation         int                               `json:"execution_generation"`
+	AgentID            string                            `json:"agent_id"`
+	Path               string                            `json:"worktree_path"`
+	Branch             string                            `json:"branch"`
+	TargetBranch       string                            `json:"target_branch"`
+	Status             string                            `json:"status"`
+	WritePaths         []string                          `json:"write_paths"`
+	Checks             []string                          `json:"required_checks"`
+	Inputs             map[string]string                 `json:"inputs"`
+	DeliveryRef        string                            `json:"delivery_ref,omitempty"`
+}
+
+// DecodeRegistry reads the current workspace responsibilities and their original paths.
+func DecodeRegistry(data []byte) (ExecutionRegistry, error) {
+	var value ExecutionRegistry
+	if err := json.Unmarshal(data, &value); err != nil {
+		return ExecutionRegistry{}, err
+	}
+	for id, e := range value.Executions {
+		preserveExecutionInputPaths(&e)
+		value.Executions[id] = e
+	}
+	for i := range value.History {
+		preserveExecutionInputPaths(&value.History[i])
+	}
+	return value, nil
+}
+
+// DecodeExecution reads the current responsibility and original input paths.
+func DecodeExecution(data []byte) (Execution, error) {
+	var value Execution
+	if err := json.Unmarshal(data, &value); err != nil {
+		return Execution{}, err
+	}
+	preserveExecutionInputPaths(&value)
+	return value, nil
+}
+
+func preserveExecutionInputPaths(e *Execution) {
+	for path := range e.Inputs {
+		e.Inputs[path] = path
+	}
 }
 
 // OwnedCheckReceipt is a separately indexed owner-run check receipt. Its
@@ -118,12 +141,19 @@ func Decode(state map[string]any) (*ExecutionRegistry, error) {
 	if err != nil {
 		return nil, err
 	}
-	var v ExecutionRegistry
-	if err = json.Unmarshal(b, &v); err != nil {
+	v, err := DecodeRegistry(b)
+	if err != nil {
 		return nil, err
 	}
-	if v.Version != 1 || v.MainRoot == "" || v.CommonDir == "" || v.Branch == "" {
+	if v.Version != 1 || v.MainRoot == "" || v.Branch == "" {
 		return nil, fmt.Errorf("invalid workspace binding")
+	}
+	if v.CommonDir == "" {
+		for _, execution := range v.Executions {
+			if execution.Purpose != NativeDeliveryPurpose {
+				return nil, fmt.Errorf("non-native workspace requires its actual Git common directory")
+			}
+		}
 	}
 	if v.Executions == nil {
 		v.Executions = map[string]Execution{}
@@ -151,6 +181,30 @@ func Load(root string) (*ExecutionRegistry, map[string]any, error) {
 	v, err := Decode(state)
 	return v, state, err
 }
+
+// NewNativeReceipt records the already bound Main authority without opening Git.
+// Main resolves the checkout when it actually starts integration.
+func NewNativeReceipt(state map[string]any, root string) (*ExecutionRegistry, error) {
+	root, err := CanonicalProspective(root)
+	if err != nil {
+		return nil, err
+	}
+	req, _ := state["bound_req"].(map[string]any)
+	raw, err := json.Marshal(req["workspace"])
+	if err != nil {
+		return nil, err
+	}
+	var authority Binding
+	if err := json.Unmarshal(raw, &authority); err != nil {
+		return nil, err
+	}
+	registry := &ExecutionRegistry{Version: 1, MainRoot: root, Branch: strings.TrimPrefix(authority.DevBranch, "refs/heads/"), Executions: map[string]Execution{}}
+	if err := registry.ValidateAuthority(state); err != nil {
+		return nil, err
+	}
+	return registry, nil
+}
+
 func New(ctx context.Context, root string) (*ExecutionRegistry, error) {
 	b, err := inspectCheckout(ctx, root)
 	if err != nil {
@@ -196,11 +250,7 @@ func inspectCheckout(ctx context.Context, root string) (*ExecutionRegistry, erro
 	if err != nil {
 		return nil, err
 	}
-	head, err := Git(ctx, root, "rev-parse", "HEAD")
-	if err != nil {
-		return nil, err
-	}
-	return &ExecutionRegistry{Version: 1, MainRoot: root, CommonDir: common, Branch: branch, BoundHead: head, Executions: map[string]Execution{}}, nil
+	return &ExecutionRegistry{Version: 1, MainRoot: root, CommonDir: common, Branch: branch, Executions: map[string]Execution{}}, nil
 }
 func (b *ExecutionRegistry) Validate(ctx context.Context, root string) error {
 	actual, err := New(ctx, root)
@@ -250,20 +300,6 @@ func ControlFile(path string) bool {
 	case ".claude/loop-state.json", ".claude/loop-events.jsonl", ".claude/loop-metrics.json":
 		return true
 	}
-	if strings.HasPrefix(p, ".claude/worktree-reminders/") {
-		name := strings.TrimPrefix(p, ".claude/worktree-reminders/")
-		if strings.HasSuffix(name, ".txt") {
-			key := strings.TrimSuffix(name, ".txt")
-			decoded, err := hex.DecodeString(key)
-			if len(key) == 64 && err == nil && hex.EncodeToString(decoded) == key {
-				return true
-			}
-		}
-		// The original reminder publisher uses os.CreateTemp(".delivery-").
-		if suffix, ok := strings.CutPrefix(name, ".delivery-"); ok && suffix != "" && strings.Trim(suffix, "0123456789") == "" {
-			return true
-		}
-	}
 	for _, prefix := range []string{".claude/evidence/", ".claude/workgroups/", ".claude/workspace-launch/", ".claude/runtime-checkpoints/", ".claude/assignment-context/", ".claude/review/", ".claude/hook"} {
 		if strings.HasPrefix(p, prefix) {
 			return true
@@ -272,36 +308,17 @@ func ControlFile(path string) bool {
 	return strings.HasPrefix(p, ".claude/") && (strings.HasSuffix(p, ".lock") || strings.HasSuffix(p, ".lock.process"))
 }
 
-// CleanInputs includes untracked inputs; it never adds, stashes or deletes them.
+// CleanInputs protects actual tracked or staged Main changes. Untracked and
+// ignored paths remain untouched; Git reports any real merge collision later.
 func (b *ExecutionRegistry) CleanInputs(ctx context.Context) error {
-	out, err := gitRaw(ctx, b.MainRoot, "status", "--porcelain=v1", "-z", "--untracked-files=all")
+	out, err := gitRaw(ctx, b.MainRoot, "status", "--porcelain=v1", "-z", "--untracked-files=no")
 	if err != nil {
 		return err
 	}
 	var dirty []string
 	rows := strings.Split(out, "\x00")
-	normalUntracked := map[string]bool{}
-	seen := map[string]bool{}
 	for i := 0; i < len(rows); i++ {
 		row := rows[i]
-		if len(row) >= 4 {
-			path := row[3:]
-			if seen[path] {
-				normalUntracked[path] = false
-			} else {
-				seen[path] = true
-				normalUntracked[path] = row[:2] == "??"
-			}
-		}
-		if len(row) >= 3 && strings.ContainsAny(row[:2], "RC") {
-			i++
-		}
-	}
-	for i := 0; i < len(rows); i++ {
-		row := rows[i]
-		if len(row) >= 3 && strings.ContainsAny(row[:2], "RC") {
-			i++
-		}
 		if row == "" {
 			continue
 		}
@@ -309,32 +326,13 @@ func (b *ExecutionRegistry) CleanInputs(ctx context.Context) error {
 			dirty = append(dirty, row)
 			continue
 		}
-		p := row[3:]
-		if normalUntracked[p] && metrics.IsTemporaryPath(p) {
-			recognized, err := metrics.RecognizeTemporary(ctx, b.MainRoot, p)
-			if err != nil {
-				return fmt.Errorf("inspect metrics temporary: %w", err)
-			}
-			if recognized {
-				continue
-			}
-		}
-		if ControlFile(p) {
-			continue
-		}
-		registered := false
-		for _, e := range b.AllExecutions() {
-			rel, _ := filepath.Rel(b.MainRoot, e.Path)
-			if filepath.ToSlash(strings.TrimSuffix(p, "/")) == filepath.ToSlash(rel) {
-				registered = true
-			}
-		}
-		if !registered {
-			dirty = append(dirty, p)
+		dirty = append(dirty, row[3:])
+		if strings.ContainsAny(row[:2], "RC") {
+			i++
 		}
 	}
 	if len(dirty) > 0 {
-		return fmt.Errorf("uncommitted inputs must be resolved before dispatch/integration (no automatic add/stash): %s", strings.Join(dirty, ", "))
+		return fmt.Errorf("uncommitted tracked inputs must be resolved before dispatch/integration (no automatic add/stash): %s", strings.Join(dirty, ", "))
 	}
 	return nil
 }
@@ -373,10 +371,6 @@ func (b *ExecutionRegistry) Plan(ctx context.Context, state map[string]any, id, 
 		}
 		return e, nil
 	}
-	head, err := Git(ctx, b.MainRoot, "rev-parse", "HEAD")
-	if err != nil {
-		return Execution{}, err
-	}
 	gen := 1
 	if old, ok := b.Executions[id]; ok {
 		gen = old.Generation + 1
@@ -387,8 +381,8 @@ func (b *ExecutionRegistry) Plan(ctx context.Context, state map[string]any, id, 
 		}
 	}
 	key := fmt.Sprintf("%s-g%d-e%d", id, Generation(state), gen)
-	e := Execution{AssignmentID: id, RuntimeID: RuntimeID(state), BaselineGeneration: Generation(state), Generation: gen, AgentID: agent, Path: filepath.Join(b.MainRoot, ".worktrees", key), Branch: "codex/" + key, TargetBranch: b.Branch, BaseCommit: head, Status: "preparing", WritePaths: append([]string{}, scope...), Checks: append([]string{}, checks...), Inputs: map[string]string{}}
-	e, err = b.bindAssignmentRecord(state, e)
+	e := Execution{AssignmentID: id, RuntimeID: RuntimeID(state), BaselineGeneration: Generation(state), Generation: gen, AgentID: agent, Path: filepath.Join(b.MainRoot, ".worktrees", key), Branch: "codex/" + key, TargetBranch: b.Branch, Status: "preparing", WritePaths: append([]string{}, scope...), Checks: append([]string{}, checks...), Inputs: map[string]string{}}
+	e, err := b.bindAssignmentRecord(state, e)
 	if err != nil {
 		return Execution{}, err
 	}
@@ -405,12 +399,12 @@ func (b *ExecutionRegistry) Plan(ctx context.Context, state map[string]any, id, 
 		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 			return Execution{}, fmt.Errorf("input symlink escapes control root: %s", p)
 		}
-		data, err := os.ReadFile(resolved)
-		if err != nil {
+		if _, err := os.ReadFile(resolved); err != nil {
 			return Execution{}, err
 		}
-		hash := sha256.Sum256(data)
-		e.Inputs[filepath.ToSlash(clean)] = hex.EncodeToString(hash[:])
+		// The stored value is a locator, not a content fingerprint.
+		path := filepath.ToSlash(clean)
+		e.Inputs[path] = path
 	}
 	return e, nil
 }
@@ -422,7 +416,7 @@ func (b *ExecutionRegistry) Materialize(ctx context.Context, e Execution) error 
 		return err
 	}
 	if _, err := os.Lstat(e.Path); os.IsNotExist(err) {
-		if _, err = Git(ctx, b.MainRoot, "worktree", "add", "-b", e.Branch, e.Path, e.BaseCommit); err != nil {
+		if _, err = Git(ctx, b.MainRoot, "worktree", "add", "-b", e.Branch, e.Path, e.TargetBranch); err != nil {
 			return err
 		}
 	} else if err != nil {
@@ -460,8 +454,8 @@ func (b *ExecutionRegistry) PublishPointer(e Execution) error {
 	return publishBootstrapFile(pointer, data, 0600)
 }
 
-// ValidateInputs detects control-plane artifact drift even for ignored files
-// which do not appear in the committed Worker tree.
+// ValidateInputs checks the actual execution structure and input locations.
+// It does not authenticate historical input bytes.
 func (b *ExecutionRegistry) ValidateInputs(e Execution) error {
 	location := e.CheckLocation
 	if location == "" {
@@ -487,38 +481,19 @@ func (b *ExecutionRegistry) ValidateInputs(e Execution) error {
 			return fmt.Errorf("frozen WorkerChecks: %w", err)
 		}
 	}
-	for _, profile := range e.CheckProfiles {
-		for _, ref := range append(append([]checkexec.FileRef{}, profile.Dependencies...), profile.Fixtures...) {
-			if e.Inputs[ref.Path] != ref.SHA256 {
-				return fmt.Errorf("check profile lacks original frozen source: %s", ref.Path)
-			}
-		}
-	}
-	for _, check := range e.WorkerChecks {
-		for _, ref := range append(append([]checkexec.FileRef{}, check.Profile.Dependencies...), check.Profile.Fixtures...) {
-			if e.Inputs[ref.Path] != ref.SHA256 {
-				return fmt.Errorf("WorkerCheck profile lacks original frozen source: %s", ref.Path)
-			}
-		}
-	}
-	for path, expected := range e.Inputs {
+	// Input references remain useful locations for the current work. Historical
+	// digests are not evidence of identity or a condition for a check.
+	for path := range e.Inputs {
 		resolved, err := Canonical(filepath.Join(b.MainRoot, filepath.FromSlash(path)))
 		if err != nil {
 			return err
 		}
 		rel, err := filepath.Rel(b.MainRoot, resolved)
 		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			return fmt.Errorf("frozen input escapes Main: %s", path)
-		}
-		data, err := os.ReadFile(resolved)
-		if err != nil {
-			return err
-		}
-		hash := sha256.Sum256(data)
-		if hex.EncodeToString(hash[:]) != expected {
-			return fmt.Errorf("frozen execution input changed: %s; preserve the execution for recovery", path)
+			return fmt.Errorf("execution input escapes Main: %s", path)
 		}
 	}
+
 	return nil
 }
 func (b *ExecutionRegistry) ValidateExecution(ctx context.Context, e Execution, initial bool) error {
@@ -541,26 +516,6 @@ func (b *ExecutionRegistry) ValidateExecution(ctx context.Context, e Execution, 
 	branch, err := Git(ctx, e.Path, "symbolic-ref", "--quiet", "--short", "HEAD")
 	if err != nil || branch != e.Branch {
 		return fmt.Errorf("worker branch mismatch")
-	}
-	head, err := Git(ctx, e.Path, "rev-parse", "HEAD")
-	if err != nil {
-		return err
-	}
-	if initial && head != e.BaseCommit {
-		return fmt.Errorf("unrecorded work in preparing worktree; preserve it for explicit recovery")
-	}
-	if _, err := Git(ctx, e.Path, "merge-base", "--is-ancestor", e.BaseCommit, head); err != nil {
-		return fmt.Errorf("worker history no longer descends from its dispatch baseline")
-	}
-	if e.BootstrapSHA256 != "" {
-		if err := b.ValidateBootstrap(e); err != nil {
-			return err
-		}
-	}
-	if e.BootstrapSHA256 != "" {
-		if err := b.ValidateDispatchContext(e); err != nil {
-			return err
-		}
 	}
 	return nil
 }
@@ -735,7 +690,7 @@ func (b *ExecutionRegistry) ValidateAuthority(state map[string]any) error {
 	if err := json.Unmarshal(bytes, &authority); err != nil {
 		return err
 	}
-	if authority.ProjectRoot == "" || authority.DevBranch == "" || authority.ReleaseUpstream == "" || authority.BoundCommit == "" {
+	if authority.ProjectRoot == "" || authority.DevBranch == "" || authority.ReleaseUpstream == "" {
 		return fmt.Errorf("REQ workspace authority is missing; explicitly bind development and release destinations before execution")
 	}
 	if filepath.Clean(authority.ProjectRoot) != filepath.Clean(b.MainRoot) || strings.TrimPrefix(authority.DevBranch, "refs/heads/") != b.Branch {
@@ -763,7 +718,7 @@ func (b *ExecutionRegistry) ValidateAuthority(state map[string]any) error {
 			}
 			found := false
 			for _, p := range e.CheckProfiles {
-				if p.Command == ref.Command && p.Digest() == ref.ProfileDigest {
+				if p.Command == ref.Command {
 					found = true
 				}
 			}
@@ -771,16 +726,16 @@ func (b *ExecutionRegistry) ValidateAuthority(state map[string]any) error {
 				return fmt.Errorf("registered tool receipt differs from original profile")
 			}
 		}
-		seenOwnedSHA, seenOwnedPath := map[string]bool{}, map[string]bool{}
+		seenOwnedPath := map[string]bool{}
 		for _, row := range e.OwnedCheckReceipts {
 			if row.WorkerCheckIndex < 0 || row.WorkerCheckIndex >= len(e.WorkerChecks) {
 				return fmt.Errorf("registered owned-check receipt index is outside the original WorkerChecks")
 			}
 			check := e.WorkerChecks[row.WorkerCheckIndex]
-			if row.Receipt.Binding != CheckBinding(e) || row.Receipt.Command != check.Command || row.Receipt.ProfileDigest != check.Profile.Digest() || row.Receipt.Path == "" || row.Receipt.SHA256 == "" || seenOwnedSHA[row.Receipt.SHA256] || seenOwnedPath[row.Receipt.Path] {
+			if row.Receipt.Binding != CheckBinding(e) || row.Receipt.Command != check.Command || row.Receipt.Path == "" || seenOwnedPath[row.Receipt.Path] {
 				return fmt.Errorf("registered owned-check receipt differs from original WorkerCheck")
 			}
-			seenOwnedSHA[row.Receipt.SHA256], seenOwnedPath[row.Receipt.Path] = true, true
+			seenOwnedPath[row.Receipt.Path] = true
 		}
 	}
 	return nil

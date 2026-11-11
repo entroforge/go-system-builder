@@ -14,4 +14,4 @@
 
 ## 下一步
 
-在 [合同总览](../../dev/contracts/CONTRACTS-{id}.md#shared-model-baseline) 声明操作与源关系，与 SYNC 一起收敛数据和交互，再派生分端责任。历史由 Git 保存，精确指纹与冻结状态由 runtime 管理。
+在 [合同总览](../../dev/contracts/CONTRACTS-{id}.md#shared-model-baseline) 声明操作与源关系，与 SYNC 一起收敛数据和交互，再派生分端责任。历史沿原记录保存；接收不依赖文件指纹。

@@ -28,11 +28,7 @@ func boundaryFixture(t *testing.T) (*workspace.ExecutionRegistry, workspace.Exec
 	os.WriteFile(filepath.Join(root, ".gitignore"), []byte(".claude/\n.worktrees/\n"), 0600)
 	git("add", ".gitignore")
 	git("commit", "-m", "base")
-	head, err := workspace.Git(ctx, root, "rev-parse", "HEAD")
-	if err != nil {
-		t.Fatal(err)
-	}
-	bound := map[string]any{"workspace": workspace.Binding{ProjectRoot: root, DevBranch: "feature/customer-a", ReleaseUpstream: "main", BoundCommit: head}.Map()}
+	bound := map[string]any{"workspace": workspace.Binding{ProjectRoot: root, DevBranch: "feature/customer-a", ReleaseUpstream: "main"}.Map()}
 	state := map[string]any{"bound_req": bound, "runtime_id": "loop-boundary", "baseline": map[string]any{"generation": 1}}
 	data, _ := json.Marshal(state)
 	os.MkdirAll(filepath.Join(root, ".claude"), 0700)
@@ -113,7 +109,7 @@ func TestWorkspaceStaleWorkerCannotBecomeMain(t *testing.T) {
 }
 func TestWorkerAbsolutePathStillEnforcesLockedArtifact(t *testing.T) {
 	b, e := boundaryFixture(t)
-	input := Input{Event: "PreToolUse", AgentID: "builder", CWD: e.Path, ToolName: "Write", ToolInput: map[string]any{"file_path": filepath.Join(e.Path, "docs/contract.md")}, Runtime: RuntimeContext{ProjectRoot: b.MainRoot, Workspace: b, RuntimeID: "loop-boundary", CurrentBaselineGeneration: 1, CurrentStage: "S6", CurrentState: "building", LockedArtifacts: []LockedArtifact{{ID: "CT-001", Kind: "contract", Path: "docs/contract.md", Version: "1", SHA256: "hash", LockedFromStage: "S6", BaselineGeneration: 1}}}}
+	input := Input{Event: "PreToolUse", AgentID: "builder", CWD: e.Path, ToolName: "Write", ToolInput: map[string]any{"file_path": filepath.Join(e.Path, "docs/contract.md")}, Runtime: RuntimeContext{ProjectRoot: b.MainRoot, Workspace: b, RuntimeID: "loop-boundary", CurrentBaselineGeneration: 1, CurrentStage: "S6", CurrentState: "building", LockedArtifacts: []LockedArtifact{{ID: "CT-001", Kind: "contract", Path: "docs/contract.md", Version: "1", LockedFromStage: "S6", BaselineGeneration: 1}}}}
 	decision, err := (&Engine{}).Evaluate(input)
 	if err != nil || decision.RuleID != RuleLockedArtifactWrite {
 		t.Fatalf("locked artifact bypass: %+v %v", decision, err)
@@ -126,7 +122,7 @@ func TestWorkerSymlinkStillEnforcesAbsoluteMainLockedReference(t *testing.T) {
 	if err := os.Symlink("contract.md", filepath.Join(e.Path, "docs/alias.md")); err != nil {
 		t.Skip(err)
 	}
-	input := Input{Event: "PreToolUse", AgentID: "builder", CWD: e.Path, ToolName: "Write", ToolInput: map[string]any{"file_path": filepath.Join(e.Path, "docs/alias.md")}, Runtime: RuntimeContext{ProjectRoot: b.MainRoot, Workspace: b, RuntimeID: "loop-boundary", CurrentBaselineGeneration: 1, CurrentStage: "S6", CurrentState: "building", LockedArtifacts: []LockedArtifact{{ID: "CT-001", Kind: "contract", Path: filepath.Join(b.MainRoot, "docs/contract.md"), Version: "1", SHA256: "hash", LockedFromStage: "S6", BaselineGeneration: 1}}}}
+	input := Input{Event: "PreToolUse", AgentID: "builder", CWD: e.Path, ToolName: "Write", ToolInput: map[string]any{"file_path": filepath.Join(e.Path, "docs/alias.md")}, Runtime: RuntimeContext{ProjectRoot: b.MainRoot, Workspace: b, RuntimeID: "loop-boundary", CurrentBaselineGeneration: 1, CurrentStage: "S6", CurrentState: "building", LockedArtifacts: []LockedArtifact{{ID: "CT-001", Kind: "contract", Path: filepath.Join(b.MainRoot, "docs/contract.md"), Version: "1", LockedFromStage: "S6", BaselineGeneration: 1}}}}
 	decision, err := (&Engine{}).Evaluate(input)
 	if err != nil || decision.RuleID != RuleLockedArtifactWrite {
 		t.Fatalf("locked symlink bypass: %+v %v", decision, err)
@@ -142,10 +138,6 @@ func TestWorkerObservationAdapterAndPwd(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err = b.Bootstrap(e, executable); err != nil {
-		t.Fatal(err)
-	}
-	e.BootstrapSHA256, err = workspace.BootstrapDigest(e)
-	if err != nil {
 		t.Fatal(err)
 	}
 	b.Executions[e.AssignmentID] = e
@@ -167,7 +159,6 @@ func TestWorkerObservationAdapterAndPwd(t *testing.T) {
 
 func TestWorkspacePolicyAcceptsOnlyFrozenOwnedCheckAdapter(t *testing.T) {
 	_, e := boundaryFixture(t)
-	e.BootstrapSHA256 = "frozen-bootstrap"
 	profile := checkexec.Profile{ID: "owned-check", Version: "1.0.0", CheckIndex: 0, Command: "true", Location: "worker", TimeoutSeconds: 10, EnvironmentPolicy: "declared_only", Environment: []checkexec.EnvFact{}, Dependencies: []checkexec.FileRef{}, Fixtures: []checkexec.FileRef{}, InputClosure: "whole_tree", SideEffects: "none", ReusePolicy: "never"}
 	e.WorkerChecks = []assignmentrecord.WorkerCheck{{Index: 0, Command: profile.Command, Profile: profile}}
 	base := Input{ToolName: "Bash", ToolInput: map[string]any{"command": workspace.OwnedCheckInvocation(e, 0)}}
@@ -193,7 +184,7 @@ func TestNativeOwnedCheckExceptionUsesExactAuthorityWithOtherWorkspaceExecution(
 	checkCommand := "go test ./internal/example"
 	native := NativeOwnedAssignment{
 		AssignmentID: assignmentID, OwnerAgentID: owner, WorktreePath: e.Path,
-		AssignmentRecordSHA256: "frozen-record-sha", OwnerState: "working",
+		OwnerState:   "working",
 		ContextBound: true, PlanActivated: true,
 		Checks: []NativeOwnedCheck{{Index: 0, Command: checkCommand}},
 	}

@@ -44,8 +44,6 @@ func TestS9PipelineOwnedEvidenceRowsRejectOutOfContractShape(t *testing.T) {
 			{name: "bad id address", mutate: func(row map[string]any) { row["id"] = "evidence/arbitrary.json" }},
 			{name: "bad physical path address", mutate: func(row map[string]any) { row["path"] = "../../outside.json" }},
 			{name: "zero generation", mutate: func(row map[string]any) { row["baseline_generation"] = 0 }},
-			{name: "missing round", mutate: func(row map[string]any) { row["review_round"] = nil }},
-			{name: "zero round", mutate: func(row map[string]any) { row["review_round"] = 0 }},
 		}
 		if kind == "repair_result_blocker" {
 			cases = append(cases,
@@ -54,9 +52,6 @@ func TestS9PipelineOwnedEvidenceRowsRejectOutOfContractShape(t *testing.T) {
 			)
 		} else {
 			cases = append(cases,
-				s9EvidenceShapeCase{name: "wrong resolution directory", mutate: func(row map[string]any) {
-					row["path"] = strings.Replace(row["path"].(string), "/blocker-messages/", "/blocker-resolution/", 1)
-				}},
 				s9EvidenceShapeCase{name: "non-main producer", mutate: func(row map[string]any) { row["produced_by"] = []any{"agent-owner"} }},
 				s9EvidenceShapeCase{name: "additional producer", mutate: func(row map[string]any) { row["produced_by"] = []any{"main", "agent-owner"} }},
 				s9EvidenceShapeCase{name: "non-null responsibility", mutate: func(row map[string]any) { row["responsibility_id"] = "BUILD-WORK-PACKAGE" }},

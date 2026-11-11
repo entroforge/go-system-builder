@@ -10,7 +10,7 @@ TEST_PACKAGES ?= 2
 CI_TEST_TIMEOUT ?= 5m
 CI_RACE_PACKAGES = ./internal/runtime ./internal/recovery ./internal/filelock ./internal/fileview ./internal/schema ./internal/checkexec ./internal/controller ./internal/hook ./internal/audit ./internal/submission
 
-.PHONY: build build-all manual fmt-check vet test test-race verify doctor health platform-smoke platform-smoke-required validate test-ci test-ci-core test-ci-smoke test-ci-race ci-verify ci-verify-full doctor-staged release-graph release-graph-validate release release-checksum release-list clean-release
+.PHONY: build build-all manual fmt-check vet test test-race verify doctor health platform-smoke platform-smoke-required validate test-ci test-ci-core test-ci-smoke test-ci-race ci-verify ci-verify-full ci-verify-full-shared-harness doctor-staged release-graph release-graph-validate release release-checksum release-list clean-release
 
 # Local dev build (host platform only). Used by `verify`, `ci-verify`, and
 # other targets that need a runnable binary on this host.
@@ -67,7 +67,7 @@ test-ci-core:
 # human release authority, integration failure/resume and approval boundaries.
 # Use anchored names so a similarly named slow scenario is not added by accident.
 test-ci-smoke:
-	$(GO) test -short -p $(TEST_PACKAGES) -timeout=$(CI_TEST_TIMEOUT) ./internal/cli -run '^Test(DesignNormalEntryDerivesMachineFactsFromTwoProfessionalAnswers|S2PendingOutletRetainsActualGapAcrossObservation|S2MissingQuestionnaireRestoresOriginalFilesOnMaterialChange|S3PreparationFailureSurvivesReadAndClearsAfterActualRepair|S2RecoveryKeepsPreviouslyIssuedTemplate|S2CLIRecoverUsesSameDiskAuthorityAsOriginalSave|S2GuidanceDeliveryReducesRepeatsAndRestoresChangedContext|S2ReceivedProjectionKeepsActualGapWithoutStaticReceptionMissing|S2ReadAndUnknownEventsNeverReceiveExistingAnswer|S2FailedAndUnchangedToolsDoNotRestoreMaterials|S3RepairDeliversNextPathsInSamePostResponse|S3PlanningObserverRequiresActualAnswerChange|QuestionnaireObserverReceivesScriptAndCustomToolSaves|PlanningObserverMissingPacketWaitsForCommitAndPreservesReadChange|S2ScopeGuidanceExposesBatchBeforeSubmission|S2PendingBatchRecoveryKeepsBoundSource|S2LargeGlobalModuleSetPreparesS3|RegisteredCustomToolSaveReachesOriginalDesignReceiver|BuildInfoDoesNotNeedProject|InitDerivesHookMetadataAndCreatesJournals|NativeS5.*|NativeS6StartStopReceivesWithoutActivationOrSaveHook|NativeS6ReceiverSourceFailureBelongsToMain|NativeS6RecoveredGitDeliveryDoesNotNeedAuthoringCaches|S3RegistrationPreservesAcceptedSourceClosure|NativeS9ActualWorktreeStopReceivesWithoutLauncherOrPlatformIdentity|NativeS9CanceledPreparationPreservesOriginalSource|NativeS9MalformedProfessionalArtifactIsNotReceived|NativeReviewResume.*|BoundHookObservesWrongDirectoryWithoutToolACL|DryRunMissingRuntimeDoesNotInitialize|MainReviewPlanQuestionnaireSaveUsesOriginalRegistrationAndReplay|StageAnswerConsumeAcceptsIssuedS7AnswerWithoutAgent|SavedReviewResultHookRejectsUnissuedPathWithoutRuntimeWrite|S1NormalFourAnswersDeriveOriginalMachineFacts|S4OriginalSavePreparesS5WithoutMainMetadataOrConfirmation|S7MainPreparesAllDispatchedQuestionnairesInOneOriginalHandoff|S7BudgetNormalApplicationRecordsTwoActualHumanChoicesAndReadOnlyReplay|S7BudgetStatusDoesNotPrepareDecisionOrGateNormalAcceptance|S8ContractHumanChoiceNormalHookWithoutMachineInput|S8ExplicitGrantAndDriverChoiceNormalHookWithoutMachineInput|S10OriginalRegistrationKeepsStatusGateAndTransitionConsistent|S10QuestionnaireHookUsesPreparedManifestAndMainProducer|S11QuestionnaireHookDeliversVerifiableS10PackageAndKeepsDecisionHuman|HookBudgetTimeoutKeepsListenerNonBlocking)$$'
+	$(GO) test -short -p $(TEST_PACKAGES) -timeout=$(CI_TEST_TIMEOUT) ./internal/cli -run '^Test(DesignNormalEntryDerivesMachineFactsFromTwoProfessionalAnswers|S2PendingOutletRetainsActualGapAcrossObservation|S2MissingQuestionnaireRestoresViewWithoutInventingPrivateAnswer|S3PreparationFailureSurvivesReadAndClearsAfterActualRepair|S2RecoveryKeepsPreviouslyIssuedTemplate|S2CLIRecoverUsesSameDiskAuthorityAsOriginalSave|S2GuidanceDeliveryReducesRepeatsAndRestoresChangedContext|S2ReceivedProjectionKeepsActualGapWithoutStaticReceptionMissing|S2ReadAndUnknownEventsNeverReceiveExistingAnswer|S2FailedAndUnchangedToolsDoNotRestoreMaterials|S3RepairDeliversNextPathsInSamePostResponse|S3PlanningObserverRequiresActualAnswerChange|QuestionnaireObserverReceivesScriptAndCustomToolSaves|PlanningObserverMissingPacketWaitsForCommitAndPreservesReadChange|S2ScopeGuidanceExposesBatchBeforeSubmission|S2PendingBatchRecoveryKeepsBoundSource|S2LargeGlobalModuleSetPreparesS3|RegisteredCustomToolSaveReachesOriginalDesignReceiver|BuildInfoDoesNotNeedProject|InitDerivesHookMetadataAndCreatesJournals|NativeS5.*|NativeS6StartStopReceivesWithoutActivationOrSaveHook|NativeS6ReceiverSourceFailureBelongsToMain|NativeS6RecoveredGitDeliveryDoesNotNeedAuthoringCaches|S3RegistrationPreservesAcceptedSourceClosure|NativeS9ActualWorktreeStopReceivesWithoutLauncherOrPlatformIdentity|NativeS9CanceledPreparationPreservesOriginalSource|NativeS9MalformedProfessionalArtifactIsNotReceived|NativeReviewResume.*|BoundHookObservesWrongDirectoryWithoutToolACL|DryRunMissingRuntimeDoesNotInitialize|MainReviewPlanQuestionnaireSaveUsesOriginalRegistrationAndReplay|StageAnswerConsumeAcceptsIssuedS7AnswerWithoutAgent|SavedReviewResultHookRejectsUnissuedPathWithoutRuntimeWrite|S1NormalFourAnswersDeriveOriginalMachineFacts|S4OriginalSavePreparesS5WithoutMainMetadataOrConfirmation|S7MainPreparesAllDispatchedQuestionnairesInOneOriginalHandoff|S7BudgetStatusDoesNotPrepareDecisionOrGateNormalAcceptance|S8ContractHumanChoiceNormalHookWithoutMachineInput|S8ExplicitGrantAndDriverChoiceNormalHookWithoutMachineInput|S10OriginalRegistrationKeepsStatusGateAndTransitionConsistent|S10QuestionnaireHookUsesPreparedManifestAndMainProducer|S11QuestionnaireHookDeliversVerifiableS10PackageAndKeepsDecisionHuman|HookBudgetTimeoutKeepsListenerNonBlocking)$$'
 	$(GO) test -short -p $(TEST_PACKAGES) -timeout=$(CI_TEST_TIMEOUT) ./internal/integration -run '^Test(CheckpointStore.*|Integrate.*|CanonicalSurfaceEarlyInspectionFailureDoesNotBlockSuccessfulRevision|IntegrationPreservesChangesWrittenByChecksAndResumesWithoutRemerge|TimeoutKillsDescendants|SuccessfulShellCannotLeaveBackgroundWriter|IntegrationLocksGitCheckoutWhenEvidenceRootDiffers)$$'
 	$(GO) test -short -p $(TEST_PACKAGES) -timeout=$(CI_TEST_TIMEOUT) ./internal/investigation -run '^Test(ApprovalArtifactCleanupRetainsPendingReferencedOrChangedBytes|ApproveContract.*|DelegatedApproval.*|TechnicalReviewCannotMasqueradeAsHumanApproval|NativeS8StopReceivesOriginalCaseAnswerWithoutGenericPlanOrActorAlias|S8TypedFindingSourceHandoffNeedsNoIndexAlias)$$'
 
@@ -114,6 +114,33 @@ ci-verify: fmt-check vet test-ci test-ci-race doctor validate build
 # source and installed release graphs; do not build the five-platform archive
 # again via release-graph-validate in the same run.
 ci-verify-full: fmt-check vet test test-race doctor doctor-staged validate build
+
+# Full CI/release jobs prepare one ordinary Harness and the fixture catalog.
+# Test processes retain their requested normal/race mode; the non-race child
+# preserves the watchdog tests' existing behavior. Both assets remain private
+# to this invocation and survive until all independent verification finishes.
+ci-verify-full-shared-harness:
+	@set -eu; \
+	fixture_dir=$$(mktemp -d "$${TMPDIR:-/tmp}/loop-harness-test.XXXXXXXX"); \
+	trap 'rm -rf "$$fixture_dir"' EXIT; \
+	trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM; \
+	$(GO) build -o "$$fixture_dir/loop-harness" ./cmd/loop-harness; \
+	export HOOK_ACCEPTANCE_BINARY="$$fixture_dir/loop-harness"; \
+	unset LOOP_TEST_FIXTURE_CATALOG LOOP_TEST_FIXTURE_CATALOG_PREPARE; \
+	catalog="$$fixture_dir/catalog"; \
+	prepare_status=0; \
+	if mkdir "$$catalog"; then \
+		LOOP_TEST_FIXTURE_CATALOG_PREPARE="$$catalog" $(GO) test -count=1 ./internal/cli -run '^TestPrepareFixtureCatalog$$' || prepare_status=$$?; \
+	else \
+		prepare_status=$$?; \
+	fi; \
+	if [ "$$prepare_status" -ne 0 ]; then \
+		printf 'fixture catalog preparation failed (exit %s); continuing independent verification\n' "$$prepare_status" >&2; \
+	fi; \
+	verify_status=0; \
+	LOOP_TEST_FIXTURE_CATALOG="$$catalog" $(MAKE) -k ci-verify-full || verify_status=$$?; \
+	if [ "$$prepare_status" -ne 0 ]; then exit "$$prepare_status"; fi; \
+	if [ "$$verify_status" -ne 0 ]; then exit "$$verify_status"; fi
 
 # doctor-staged builds the release tarball, extracts it to a tmpdir, and
 # installs with the packaged binary into a fresh target and verifies the

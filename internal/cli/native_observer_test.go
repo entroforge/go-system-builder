@@ -176,7 +176,10 @@ func TestNativeObserverFiltersExternalTextBeforeAuditBoundWithoutChangingIdentit
 		{"config path", "ConfigChange", "file_path", "settings/password=" + key},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			payload := map[string]any{"hook_event_name": tc.event, "session_id": "r29-observer", "tool_name": "Bash", tc.field: tc.value, "tool_input": map[string]any{"command": "synthetic api_key=" + key}, "tool_response": map[string]any{"stderr": "synthetic token=" + key}}
+			// The platform tool use ID identifies the actual event. The audit
+			// identity uses that ID and never a digest of the event content,
+			// so filtering the visible reason cannot change it.
+			payload := map[string]any{"hook_event_name": tc.event, "session_id": "r29-observer", "tool_name": "Bash", tc.field: tc.value, "tool_use_id": "r29-observer-" + tc.name, "tool_input": map[string]any{"command": "synthetic api_key=" + key}, "tool_response": map[string]any{"stderr": "synthetic token=" + key}}
 			body, _ := json.Marshal(payload)
 			for repeat := 0; repeat < 2; repeat++ {
 				var out, diagnostic bytes.Buffer

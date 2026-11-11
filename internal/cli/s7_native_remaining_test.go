@@ -17,13 +17,14 @@ func TestS7AcceptedOutletKeepsHistoricalReturnOutOfCurrentQueue(t *testing.T) {
 	state := s7RecoveryFixtureState("running", "running")
 	state["baseline"] = map[string]any{"generation": 1}
 	p := workpacket.ReviewResultPacket{Binding: workpacket.ReviewResultBinding{
-		RuntimeID: "loop-REQ-TEST", BaselineGeneration: 1, ReviewRound: 1, ReviewPlanID: "plan-r2", ReviewPlanRevision: 1,
+		RuntimeID: "loop-REQ-TEST", BaselineGeneration: 1, ReviewPlanID: "previous-plan", ReviewPlanRevision: 1,
 	}}
 	text := nativeS7AcceptedOutletContext(t.TempDir(), runtime.Snapshot{State: state}, p)
 	if !strings.Contains(text, "earlier responsibility") || strings.Contains(text, "assignment-e2e-1") || strings.Contains(text, "manifest-draft") {
 		t.Fatalf("historical return reactivated current/old queue: %s", text)
 	}
-	p.Binding.ReviewRound = 2
+	p.Binding.ReviewPlanID = "plan-r2"
+	p.Binding.ReviewPlanRef = mapFieldCLI(mapFieldCLI(state, "review"), "plan")["path"].(string)
 	mapFieldCLI(mapFieldCLI(state, "review"), "plan")["status"] = "clean"
 	state["pause"] = map[string]any{"reason": "human checkpoint"}
 	text = nativeS7AcceptedOutletContext(t.TempDir(), runtime.Snapshot{State: state}, p)
@@ -32,15 +33,58 @@ func TestS7AcceptedOutletKeepsHistoricalReturnOutOfCurrentQueue(t *testing.T) {
 	}
 }
 
+func TestS7AcceptedOutletUsesActualReceiptAcrossPlanRevision(t *testing.T) {
+	state := s7RecoveryFixtureState("running", "running")
+	state["baseline"] = map[string]any{"generation": 1}
+	reviewState := mapFieldCLI(state, "review")
+	plan := mapFieldCLI(reviewState, "plan")
+	plan["revision"] = 2
+	row := mapFieldCLI(reviewState, "assignments")["assignment-qa-1"].(map[string]any)
+	row["result_receipt"] = map[string]any{"packet_id": "packet-before-revision"}
+	p := workpacket.ReviewResultPacket{ID: "packet-before-revision", Binding: workpacket.ReviewResultBinding{
+		RuntimeID: "loop-REQ-TEST", BaselineGeneration: 1, ReviewPlanID: "plan-r2", ReviewPlanRevision: 1, AssignmentID: "assignment-qa-1",
+	}}
+	state["pause"] = map[string]any{"reason": "human checkpoint"}
+	text := nativeS7AcceptedOutletContext(t.TempDir(), runtime.Snapshot{State: state}, p)
+	if strings.Contains(text, "earlier responsibility") || !strings.Contains(text, "TR-010/TR-011") {
+		t.Fatalf("actual original receipt lost current continuation after revision: %s", text)
+	}
+}
+
+func TestS7AcceptedOutletKeepsUnknownWhenOriginalPlanUnreadable(t *testing.T) {
+	state := s7RecoveryFixtureState("running", "running")
+	state["baseline"] = map[string]any{"generation": 1}
+	reviewState := mapFieldCLI(state, "review")
+	mapFieldCLI(reviewState, "plan")["revision"] = 2
+	p := workpacket.ReviewResultPacket{ID: "packet-before-revision", Binding: workpacket.ReviewResultBinding{
+		RuntimeID: "loop-REQ-TEST", BaselineGeneration: 1, ReviewPlanID: "plan-r2", ReviewPlanRevision: 1,
+		ReviewPlanRef: "missing-original-plan.json", AssignmentID: "assignment-qa-2", OwnerAgentID: "agent-qa-2",
+	}}
+	text := nativeS7AcceptedOutletContext(t.TempDir(), runtime.Snapshot{State: state}, p)
+	if !strings.Contains(text, "unknown") || !strings.Contains(text, "accepted") || strings.Contains(text, "earlier responsibility") {
+		t.Fatalf("unreadable original was mistaken for a historical answer: %s", text)
+	}
+}
+
 func TestS7AcceptedRemainingProjectionPreservesClosedRouting(t *testing.T) {
 	for _, tc := range []struct{ status, want string }{
-		{"observation_sealed", "TR-008"}, {"paused", "TR-010/TR-011"}, {"stale", "baseline drift"},
+		{"observation_sealed", "TR-008"}, {"paused", "TR-010/TR-011"},
+		// The retired baseline-drift proof and the `runtime review-plan
+		// revive/revise` recovery path are gone. L4-workflow-convergence.md:312 —
+		// "旧入口、旧 schema、旧 Hook／CLI、旧消费者及兼容适配连同仅为它们存在的
+		// 测试一并删除"; L4-workflow-convergence.md:281 — "无 hash 不再单凭原路径
+		// 和版本独立证明字节未被外部改动". The current outlet points Main at the
+		// actual change in the current ReviewPlan questionnaire.
+		{"stale", "Main addresses the actual change in the current ReviewPlan questionnaire"},
 	} {
 		t.Run(tc.status, func(t *testing.T) {
 			state := s7RecoveryFixtureState(tc.status, tc.status)
 			text := nativeS7RemainingOutletContext(t.TempDir(), state)
 			if !strings.Contains(text, tc.want) || strings.Contains(text, "manifest-draft") || strings.Contains(text, "registered Reviewer's queued dispatch") {
 				t.Fatalf("closed routing dispatched old queue or lost next action: %s", text)
+			}
+			if tc.status == "stale" && (strings.Contains(text, "baseline drift") || strings.Contains(text, "revive/revise path")) {
+				t.Fatalf("retired baseline-drift proof or revive/revise path reappeared: %s", text)
 			}
 		})
 	}
@@ -67,7 +111,7 @@ func TestS7AcceptedRemainingProjectionUsesOriginalPrerequisites(t *testing.T) {
 		t.Fatal(err)
 	}
 	ptr := mapFieldCLI(facts, "plan")
-	ptr["path"], ptr["sha256"] = "plan.json", workpacket.Digest(data)
+	ptr["path"] = "plan.json"
 	text := nativeS7RemainingOutletContext(root, state)
 	for _, want := range []string{"required static Claims are not all dispositioned", "manifest-draft", "reviewer-lock", "waits for resource locks original-db"} {
 		if !strings.Contains(text, want) {
@@ -104,14 +148,18 @@ func TestS7AcceptedRemainingProjectionManifestQueueAndBound(t *testing.T) {
 func TestS7RemainingProjectionUsesCoordinatesWhenAnotherBodyIsInvalid(t *testing.T) {
 	root := t.TempDir()
 	state := s7RecoveryFixtureState("running", "running")
+	state["schema_version"] = "1.2.0"
 	state["baseline"] = map[string]any{"generation": 1}
 	state["configuration"] = map[string]any{"optimization": map[string]any{"packet": true}}
+	if !runtime.PacketEnabled(state) {
+		t.Fatal("fixture must enable the original packet contract")
+	}
 	ptr := mapFieldCLI(mapFieldCLI(state, "review"), "plan")
 	var packets []any
 	for _, suffix := range []string{"2", "3"} {
 		packets = append(packets, map[string]any{
 			"packet_id": "packet-qa-" + suffix, "template_id": "s7-review-result-v1",
-			"binding":   workpacket.ReviewResultBinding{RuntimeID: "loop-REQ-TEST", BaselineGeneration: 1, ReviewPlanID: "plan-r2", ReviewPlanRevision: 1, ReviewPlanRef: ptr["path"].(string), ReviewPlanSHA256: ptr["sha256"].(string), ReviewRound: 2, AssignmentID: "assignment-qa-" + suffix, OwnerAgentID: "agent-qa-" + suffix, ClaimIDs: []string{"CLAIM-QA-" + suffix}},
+			"binding":   workpacket.ReviewResultBinding{RuntimeID: "loop-REQ-TEST", BaselineGeneration: 1, ReviewPlanID: "plan-r2", ReviewPlanRevision: 1, ReviewPlanRef: ptr["path"].(string), AssignmentID: "assignment-qa-" + suffix, OwnerAgentID: "agent-qa-" + suffix, ClaimIDs: []string{"CLAIM-QA-" + suffix}},
 			"view_path": "original/qa-" + suffix + "/view.md", "answer_path": "original/qa-" + suffix + "/answer.json",
 			// These invalid bodies must remain invalid to the body reader;
 			// Main's queue handoff needs only their registered coordinates.

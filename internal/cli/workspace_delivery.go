@@ -2,10 +2,7 @@ package cli
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -71,126 +68,44 @@ func runWorkspaceDeliveryContext(parent context.Context, args []string, stdout, 
 	if err != nil {
 		return fail(err)
 	}
-	var b *workspace.ExecutionRegistry
-	if verb == "integrate" {
-		data, err := json.Marshal(snap.State["workspace"])
-		if err != nil {
-			return fail(err)
-		}
-		if err := json.Unmarshal(data, &b); err != nil {
-			return fail(err)
-		}
-	} else {
-		b, err = workspace.Decode(snap.State)
-		if err != nil {
-			return fail(err)
-		}
+	data, err := json.Marshal(snap.State["workspace"])
+	if err != nil {
+		return fail(err)
 	}
-	if b == nil {
-		return fail(fmt.Errorf("bind Main first"))
+	registry, err := workspace.DecodeRegistry(data)
+	if err != nil {
+		return fail(err)
 	}
-	if verb != "integrate" {
-		if err := b.Validate(ctx, *root); err != nil {
-			return fail(err)
-		}
-	}
+	b := &registry
 	e, ok := b.Execution(*id, workspace.RuntimeID(snap.State), workspace.Generation(snap.State))
-	if !ok || e.AgentID != *agent || (e.Status != "ready" && !(verb == "integrate" && e.Status == "complete")) {
+	if !ok || e.AgentID != *agent || (e.Status != "ready" && e.Status != "complete") {
 		return fail(fmt.Errorf("delivery requires the registered execution and owner"))
 	}
 	if e.Purpose == workspace.DocumentReviewPurpose {
 		return fail(fmt.Errorf("S5 document review has no product delivery/integration; use the answer receipt"))
-	}
-	var loaded *hookctx.LoadedContext
-	var a *hookctx.AssignmentContext
-	if verb != "integrate" {
-		loaded, err = hookctx.LoadFull(*root, e.AgentID)
-		if err != nil {
-			return fail(err)
-		}
-		for i := range loaded.Assignments {
-			if loaded.Assignments[i].AssignmentID == e.AssignmentID && loaded.Assignments[i].OwnerAgentID == e.AgentID {
-				a = &loaded.Assignments[i]
-				break
-			}
-		}
-		if a == nil {
-			return fail(fmt.Errorf("delivery assignment is no longer registered"))
-		}
-	}
-	if verb == "deliver" {
-		if loaded.PolicyContext.Agent == nil || loaded.PolicyContext.Agent.LifecycleActivity() != "reported" {
-			return fail(fmt.Errorf("record the genuine Worker completion_report before proposing S9 delivery; the final domain RepairResult is submitted only after merge"))
-		}
-		if err = b.ValidateExecution(ctx, e, false); err != nil {
-			return fail(err)
-		}
-		if err = b.ValidateInputs(e); err != nil {
-			return fail(err)
-		}
-		submissionPaths, err := b.WorkerSubmissionPaths(e)
-		if err != nil {
-			return fail(err)
-		}
-		path := filepath.Join(e.Path, filepath.FromSlash(submissionPaths.RepairResult))
-		physical, err := workspace.Canonical(path)
-		if err != nil || physical != path {
-			return fail(fmt.Errorf("candidate proposal must be a local Worker submission"))
-		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return fail(err)
-		}
-		var proposal repair.RepairResultRequest
-		if err = json.Unmarshal(data, &proposal); err != nil {
-			return fail(err)
-		}
-		candidate, ref, err := repair.CreateWorkspaceCandidate(ctx, *root, snap.State, e, proposal)
-		if err != nil {
-			return fail(err)
-		}
-		if e.DeliveryRef != "" && (e.DeliveryRef != ref.Path || e.DeliverySHA256 != ref.SHA256) {
-			return fail(fmt.Errorf("execution already has an immutable delivery; preserve it for explicit recovery"))
-		}
-		if e.DeliveryRef == "" {
-			e.DeliveryRef, e.DeliverySHA256 = ref.Path, ref.SHA256
-			b.Executions[e.AssignmentID] = e
-			key := fmt.Sprintf("workspace-delivery-r%d", snap.Revision+1)
-			snap, err = writer.Update(snap.Revision, runtime.Mutation{EventID: key, TransitionID: "WORKSPACE", Event: "workspace_updated", Actor: e.AgentID, RuntimeID: e.RuntimeID, IdempotencyKey: key, RetainLastTransition: true, OccurredAt: time.Now().UTC(), Message: "immutable S9 candidate proposed; no final result or PASS registered", Apply: func(state map[string]any) error { state["workspace"] = workspace.Encode(b); return nil }})
-			if err != nil {
-				return fail(err)
-			}
-		}
-		return encodeJSON(stdout, map[string]any{"candidate": candidate, "artifact_ref": ref, "revision": snap.Revision, "next_command_argv": []string{"loop-harness", "runtime", "workspace", "integrate", "--root", *root, "--assignment", e.AssignmentID, "--agent", e.AgentID}})
 	}
 	if err = workspace.RequireMain(*root); err != nil {
 		return fail(err)
 	}
 	// Explain the original reception boundary before opening a candidate path.
 	// Execution registration alone does not establish any delivery fact.
-	if e.DeliveryRef == "" || e.DeliverySHA256 == "" {
+	if e.DeliveryRef == "" {
 		handoff := s9HandoffForExecution(ctx, *root, snap, e)
-		if e.DeliveryRef == "" && e.DeliverySHA256 == "" {
-			return fail(fmt.Errorf("%s %s", handoff.summary(*root), s9UnreceivedActionContext(ctx, *root, handoff)))
-		}
-		return fail(fmt.Errorf("%s Original candidate binding is incomplete: delivery_ref=%q delivery_sha256=%q. Main restores this exact registered source and binding; no legacy fallback or replacement candidate is allowed", handoff.summary(*root), e.DeliveryRef, e.DeliverySHA256))
+		return fail(fmt.Errorf("%s %s", handoff.summary(*root), s9UnreceivedActionContext(ctx, *root, handoff)))
 	}
 	if err := ctx.Err(); err != nil {
 		return fail(err)
 	}
-	ref := repair.ArtifactRef{Path: e.DeliveryRef, SHA256: e.DeliverySHA256}
-	data, err := workpacket.ReadFile(*root, ref.Path, 20<<20)
+	ref := repair.ArtifactRef{Path: e.DeliveryRef}
+	data, err = workpacket.ReadFile(*root, ref.Path, 20<<20)
 	if err != nil {
 		return fail(fmt.Errorf("original candidate source %s for owner=%s assignment=%s is unavailable; Main restores this exact source and preserves accepted work: %w", ref.Path, e.AgentID, e.AssignmentID, err))
 	}
-	if workpacket.Digest(data) != ref.SHA256 {
-		return fail(fmt.Errorf("candidate bytes differ from the original registered delivery SHA256: %s owner=%s assignment=%s; Main restores the original source", ref.Path, e.AgentID, e.AssignmentID))
-	}
-	var candidate repair.WorkspaceCandidate
-	if err := json.Unmarshal(data, &candidate); err != nil {
+	candidate, err := repair.DecodeWorkspaceCandidate(data)
+	if err != nil {
 		return fail(fmt.Errorf("original candidate source %s owner=%s assignment=%s is invalid; Main restores this source: %w", ref.Path, e.AgentID, e.AssignmentID, err))
 	}
-	if candidate.RuntimeID != e.RuntimeID || candidate.BaselineGeneration != e.BaselineGeneration || candidate.ExecutionGeneration != e.Generation || candidate.AssignmentID != e.AssignmentID || candidate.BaseCommit != e.BaseCommit {
+	if candidate.RuntimeID != e.RuntimeID || candidate.BaselineGeneration != e.BaselineGeneration || candidate.ExecutionGeneration != e.Generation || candidate.AssignmentID != e.AssignmentID {
 		return fail(fmt.Errorf("candidate execution identity mismatch"))
 	}
 	typedPacket, typedResult, err := currentRepairResultPacketForDeliveryContext(ctx, *root, snap.State, e, candidate)
@@ -210,33 +125,16 @@ func runWorkspaceDeliveryContext(parent context.Context, args []string, stdout, 
 			return fail(fmt.Errorf("original candidate acceptance is preserved; current professional completion is unavailable: %w", completeErr))
 		}
 		if !complete {
-			return fail(fmt.Errorf("original candidate is accepted; actual professional work remains unfinished. Main follows the recorded professional omissions and original rework path; do not repeat accepted content or integrate it as completed"))
+			return fail(fmt.Errorf("original candidate is accepted for owner=%s assignment=%s packet=%s; actual professional work remains unfinished. Main follows the recorded professional omissions and original rework path; do not repeat accepted content or integrate it as completed", e.AgentID, e.AssignmentID, typedPacket.ID))
 		}
 	}
 	acceptedFinal = registered
 	if !typedResult {
-		loaded, err = hookctx.LoadFull(*root, e.AgentID)
-		if err != nil {
-			return fail(err)
-		}
-		for i := range loaded.Assignments {
-			if loaded.Assignments[i].AssignmentID == e.AssignmentID && loaded.Assignments[i].OwnerAgentID == e.AgentID {
-				a = &loaded.Assignments[i]
-				break
-			}
-		}
-		if a == nil {
-			return fail(fmt.Errorf("legacy delivery assignment is unavailable"))
-		}
-		if !registered {
-			if _, err := repair.ValidateWorkspaceCandidate(*root, snap.State, e, ref); err != nil {
-				return fail(err)
-			}
-		}
-	} else {
-		a = &hookctx.AssignmentContext{AssignmentID: e.AssignmentID, OwnerAgentID: e.AgentID,
-			TaskID: typedPacket.Binding.Sources.TaskID, WorktreePath: e.Path, Branch: e.Branch, TargetBranch: e.TargetBranch}
+		return fail(fmt.Errorf("original S9 result packet is unavailable for the current responsibility"))
 	}
+	a := &hookctx.AssignmentContext{AssignmentID: e.AssignmentID, OwnerAgentID: e.AgentID,
+		TaskID: typedPacket.Binding.Sources.TaskID, WorktreePath: e.Path, Branch: e.Branch, TargetBranch: e.TargetBranch}
+	deferredNative := e.Purpose == workspace.NativeDeliveryPurpose && e.PlatformSessionID == ""
 	cpPath := workspaceExecutionCheckpointPath(*root, e)
 	if err := ctx.Err(); err != nil {
 		return fail(err)
@@ -245,13 +143,39 @@ func runWorkspaceDeliveryContext(parent context.Context, args []string, stdout, 
 	if err != nil {
 		return fail(err)
 	}
-	if found && ((cp.SourceHead != "" && cp.SourceHead != candidate.SourceHead) || cp.WorktreePath != e.Path || cp.TargetBranch != e.TargetBranch || cp.BaselineGeneration != e.BaselineGeneration) {
+	if found && (cp.WorktreePath != e.Path || cp.TargetBranch != e.TargetBranch || cp.BaselineGeneration != e.BaselineGeneration) {
 		return fail(fmt.Errorf("candidate/checkpoint coordinates differ"))
 	}
 	if registered && !found {
 		return fail(fmt.Errorf("registered candidate result has no integration checkpoint"))
 	}
-	mainCommands, err := workspaceMainCheckCommandsContext(ctx, e.Checks, checkCommands, cp)
+	// A resumable checkpoint is the fact source for this responsibility. It is
+	// a lifecycle fact about the recorded work, not a revision, round or digest
+	// comparison, and it stays valid after the Worker checkout is reclaimed.
+	resumable := found && (cp.State == integration.StateReady || cp.State == integration.StateMerged || cp.State == integration.StateVerified || cp.State == integration.StateAcknowledged || cp.State == integration.StateCleanupPending || cp.State == integration.StateComplete)
+	if deferredNative && !registered {
+		// Main resolves its actual checkout only when integration begins.
+		actual, bindErr := workspace.New(ctx, *root)
+		if bindErr != nil {
+			return fail(bindErr)
+		}
+		if actual.MainRoot != b.MainRoot || actual.Branch != b.Branch {
+			return fail(fmt.Errorf("Main checkout differs from its bound development workspace"))
+		}
+		b.CommonDir = actual.CommonDir
+		if !resumable {
+			// Actual source inspection begins with Main's integration responsibility,
+			// after the professional Result has already been accepted. A reclaimed
+			// Worker checkout has no branch to report, so a resumable checkpoint
+			// never asks it for one.
+			e.Branch, err = workspace.Git(ctx, e.Path, "branch", "--show-current")
+			if err != nil {
+				return fail(err)
+			}
+			a.Branch = e.Branch
+		}
+	}
+	mainCommands, err := workspaceMainCheckCommandsForResponsibility(ctx, e.Checks, checkCommands, cp, fmt.Sprintf("owner=%s assignment=%s packet=%s", e.AgentID, e.AssignmentID, typedPacket.ID))
 	if err != nil {
 		return fail(err)
 	}
@@ -264,101 +188,32 @@ func runWorkspaceDeliveryContext(parent context.Context, args []string, stdout, 
 			return fail(fmt.Errorf("selected Main checks have not passed at the checkpoint tested HEAD: %w", err))
 		}
 	}
-	if registered && typedResult {
+	if registered {
 		cp, err = acknowledgeAcceptedRepairResult(ctx, *root, snap, typedPacket, e, cp)
 		if err != nil {
 			return fail(err)
 		}
 	}
 	config := integration.IntegrateConfig{Root: *root, GitRoot: *root, RuntimeID: e.RuntimeID, RequiredChecks: mainCommands, CheckRunner: integration.CommandCheckRunner}
-	if typedResult && cp.State != integration.StateComplete {
-		config.WorkerLogEvidence, err = repair.WorkspaceCandidateLogProjectionForPacket(ctx, *root, typedPacket, e, candidate)
-		if err != nil {
-			if !registered {
-				return fail(err)
-			}
-			config.WorkerCleanupError = errors.Join(config.WorkerCleanupError, err)
-		}
-		config.WorkerPrivateEvidence, err = repair.NativeS9PrivateProjection(ctx, *root, typedPacket, e, candidate, registered)
-		if err != nil {
-			if !registered {
-				return fail(err)
-			}
-			config.WorkerCleanupError = errors.Join(config.WorkerCleanupError, err)
-		}
-		privateArea, areaErr := workspaceNativePrivateArea(ctx, *root, typedPacket, e)
-		if areaErr != nil {
-			if !registered {
-				return fail(areaErr)
-			}
-			config.WorkerCleanupError = errors.Join(config.WorkerCleanupError, areaErr)
-		} else {
-			config.WorkerPrivateArea = privateArea.Path
-			config.WorkerPrivateBaseCommit = privateArea.BaseCommit
-			config.WorkerPrivateWritePaths = privateArea.WritePaths
-			config.WorkerPrivateBaselinePaths = privateArea.BaselinePaths
-		}
-		config.WorkerIgnoredEvidence, err = workspaceIgnoredOriginalProjection(ctx, *root, e.Path, typedPacket, candidate)
-		if err != nil {
-			if !registered {
-				return fail(err)
-			}
-			config.WorkerCleanupError = errors.Join(config.WorkerCleanupError, err)
-		}
-	}
+	// Cleanup is independent of original receipt, merge and Main checks. The
+	// existing cleanup observes actual worktree status and preserves unknown
+	// or private material; it does not build a digest-based deletion proof.
+
 	var inspected integration.Inspection
-	if found && (cp.State == integration.StateReady || cp.State == integration.StateMerged || cp.State == integration.StateVerified || cp.State == integration.StateAcknowledged || cp.State == integration.StateCleanupPending || cp.State == integration.StateComplete) {
+	if resumable {
+		// The recorded checkpoint is the fact source for this responsibility.
+		// A live inspection and its checks are not repeated here.
 		inspected = integration.InspectionFromCheckpoint(cp)
-		if !typedResult {
-			inspected, err = integration.RefreshCompletionBinding(*root, e.RuntimeID, a.CompletionRef, inspected)
-			if err != nil {
-				return fail(err)
-			}
-		}
+
 	} else {
 		if err = b.CleanInputs(ctx); err != nil {
 			return fail(err)
 		}
-		if !typedResult {
-			if err = b.ValidateExecution(ctx, e, false); err != nil {
-				return fail(err)
-			}
-		}
 		a.WorktreePath, a.Branch, a.TargetBranch = e.Path, e.Branch, e.TargetBranch
-		locked := []string{}
-		if !typedResult {
-			a.WritePaths = e.WritePaths
-			for _, v := range loaded.PolicyContext.LockedArtifacts {
-				locked = append(locked, v.Path)
-			}
-		}
-		inspectCfg := integration.InspectConfig{LockedArtifacts: locked, ValidateDelivery: func(ctx context.Context, in integration.Inspection) error {
-			if in.SourceHead != candidate.SourceHead {
-				return fmt.Errorf("candidate source commit changed")
-			}
-			if !typedResult {
-				_, err := repair.ValidateWorkspaceCandidate(*root, snap.State, e, ref)
-				return err
-			}
-			return nil
-		}}
-		if typedResult {
-			inspectCfg.WorkerLogEvidence = config.WorkerLogEvidence
-			inspectCfg.WorkerPrivateEvidence = config.WorkerPrivateEvidence
-			inspectCfg.WorkerPrivateArea = config.WorkerPrivateArea
-			inspectCfg.WorkerPrivateBaseCommit = config.WorkerPrivateBaseCommit
-			inspectCfg.WorkerPrivateWritePaths = config.WorkerPrivateWritePaths
-			inspectCfg.WorkerPrivateBaselinePaths = config.WorkerPrivateBaselinePaths
-		}
-		if typedResult && e.Purpose == workspace.NativeDeliveryPurpose && candidate.SourceHead == candidate.BaseCommit && len(candidate.Proposal.ChangedArtifacts) == 0 {
-			inspectCfg.ReceivedSourceHead = candidate.SourceHead
-		}
-		if found && cp.MergeCommit != "" {
-			inspectCfg.RecoveryBase, err = integration.RecoveryBaseForCheckpoint(ctx, *root, cp)
-			if err != nil {
-				return fail(err)
-			}
-		}
+		// S9's original Result has already been received by its own consumer;
+		// S6's separate completion-report file is not part of this responsibility.
+		inspectCfg := integration.InspectConfig{SkipCompletionCheck: true}
+
 		inspected, err = integration.Inspect(ctx, integration.InspectRequest{Root: *root, Assignment: *a, TargetBranch: e.TargetBranch, BaselineGeneration: e.BaselineGeneration, RuntimeID: e.RuntimeID}, inspectCfg)
 		if err != nil {
 			return fail(err)
@@ -373,10 +228,6 @@ func runWorkspaceDeliveryContext(parent context.Context, args []string, stdout, 
 		return fail(fmt.Errorf("candidate is not verified: %s %s", cp.State, cp.FailureReason))
 	}
 	if !registered {
-		head, err := workspace.Git(ctx, *root, "rev-parse", "HEAD")
-		if err != nil || head != cp.TestedHead {
-			return fail(fmt.Errorf("Main moved after candidate verification"))
-		}
 		snap, err = writer.Snapshot()
 		if err != nil {
 			return fail(err)
@@ -385,22 +236,20 @@ func runWorkspaceDeliveryContext(parent context.Context, args []string, stdout, 
 		if err != nil {
 			return fail(err)
 		}
-		var result repair.RepairResult
-		if typedResult {
-			proof, proofErr := repairResultMainProofContext(ctx, *root, e, cp)
-			if proofErr != nil {
-				return fail(proofErr)
-			}
-			snap, result, resultRef, err = repair.SubmitIssuedRepairResult(ctx, *root, statePath, journalPath, repair.SubmitIssuedRepairResultRequest{
-				ExpectedRevision: snap.Revision,
-				PacketID:         typedPacket.ID,
-				OwnerAgentID:     e.AgentID,
-				MainProof:        proof,
-				OccurredAt:       time.Now().UTC(),
-			})
-		} else {
-			snap, result, resultRef, err = repair.SubmitRepairResultToRuntime(*root, statePath, journalPath, repair.SubmitResultRuntimeRequest{RuntimeRequest: repair.RuntimeRequest{ExpectedRevision: snap.Revision, Actor: e.AgentID}, Result: candidate.Proposal})
+		proof, proofErr := repairResultMainProofContext(ctx, *root, e, cp)
+		if proofErr != nil {
+			return fail(proofErr)
 		}
+		var result repair.RepairResult
+		snap, result, resultRef, err = repair.SubmitIssuedRepairResult(ctx, *root, statePath, journalPath, repair.SubmitIssuedRepairResultRequest{
+			ExpectedRevision: -1,
+			PacketID:         typedPacket.ID,
+			OwnerAgentID:     e.AgentID,
+			MainProof:        proof,
+			Checkpoint:       &cp,
+			MainChecks:       candidate.Proposal.Checks,
+			OccurredAt:       time.Now().UTC(),
+		})
 		if err != nil {
 			return fail(err)
 		}
@@ -410,31 +259,9 @@ func runWorkspaceDeliveryContext(parent context.Context, args []string, stdout, 
 		}
 	}
 
-	if !typedResult && a.CompletionAckRef == "" {
-		for _, other := range b.Executions {
-			if other.AgentID != e.AgentID || other.AssignmentID == e.AssignmentID || other.DeliveryRef == "" || other.RuntimeID != e.RuntimeID || other.BaselineGeneration != e.BaselineGeneration {
-				continue
-			}
-			c, err := repair.ReadWorkspaceCandidate(*root, repair.ArtifactRef{Path: other.DeliveryRef, SHA256: other.DeliverySHA256})
-			if err != nil {
-				return fail(err)
-			}
-			if _, done, err := repair.RegisteredWorkspaceResultContext(ctx, *root, snap.State, c); err != nil {
-				return fail(err)
-			} else if !done {
-				return fail(fmt.Errorf("register verified domain result for %s before acknowledging shared owner", other.AssignmentID))
-			}
-		}
-		snap, err = acknowledgeVerifiedIntegration(*root, snap, a, cp)
-		if err != nil {
-			return fail(err)
-		}
-	}
-	if typedResult {
-		cp, err = acknowledgeAcceptedRepairResult(ctx, *root, snap, typedPacket, e, cp)
-		if err != nil {
-			return fail(err)
-		}
+	cp, err = acknowledgeAcceptedRepairResult(ctx, *root, snap, typedPacket, e, cp)
+	if err != nil {
+		return fail(err)
 	}
 	// Final reception unlocks its original successor independently of resource
 	// retirement. Prepare once through the original idempotent issuer before
@@ -498,9 +325,11 @@ func acknowledgeAcceptedRepairResult(ctx context.Context, root string, snapshot 
 	return integration.DefaultCheckpointStore().CompareAndSwap(workspaceExecutionCheckpointPath(root, execution), checkpoint, next)
 }
 
-// currentRepairResultPacketForDelivery identifies an issued typed S9 packet
-// from immutable candidate provenance. If no provenance exists, any issued
-// packet for this Assignment still prevents fallback to the legacy Writer.
+// currentRepairResultPacketForDelivery identifies the packet for the original
+// accepted S9 result using its existing responsibility association. A
+// candidate without original provenance is resolved by the typed selector: a
+// registered typed S9 packet for this assignment stays typed and is refused
+// explicitly instead of being answered by an older fallback.
 func currentRepairResultPacketForDelivery(root string, state map[string]any, execution workspace.Execution, candidate repair.WorkspaceCandidate) (workpacket.RepairResultPacket, bool, error) {
 	return currentRepairResultPacketForDeliveryContext(context.Background(), root, state, execution, candidate)
 }
@@ -510,13 +339,21 @@ func currentRepairResultPacketForDeliveryContext(ctx context.Context, root strin
 		return workpacket.RepairResultPacket{}, false, err
 	}
 	if candidate.Provenance == nil {
+		// The original candidate carries no provenance. Ask the typed selector
+		// whether this assignment and owner still own a registered typed S9
+		// packet before answering for the current responsibility.
 		packet, typed, err := typedRepairResultPacketForAssignmentContext(ctx, root, state, execution.AssignmentID, execution.AgentID)
 		if err != nil {
-			return packet, typed, err
+			return packet, true, fmt.Errorf("typed S9 candidate original provenance is unavailable; preserve registered source %s and restore original packet binding; no legacy fallback: %w", execution.DeliveryRef, err)
 		}
-		if typed || execution.Purpose == workspace.NativeDeliveryPurpose {
+		if typed {
+			// This responsibility owns a typed S9 packet, so its original
+			// provenance is a named gap, not an absent responsibility.
 			return packet, true, fmt.Errorf("typed S9 candidate original provenance is unavailable; preserve registered source %s and restore original packet binding; no legacy fallback", execution.DeliveryRef)
 		}
+		// No typed S9 responsibility is registered for this assignment. The
+		// caller reports the unavailable original packet for the current
+		// responsibility.
 		return workpacket.RepairResultPacket{}, false, nil
 	}
 	packet, found, err := runtime.FindRepairResultPacketContext(runtime.WithPacketBodyRoot(ctx, root), state, candidate.Provenance.PacketID)
@@ -527,13 +364,9 @@ func currentRepairResultPacketForDeliveryContext(ctx context.Context, root strin
 	if err != nil || selected["assignment_id"] != execution.AssignmentID {
 		return packet, false, fmt.Errorf("candidate original registered execution differs: %v", err)
 	}
-	packetSHA, err := workpacket.RepairResultPacketDigest(packet)
-	if err != nil {
-		return packet, false, fmt.Errorf("candidate original packet differs: %w", err)
-	}
 	b := packet.Binding.Sources
 	pointer := repairPointerCLI(state)
-	if !repairResultCandidateMatchesPacketExecution(candidate, packet, execution, packetSHA) ||
+	if !repairResultCandidateMatchesPacketExecution(candidate, packet, execution) ||
 		pointer["session_id"] != b.SessionID || pointer["plan_ref"] != b.PlanRef ||
 		candidate.Proposal.AssignmentID != b.RepairAssignmentID ||
 		stringMapCLI(pointer["assignment_owners"])[b.RepairAssignmentID] != execution.AgentID {
@@ -545,14 +378,17 @@ func currentRepairResultPacketForDeliveryContext(ctx context.Context, root strin
 // The registered execution is checked by the original Runtime projection at
 // the caller. Share the original consumer's tuple predicate instead of keeping
 // a second, weaker list of provenance fields before Git integration.
-func repairResultCandidateMatchesPacketExecution(candidate repair.WorkspaceCandidate, packet workpacket.RepairResultPacket, execution workspace.Execution, packetSHA string) bool {
-	return candidate.Provenance != nil && packetSHA != "" && candidate.Provenance.PacketSHA256 == packetSHA &&
+func repairResultCandidateMatchesPacketExecution(candidate repair.WorkspaceCandidate, packet workpacket.RepairResultPacket, execution workspace.Execution) bool {
+	return candidate.Provenance != nil &&
 		runtime.ValidateRepairResultProvenanceBinding(packet, *candidate.Provenance) == nil &&
+		candidate.Provenance.ExecutionAssignmentID == execution.AssignmentID &&
+		candidate.Provenance.ExecutionGeneration == execution.Generation &&
+		candidate.Provenance.BaselineGeneration == execution.BaselineGeneration &&
+		filepath.Clean(candidate.Provenance.ExecutionRoot) == filepath.Clean(execution.Path) &&
+		candidate.Provenance.ReworkRef == execution.ReworkRef &&
 		candidate.RuntimeID == execution.RuntimeID && candidate.BaselineGeneration == execution.BaselineGeneration &&
 		candidate.ExecutionGeneration == execution.Generation && candidate.AssignmentID == execution.AssignmentID &&
-		candidate.BaseCommit == execution.BaseCommit && candidate.SourceHead == candidate.Provenance.SourceHead &&
 		candidate.SessionID == packet.Binding.Sources.SessionID && candidate.PlanID == packet.Binding.Sources.PlanID &&
-		candidate.ContractSHA256 == packet.Binding.Sources.ContractSHA256 &&
 		candidate.Proposal.ResultID == packet.ResultID && candidate.Proposal.AssignmentID == packet.Binding.Sources.RepairAssignmentID &&
 		candidate.Proposal.ProducerAgentID == execution.AgentID
 }
@@ -573,20 +409,16 @@ func repairResultMainProofContext(ctx context.Context, root string, execution wo
 	if err != nil {
 		return runtime.RepairResultMainProof{}, fmt.Errorf("read verified S9 Main checkpoint: %w", err)
 	}
-	checkpointHash := sha256.Sum256(data)
 	facts, err := runtime.ProjectRepairResultMainFacts(data)
 	if err != nil {
 		return runtime.RepairResultMainProof{}, err
 	}
-	factsHash := sha256.Sum256(facts)
 	if checkpoint.State != integration.StateVerified && checkpoint.State != integration.StateAcknowledged && checkpoint.State != integration.StateCleanupPending && checkpoint.State != integration.StateComplete {
 		return runtime.RepairResultMainProof{}, fmt.Errorf("S9 Main checkpoint is not verified")
 	}
 	return runtime.RepairResultMainProof{
-		CheckpointRef:       filepath.ToSlash(relative),
-		CheckpointSHA256:    hex.EncodeToString(checkpointHash[:]),
-		VerifiedFacts:       facts,
-		VerifiedFactsSHA256: hex.EncodeToString(factsHash[:]),
+		CheckpointRef: filepath.ToSlash(relative),
+		VerifiedFacts: facts,
 	}, nil
 }
 
@@ -596,7 +428,15 @@ func repairResultMainProofContext(ctx context.Context, root string, execution wo
 func workspaceMainCheckCommands(configured, selected []string, cp integration.Checkpoint) ([]string, error) {
 	return workspaceMainCheckCommandsContext(context.Background(), configured, selected, cp)
 }
+
 func workspaceMainCheckCommandsContext(ctx context.Context, configured, selected []string, cp integration.Checkpoint) ([]string, error) {
+	return workspaceMainCheckCommandsForResponsibility(ctx, configured, selected, cp, "")
+}
+
+// workspaceMainCheckCommandsForResponsibility names the exact original
+// responsibility in its own diagnostic, so an unavailable Main check selection
+// still identifies the assignment, agent and packet it belongs to.
+func workspaceMainCheckCommandsForResponsibility(ctx context.Context, configured, selected []string, cp integration.Checkpoint, responsibility string) ([]string, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -616,14 +456,12 @@ func workspaceMainCheckCommandsContext(ctx context.Context, configured, selected
 			var receipt struct {
 				Command string `json:"command"`
 				Status  string `json:"status"`
-				Before  string `json:"head_before"`
-				After   string `json:"head_after"`
-				Exit    int    `json:"exit_code"`
+				Exit    *int   `json:"exit_code"`
 			}
 			if err := json.Unmarshal(data, &receipt); err != nil {
 				return nil, err
 			}
-			if receipt.Status == "pass" && receipt.Exit == 0 && receipt.Before == cp.TestedHead && receipt.After == cp.TestedHead {
+			if receipt.Status == "pass" && receipt.Exit != nil && *receipt.Exit == 0 {
 				commands = append(commands, receipt.Command)
 			}
 		}
@@ -640,7 +478,11 @@ func workspaceMainCheckCommandsContext(ctx context.Context, configured, selected
 		}
 	}
 	if len(out) == 0 {
-		return nil, fmt.Errorf("S9 Main check selection is unavailable: select necessary checks with --check-command for unfinished work; for an accepted Final, Main must recover its original checkpoint check receipts before cleanup, without resubmitting Worker work")
+		message := "S9 Main check selection is unavailable"
+		if responsibility != "" {
+			message += " for original responsibility " + responsibility
+		}
+		return nil, fmt.Errorf("%s: select necessary checks with --check-command for unfinished work; for an accepted Final, Main must recover its original checkpoint check receipts before cleanup, without resubmitting Worker work", message)
 	}
 	return out, nil
 }

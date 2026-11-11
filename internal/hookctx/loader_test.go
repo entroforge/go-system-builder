@@ -246,7 +246,7 @@ func TestLoaderSurfacesTeamsBugsEvidenceLifecycleAndPause(t *testing.T) {
 		"revision":42,
 		"lifecycle":{"state":"verification","phase":"delivery"},
 		"pause":{"reason":"manual"},
-		"review":{"round":3,"clean_round":{"round":2}},
+		"review":{"round":3,"clean_round":{"round":2},"plan":{"verification_artifact_workspace":".claude/review-artifacts"}},
 		"entities":{
 			"agents":[],
 			"bugs":[
@@ -277,7 +277,7 @@ func TestLoaderSurfacesTeamsBugsEvidenceLifecycleAndPause(t *testing.T) {
 	if !context.Paused {
 		t.Fatal("pause surface must surface paused=true")
 	}
-	if context.CurrentReviewRound != 3 || context.CleanRound == nil {
+	if context.VerificationWorkspace != ".claude/review-artifacts" {
 		t.Fatalf("review surface not loaded: %#v", context)
 	}
 	if context.EvidenceValidCount != 2 {

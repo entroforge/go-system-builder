@@ -15,10 +15,20 @@ func TestBUG104S11ExplicitApproveE2E(t *testing.T) {
 	root := freshRoot(t)
 	state := req039fixtures.BaseState(t, root, "release_audit", "", 10)
 	req039fixtures.SeedReleaseAuditReady(t, root, state)
+	// Fixture gap (C class), repaired on the test side: the seeded S10
+	// release_audit/acceptance evidence rows still carry the legacy numeric
+	// `review_round` and no `review_plan_id`, so they are not the current
+	// review artifact and the TR-017 guard rejects them by fact.
+	// tests/fixtures/** is a forbidden path (PLAN.md R-26), so the current S10
+	// review identity is stamped here instead of in the fixture.
+	// internal/acceptance/acceptance.StampReviewIdentity does the same for the
+	// production review consumer (internal/review/submit.go drops the legacy
+	// review_round for the same reason).
+	stampCurrentS10ReviewIdentity(t, state)
 	req039fixtures.EnsureStateRoot(state, root)
 	writeSystemState(t, root, state)
 
-	code, _, stderr := runHook(t, root, "PreToolUse", req039fixtures.PreToolUseBody(
+	code, _, stderr := runHook(t, root, "PreToolUse", req039fixtures.MainPreToolUseBody(root,
 		"bug-104-red", "Bash", map[string]any{"command": "go test ./..."},
 	))
 	if code != 0 {

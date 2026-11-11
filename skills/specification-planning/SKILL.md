@@ -303,11 +303,11 @@ architecture or ADR, rather than a separate active architecture awaiting
 registration; do not label it `locked` or invent an ownership change just to
 pass the outlet. Fill only the existing `architecture_path` and `conclusion`;
 do not copy the system's
-batch inventory into new answer fields. Empty conclusion is draft. Before
-saving a final pass, commit the locked architecture, accepted applicable ADRs,
-and other formal S2 inputs to the development branch selected by the original
-S1 binding. S3 reads that committed source and checks the current files against
-it; the Hook does not commit for you. Do not include unrelated changes.
+batch inventory into new answer fields. Empty conclusion is draft. S3 reads the fileview selected by the original S1 binding and configuration,
+including the locked architecture, accepted applicable ADRs and other formal
+S2 inputs. Repair the concrete missing or unreadable selected-source material
+reported by the original preparation. Checkout agreement and an extra commit
+action are not reception requirements. Do not include unrelated changes.
 Normal save records the professional report and runs its original outlet.
 If S2 reception succeeded but its outlet is unfinished, repair the named
 material gap and follow the original continuation. When that continuation
@@ -321,7 +321,7 @@ Normal authoring needs no metadata copying, envelope creation, issue/consume,
 or recovery command. For an actual technical failure, use the precise original
 recovery named by the feedback. A receipt, PTR-PLAN-01 and prepared S3 inputs are
 separate outcomes: fix an unmet lock condition in the actual document, or a
-missing committed source on the bound branch, rather than rewriting an accepted
+missing or unreadable material in the selected source, rather than rewriting an accepted
 answer. A lost issued file is a system preparation gap, not a request to invent
 an answer path or its metadata.
 
@@ -484,7 +484,7 @@ Cross-check the files needed to implement each connection against its planned wr
 For critical capabilities name at least one check crossing the actual registered boundary and one counterexample (such as reverted wiring) that would make it fail. Counts, test names, a mock returning the desired response, and a test proving an entry is absent are not delivery evidence. Record coverage gaps explicitly; do not defer a TASK's own delivery obligations to S7. This is a semantic review obligation, not a claim that the current machine gate proves end-to-end correctness.
 
 
-For new batches apply [shared-model contracts in the factory](../../docs/rules/shared-model-contracts.md) (after installation: [project rule](../../docs/rules/shared-model-contracts.md)): explicit policy, native source references, validated examples, committed design closure and role-specific TASK links. Do not create a registry or copy schemas per REQ. Independent generation may run in parallel; only actual shared implementation artifacts require foundation TASK dependencies.
+For new batches apply [shared-model contracts in the factory](../../docs/rules/shared-model-contracts.md) (after installation: [project rule](../../docs/rules/shared-model-contracts.md)): explicit policy, native source references, validated examples, selected-source design closure and role-specific TASK links. Do not create a registry or copy schemas per REQ. Independent generation may run in parallel; only actual shared implementation artifacts require foundation TASK dependencies.
 
 ## Overall dispatch plan (waves-v1)
 

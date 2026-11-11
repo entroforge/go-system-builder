@@ -1,11 +1,15 @@
 package cli
 
 import (
-	"bytes"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 
 	"github.com/entroforge/go-system-builder/internal/investigation"
@@ -16,7 +20,7 @@ import (
 )
 
 // Only actual human choices from the original finite grant. Binding identities
-// and the locked REQ digest belong to its original evidence projection.
+// belong to its original evidence projection.
 type repairDelegationApplicationAnswer struct {
 	Decision       string   `json:"decision"`
 	Reviewer       string   `json:"reviewer"`
@@ -26,12 +30,43 @@ type repairDelegationApplicationAnswer struct {
 	ExpiresAt      string   `json:"expires_at"`
 }
 
-func repairDelegationFromApplication(state map[string]any, answer repairDelegationApplicationAnswer) investigation.RepairDelegation {
+func repairDelegationFromApplication(root string, state map[string]any, answer repairDelegationApplicationAnswer) investigation.RepairDelegation {
 	bound := mapFieldCLI(state, "bound_req")
-	grant := investigation.RepairDelegation{Decision: strings.TrimSpace(answer.Decision), RuntimeID: stringValue(state["runtime_id"]), REQSHA256: stringValue(bound["sha256"]), BaselineGeneration: integerValue(nestedStateValue(state, "baseline", "generation")), ApprovedBy: stringValue(bound["approved_by"]), Reviewer: answer.Reviewer, AllowedPaths: answer.AllowedPaths, ForbiddenPaths: answer.ForbiddenPaths, MaxContracts: answer.MaxContracts, ExpiresAt: answer.ExpiresAt}
-	identity, _ := json.Marshal(grant)
-	grant.DecisionID = "grant-s8-" + workpacket.Digest(identity)
+	grant := investigation.RepairDelegation{Decision: strings.TrimSpace(answer.Decision), RuntimeID: stringValue(state["runtime_id"]), BaselineGeneration: integerValue(nestedStateValue(state, "baseline", "generation")), ApprovedBy: stringValue(bound["approved_by"]), Reviewer: answer.Reviewer, AllowedPaths: answer.AllowedPaths, ForbiddenPaths: answer.ForbiddenPaths, MaxContracts: answer.MaxContracts, ExpiresAt: answer.ExpiresAt}
+	for _, row := range objectSliceAny(state["evidence"]) {
+		if row["kind"] != "human_decision" || row["status"] != "valid" {
+			continue
+		}
+		data, err := workpacket.ReadFile(root, stringValue(row["path"]), 20<<20)
+		if err != nil {
+			continue
+		}
+		var prior investigation.RepairDelegation
+		if json.Unmarshal(data, &prior) != nil {
+			continue
+		}
+		id := prior.DecisionID
+		prior.DecisionID = ""
+		if reflect.DeepEqual(prior, grant) {
+			grant.DecisionID = id
+			return grant
+		}
+	}
+	runtimeID := base64.RawURLEncoding.EncodeToString([]byte(grant.RuntimeID))
+	grant.DecisionID = fmt.Sprintf("grant-s8-%s-g%d-%s", runtimeID, grant.BaselineGeneration, repairDelegationDecisionToken(grant))
 	return grant
+}
+
+// repairDelegationDecisionToken distinguishes two different human repair
+// grants of the same Runtime and baseline generation. It is taken from the
+// recorded decision itself, so the same decision keeps one identity and the
+// Runtime write count never takes part in it.
+func repairDelegationDecisionToken(grant investigation.RepairDelegation) string {
+	parts := []string{grant.Decision, grant.ApprovedBy, grant.Reviewer, grant.ExpiresAt, fmt.Sprint(grant.MaxContracts)}
+	parts = append(parts, grant.AllowedPaths...)
+	parts = append(parts, grant.ForbiddenPaths...)
+	sum := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
+	return hex.EncodeToString(sum[:8])
 }
 
 // Ordinary tools do not resubmit a decision whose exact content already has
@@ -45,28 +80,21 @@ func repairDelegationApplicationAlreadyRecorded(root string, state map[string]an
 	if investigationLeadDecode(data, &answer) != nil || strings.TrimSpace(answer.Decision) != "delegate_bounded_repair" {
 		return false
 	}
-	grant := repairDelegationFromApplication(state, answer)
+	grant := repairDelegationFromApplication(root, state, answer)
 	row := evidenceEntryByID(state, grant.DecisionID)
 	if row == nil || row["status"] != "valid" || row["kind"] != "human_decision" || !s8ContractContains(row["produced_by"], grant.ApprovedBy) || !s8ContractContains(row["scope_refs"], "s8_repair_delegation:"+grant.RuntimeID) {
 		return false
 	}
-	record, _ := json.MarshalIndent(grant, "", "  ")
-	record = append(record, '\n')
-	rel := filepath.ToSlash(filepath.Join(".claude", "decisions", grant.DecisionID+".json"))
-	if row["path"] != rel || row["sha256"] != workpacket.Digest(record) {
-		return false
-	}
-	actual, err := workpacket.ReadFile(root, rel, 20<<20)
-	return err == nil && bytes.Equal(actual, record)
+	return stringValue(row["id"]) == grant.DecisionID
 }
 
 func repairDelegationApplicationPaths(root string, state map[string]any) []string {
 	bound := mapFieldCLI(state, "bound_req")
-	if bound["status"] != "locked" || stringValue(bound["approved_by"]) == "" || len(stringValue(bound["sha256"])) != 64 || stringValue(state["runtime_id"]) == "" || integerValue(nestedStateValue(state, "baseline", "generation")) < 1 {
+	if bound["status"] != "locked" || stringValue(bound["approved_by"]) == "" || stringValue(state["runtime_id"]) == "" || integerValue(nestedStateValue(state, "baseline", "generation")) < 1 {
 		return nil
 	}
-	identity, _ := json.Marshal([]any{state["runtime_id"], bound["id"], bound["sha256"], bound["approved_by"], nestedStateValue(state, "baseline", "generation")})
-	return []string{filepath.Join(root, ".claude", "decisions", "s8-repair-delegation-"+workpacket.Digest(identity)+".json")}
+	dir := s8OriginalSourceDir(root, stringValue(state["runtime_id"]), integerValue(nestedStateValue(state, "baseline", "generation")), stringValue(bound["path"]))
+	return []string{filepath.Join(dir, "s8-repair-delegation.json")}
 }
 
 func stageRepairDelegationApplicationContext(root string, request policy.Input, snapshot runtime.Snapshot) string {
@@ -83,12 +111,12 @@ func stageRepairDelegationApplicationContext(root string, request policy.Input, 
 			return "Original optional repair delegation application preparation failed: " + err.Error()
 		}
 	}
-	return "Optional finite repair delegation application: " + path + ". Use only if the actual bound REQ approver chooses this reusable bounded authority; ordinary per-contract human approval remains available and no second grant is required when an approved policy or valid grant already exists. Main faithfully records the human's decision=delegate_bounded_repair, designated reviewer (different from the human authorizer), literal allowed_paths/forbidden_paths, finite max_contracts and explicit RFC3339 expires_at. Empty decision creates no grant. The system supplies the current locked REQ/runtime/generation, authority identity, hash, scope and evidence registration; no machine fields or commands are authored. A grant alone does not approve any Contract, technical review, requirement change or release."
+	return "Optional finite repair delegation application: " + path + ". Use only if the actual bound REQ approver chooses this reusable bounded authority; ordinary per-contract human approval remains available and no second grant is required when an approved policy or valid grant already exists. Main faithfully records the human's decision=delegate_bounded_repair, designated reviewer (different from the human authorizer), literal allowed_paths/forbidden_paths, finite max_contracts and explicit RFC3339 expires_at. Empty decision creates no grant. The system supplies the current locked REQ/runtime/generation, authority identity, scope and evidence registration; no machine fields or commands are authored. A grant alone does not approve any Contract, technical review, requirement change or release."
 }
 
 func runSavedRepairDelegationApplication(root string, request policy.Input, stdout io.Writer) (bool, int) {
 	path, saved := savedQuestionnairePath(request)
-	if !saved || !strings.HasPrefix(filepath.Base(path), "s8-repair-delegation-") || filepath.Dir(path) != filepath.Join(root, ".claude", "decisions") {
+	if !saved || filepath.Base(path) != "s8-repair-delegation.json" {
 		return false, 0
 	}
 	feedback := func(message string) (bool, int) { return true, repairLeadFeedback(stdout, path, message) }
@@ -119,29 +147,32 @@ func runSavedRepairDelegationApplication(root string, request policy.Input, stdo
 	if answer.Decision != "delegate_bounded_repair" {
 		return feedback("No finite repair grant was recorded. The original grant requires the human's explicit delegate_bounded_repair choice; ordinary per-contract approval remains available.")
 	}
-	grant := repairDelegationFromApplication(current.State, answer)
+	grant := repairDelegationFromApplication(root, current.State, answer)
+	if row := evidenceEntryByID(current.State, grant.DecisionID); row != nil {
+		return feedback("The original finite grant is already recorded; repeated save creates no new authority or budget.")
+	}
 	if err := investigation.ValidateRepairDelegation(root, current.State, grant); err != nil {
 		return feedback("Original finite grant validation rejected this answer; no authority was created: " + err.Error())
 	}
 	record, _ := json.MarshalIndent(grant, "", "  ")
 	record = append(record, '\n')
-	rel := filepath.ToSlash(filepath.Join(".claude", "decisions", grant.DecisionID+".json"))
-	recordPath := filepath.Join(root, filepath.FromSlash(rel))
-	if err := prepareQuestionnaireText(recordPath, string(record)); err != nil {
-		return feedback("Original grant evidence could not be fixed: " + err.Error())
+	recordPath := filepath.Join(s8OriginalSourceDir(root, grant.RuntimeID, grant.BaselineGeneration, grant.DecisionID), "grant.json")
+	relPath, relErr := filepath.Rel(root, recordPath)
+	if relErr != nil {
+		return feedback("Original grant path is unavailable: " + relErr.Error())
 	}
-	actual, err := os.ReadFile(recordPath)
-	if err != nil || !bytes.Equal(actual, record) {
-		return feedback("Original immutable grant evidence conflicts; no historical authority was overwritten.")
-	}
-	if row := evidenceEntryByID(current.State, grant.DecisionID); row != nil {
-		if row["kind"] != "human_decision" || row["status"] != "valid" || row["path"] != rel || row["sha256"] != workpacket.Digest(record) || !s8ContractContains(row["produced_by"], grant.ApprovedBy) || !s8ContractContains(row["scope_refs"], "s8_repair_delegation:"+grant.RuntimeID) {
-			return feedback("Original grant receipt conflicts; no authority was recreated or renewed.")
-		}
-		return feedback("The original finite grant is already recorded; repeated save creates no new authority or budget.")
-	}
-	next, err := runtime.RecordEvidence(root, statePath, journalPath, runtime.EvidenceRequest{ExpectedRevision: current.Revision, ID: grant.DecisionID, Kind: "human_decision", Path: rel, ProducedBy: []string{grant.ApprovedBy}, ScopeRefs: []string{"s8_repair_delegation:" + grant.RuntimeID}, Validator: semantic.RuntimeCandidateValidator{}})
+	rel, err := workpacket.PublishS9Questionnaire(contextForHook(request), root, filepath.ToSlash(relPath), record, 20<<20)
 	if err != nil {
+		return feedback("Original grant evidence could not be published: " + err.Error())
+	}
+	next, err := runtime.RecordEvidence(root, statePath, journalPath, runtime.EvidenceRequest{ExpectedRevision: -1, ID: grant.DecisionID, Kind: "human_decision", Path: rel, ProducedBy: []string{grant.ApprovedBy}, ScopeRefs: []string{"s8_repair_delegation:" + grant.RuntimeID}, Validator: semantic.RuntimeCandidateValidator{}})
+	if err != nil {
+		// A concurrent original Writer may already have recorded this same human
+		// choice. Reuse only that registered authority, never an unregistered
+		// file occupying a guessed publication path.
+		if latest, snapshotErr := runtime.NewStore(statePath, journalPath).Snapshot(); snapshotErr == nil && repairDelegationApplicationAlreadyRecorded(root, latest.State, path, data) {
+			return feedback("The original finite grant is already recorded; repeated save creates no new authority or budget.")
+		}
 		return feedback("Original grant evidence Writer did not confirm reception: " + err.Error())
 	}
 	return feedback("The actual finite grant was recorded through the existing evidence Writer. No Contract is approved by the grant alone. " + stageInvestigationLeadContractContext(root, policy.Input{Event: "PreToolUse"}, next))

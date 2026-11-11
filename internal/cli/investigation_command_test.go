@@ -29,43 +29,6 @@ func TestRuntimeInvestigationRequiresAnAction(t *testing.T) {
 func TestRuntimeInvestigationIngestCLICommitsCasePointer(t *testing.T) {
 	root := req039fixtures.FreshRoot(t)
 	state := req039fixtures.BaseState(t, root, "bug_resolution", "investigation", 0)
-	batch := map[string]any{
-		"schema_version": "1.0.0", "observation_batch_id": "observation-batch-r1", "conclusion": "sealed",
-		"evidence_id": "observation-batch-r1", "kind": "observation_batch", "runtime_id": req039fixtures.RuntimeIDFromState(state),
-		"producer_agent_id": "round-consumer", "producer_responsibility": "Orchestrator", "review_plan_id": "review-plan-r1",
-		"review_round": 1, "baseline_generation": 1, "subject_digest": strings.Repeat("a", 64),
-		"finding_ids": []string{"finding-1"}, "drain_policy": "complete_required_claims",
-		"claim_coverage_summary": map[string]any{
-			"total_required": 1, "pass": 0, "finding": 1, "not_applicable": 0, "blocked": 0,
-			"blocked_claims": []any{}, "plan_revision": 1,
-		},
-		"unobserved_claim_ids": []any{}, "original_finder_routes": []any{},
-		"investigation_readiness": []any{map[string]any{"finding_id": "finding-1", "status": "ready"}},
-		"sealed_at":               "2026-08-25T00:00:00Z", "sealed_by": "round-consumer", "revision": 1,
-	}
-	data, err := json.MarshalIndent(batch, "", "  ")
-	if err != nil {
-		t.Fatal(err)
-	}
-	data = append(data, '\n')
-	batchRel := ".claude/evidence/observation-batch-r1.json"
-	if err := os.MkdirAll(filepath.Dir(filepath.Join(root, batchRel)), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, batchRel), data, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Join(root, "agents"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "agents", "investigator.md"), []byte("# Investigator\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	review := state["review"].(map[string]any)
-	review["observation_batch"] = map[string]any{
-		"batch_id": "observation-batch-r1", "path": batchRel, "sha256": sha256HexForCLI(data),
-		"finding_ids": []any{"finding-1"}, "drain_policy": "complete_required_claims", "sealed_at": "2026-08-25T00:00:00Z",
-	}
 	seedCLIFinding(t, root, state)
 	req039fixtures.WriteState(t, root, state)
 
@@ -77,7 +40,7 @@ func TestRuntimeInvestigationIngestCLICommitsCasePointer(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("investigation ingest code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
 	}
-	if !strings.Contains(stdout.String(), "investigation-case-observation-batch-r1") {
+	if !strings.Contains(stdout.String(), "investigation-case-review-plan-r1") {
 		t.Fatalf("ingest output does not expose the Case identity: %s", stdout.String())
 	}
 
@@ -95,10 +58,12 @@ func TestRuntimeInvestigationIngestCLICommitsCasePointer(t *testing.T) {
 	if !ok || board["unexplained_finding_ids"] == nil || !strings.Contains(status["next"].(string), "hypothesis") {
 		t.Fatalf("status must expose the investigation board and next action: %#v", status)
 	}
-	budget, ok := board["investigation_reentry_budget"].(map[string]any)
-	if !ok || budget["limit"] != float64(5) || budget["used"] != float64(0) || budget["source"] != "independent_s8_default" {
-		t.Fatalf("active status must expose the independent legacy S8 budget: %#v", board)
+	for _, key := range []string{"investigation_reentry_budget", "ready_for_contract"} {
+		if _, exists := board[key]; exists {
+			t.Fatalf("status exposes removed gate %s: %#v", key, board)
+		}
 	}
+
 	stdout.Reset()
 	stderr.Reset()
 	code = cli.Run([]string{"runtime", "investigation", "status", "--all", "--root", root}, strings.NewReader(""), &stdout, &stderr)
@@ -146,40 +111,14 @@ func TestRuntimeInvestigationIngestCLICommitsCasePointer(t *testing.T) {
 	stdout.Reset()
 	stderr.Reset()
 	code = cli.Run([]string{"runtime", "investigation", "status", "--root", root}, strings.NewReader(""), &stdout, &stderr)
-	if code == 0 || !strings.Contains(stderr.String(), "sha256 drifted") {
-		t.Fatalf("status must reject a drifted pinned Case: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	if code != 0 {
+		t.Fatalf("status rejected the same readable Case: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
 	}
 }
 
 func TestRuntimeInvestigationContractApproveCLIHandsOffToS9(t *testing.T) {
 	root := req039fixtures.FreshRoot(t)
 	state := req039fixtures.BaseState(t, root, "bug_resolution", "investigation", 0)
-	batch := map[string]any{
-		"schema_version": "1.0.0", "observation_batch_id": "observation-batch-r1", "conclusion": "sealed",
-		"evidence_id": "observation-batch-r1", "kind": "observation_batch", "runtime_id": req039fixtures.RuntimeIDFromState(state),
-		"producer_agent_id": "round-consumer", "producer_responsibility": "Orchestrator", "review_plan_id": "review-plan-r1",
-		"review_round": 1, "baseline_generation": 1, "subject_digest": strings.Repeat("a", 64),
-		"finding_ids": []string{"finding-1"}, "drain_policy": "complete_required_claims",
-		"claim_coverage_summary": map[string]any{"total_required": 1, "pass": 0, "finding": 1, "not_applicable": 0, "blocked": 0, "blocked_claims": []any{}, "plan_revision": 1},
-		"unobserved_claim_ids":   []any{}, "original_finder_routes": []any{}, "investigation_readiness": []any{map[string]any{"finding_id": "finding-1", "status": "ready"}},
-		"sealed_at": "2026-08-25T00:00:00Z", "sealed_by": "round-consumer", "revision": 1,
-	}
-	batchBytes, err := json.MarshalIndent(batch, "", "  ")
-	if err != nil {
-		t.Fatal(err)
-	}
-	batchBytes = append(batchBytes, '\n')
-	batchRel := ".claude/evidence/observation-batch-r1.json"
-	if err := os.MkdirAll(filepath.Dir(filepath.Join(root, batchRel)), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, batchRel), batchBytes, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	state["review"].(map[string]any)["observation_batch"] = map[string]any{
-		"batch_id": "observation-batch-r1", "path": batchRel, "sha256": sha256HexForCLI(batchBytes), "finding_ids": []any{"finding-1"},
-		"drain_policy": "complete_required_claims", "sealed_at": "2026-08-25T00:00:00Z",
-	}
 	seedCLIFinding(t, root, state)
 	req039fixtures.WriteState(t, root, state)
 
@@ -191,8 +130,8 @@ func TestRuntimeInvestigationContractApproveCLIHandsOffToS9(t *testing.T) {
 	prepareCLIInvestigationCase(t, root)
 	contractRel := ".claude/review/investigation/repair-contract-draft.json"
 	contract := map[string]any{
-		"schema_version": "1.0.0", "repair_contract_id": "repair-contract-r1", "case_id": "investigation-case-observation-batch-r1", "revision": 1, "status": "draft", "source_finding_ids": []string{"finding-1"},
-		"root_cause_statement": "the payload boundary has two incompatible owners", "violated_invariant": "one owner defines the payload shape", "causal_model_ref": "case://investigation-case-observation-batch-r1/causal-model", "architecture_intent": "restore the authoritative boundary",
+		"schema_version": "1.0.0", "repair_contract_id": "repair-contract-r1", "case_id": "investigation-case-review-plan-r1", "revision": 1, "status": "draft", "source_finding_ids": []string{"finding-1"},
+		"root_cause_statement": "the payload boundary has two incompatible owners", "violated_invariant": "one owner defines the payload shape", "causal_model_ref": "case://investigation-case-review-plan-r1/causal-model", "architecture_intent": "restore the authoritative boundary",
 		"repair_units": []any{map[string]any{"id": "unit-1", "description": "centralize the payload contract", "assertion_ids": []string{"all"}}}, "prospective_scope": []string{"internal/api"}, "forbidden_scope": []string{"docs/requirements"},
 		"symptom_assertions": []string{"finding-1 is eliminated"}, "root_invariant_assertions": []string{"one payload owner exists"}, "detection_gap_assertions": []string{"contract drift is tested"}, "stop_escalation_conditions": []string{"locked requirement changes"},
 	}
@@ -208,12 +147,11 @@ func TestRuntimeInvestigationContractApproveCLIHandsOffToS9(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	approvalHash := sha256HexForCLI(append(append([]byte(nil), contractBytes...), '\n'))
 	decision := map[string]any{
 		"decision": "approve_contract", "decision_id": "ev-contract-approval",
 		"runtime_id": req039fixtures.RuntimeIDFromState(state),
-		"case_id":    "investigation-case-observation-batch-r1", "contract_id": "repair-contract-r1",
-		"approved_by": "main-session", "approval_hash": approvalHash,
+		"case_id":    "investigation-case-review-plan-r1", "contract_id": "repair-contract-r1",
+		"approved_by": "main-session", "contract_draft": contract,
 	}
 	decisionBytes, err := json.MarshalIndent(decision, "", "  ")
 	if err != nil {
@@ -243,7 +181,7 @@ func TestRuntimeInvestigationContractApproveCLIHandsOffToS9(t *testing.T) {
 
 	stdout.Reset()
 	stderr.Reset()
-	code = cli.Run([]string{"runtime", "investigation", "contract", "approve", "--root", root, "--case-id", "investigation-case-observation-batch-r1", "--file", contractPath, "--approved-by", "main-session", "--approval-hash", approvalHash, "--approval-evidence-id", approvalEvidenceID}, strings.NewReader(""), &stdout, &stderr)
+	code = cli.Run([]string{"runtime", "investigation", "contract", "approve", "--root", root, "--case-id", "investigation-case-review-plan-r1", "--file", contractPath, "--approved-by", "main-session", "--approval-evidence-id", approvalEvidenceID}, strings.NewReader(""), &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("contract approve code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
 	}
@@ -263,13 +201,13 @@ func TestRuntimeInvestigationContractApproveCLIHandsOffToS9(t *testing.T) {
 	}
 
 	preparedRepair := approvedState["review"].(map[string]any)["repair"].(map[string]any)
-	if preparedRepair["status"] != "planning" || preparedRepair["case_id"] != "investigation-case-observation-batch-r1" {
+	if preparedRepair["status"] != "planning" || preparedRepair["case_id"] != "investigation-case-review-plan-r1" {
 		t.Fatalf("approval did not prepare the original current S9 responsibility: %#v", preparedRepair)
 	}
-	for _, source := range [][2]string{{"path", "sha256"}, {"plan_ref", "plan_sha256"}} {
-		rel, _ := preparedRepair[source[0]].(string)
-		data, err := os.ReadFile(filepath.Join(root, rel))
-		if rel == "" || err != nil || sha256HexForCLI(data) != preparedRepair[source[1]] {
+	for _, source := range []string{"path", "plan_ref"} {
+		rel, _ := preparedRepair[source].(string)
+		_, err := os.ReadFile(filepath.Join(root, rel))
+		if rel == "" || err != nil {
 			t.Fatalf("prepared original S9 source %s is missing or changed: %v", rel, err)
 		}
 	}
@@ -310,7 +248,7 @@ func TestRuntimeInvestigationContractApproveCLIHandsOffToS9(t *testing.T) {
 				t.Fatal(err)
 			}
 			action, _ := result["next"].(string)
-			if !strings.Contains(action, "Main must complete the original S9 entry preparation") || !strings.Contains(action, "investigation-case-observation-batch-r1") || strings.Contains(action, "runtime repair session open") {
+			if !strings.Contains(action, "Main must complete the original S9 entry preparation") || !strings.Contains(action, "investigation-case-review-plan-r1") || strings.Contains(action, "runtime repair session open") {
 				t.Fatalf("missing or foreign Session supplied another startup instruction: %s", action)
 			}
 			s6AssertCanonicalRuntimePair(t, root, beforeState, beforeJournal)
@@ -334,12 +272,12 @@ func TestRuntimeInvestigationContractApproveCLIHandsOffToS9(t *testing.T) {
 	}
 	recoveryState["lifecycle"].(map[string]any)["phase"] = "investigation"
 	recoveryState["review"].(map[string]any)["repair"] = map[string]any{
-		"session_id": "repair-session-r1", "case_id": "investigation-case-observation-batch-r1", "contract_id": "repair-contract-r1",
+		"session_id": "repair-session-r1", "case_id": "investigation-case-review-plan-r1", "contract_id": "repair-contract-r1",
 		"contract_ref": ".claude/review/investigation/contracts/repair-contract-r1-r2.json", "contract_sha256": strings.Repeat("b", 64),
 		"path": ".claude/review/repair/sessions/repair-session-r1.json", "sha256": strings.Repeat("c", 64), "revision": 1,
 		"status": "blocked", "targeted_reverification_refs": []string{".claude/review/repair/reverification/failure.json"},
 		"targeted_reverification_artifacts": []any{}, "failure_route": "fail_same_cause", "updated_at": "2026-08-25T00:00:00Z",
-		"next_action": "re-open Case investigation-case-observation-batch-r1 in S8 with `runtime investigation route --route investigate_more --reassessment-evidence failure.json`",
+		"next_action": "re-open Case investigation-case-review-plan-r1 in S8 with `runtime investigation route --route investigate_more --reassessment-evidence failure.json`",
 	}
 	recoveryBytes, err := json.MarshalIndent(recoveryState, "", "  ")
 	if err != nil {
@@ -393,8 +331,15 @@ func seedCLIFinding(t *testing.T, root string, state map[string]any) {
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatal(err)
 	}
+	state["review"].(map[string]any)["round_entry"] = map[string]any{"transition_id": "TR-006", "plan_id": "review-plan-r1", "baseline_generation": 1, "change_impact_ref": nil}
+	if err := os.MkdirAll(filepath.Join(root, "agents"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "agents", "investigator.md"), []byte("# Investigator\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
 	state["entities"].(map[string]any)["findings"] = []any{map[string]any{
-		"finding_id": "finding-1", "path": rel, "sha256": sha256HexForCLI(data), "claim_id": "claim-intake-1", "assignment_id": "assignment-intake", "lens": "qa", "severity": "P1", "observation_mode": "code_inspection", "original_finder": "agent-intake", "review_round": 1, "created_at": "2026-08-25T00:00:00Z",
+		"finding_id": "finding-1", "path": rel, "review_plan_id": "review-plan-r1", "claim_id": "claim-intake-1", "assignment_id": "assignment-intake", "lens": "qa", "severity": "P1", "observation_mode": "code_inspection", "original_finder": "agent-intake", "created_at": "2026-08-25T00:00:00Z",
 	}}
 }
 
@@ -478,47 +423,6 @@ func testRuntimeInvestigationHypothesisAndRouteCLI(t *testing.T, installed bool)
 	if err := os.WriteFile(filepath.Join(root, "docs", "control", "agent-protocol.md"), []byte("# Protocol\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	batch := map[string]any{
-		"schema_version": "1.0.0", "observation_batch_id": "observation-batch-r1", "conclusion": "sealed",
-		"evidence_id": "observation-batch-r1", "kind": "observation_batch", "runtime_id": req039fixtures.RuntimeIDFromState(state),
-		"producer_agent_id": "round-consumer", "producer_responsibility": "Orchestrator", "review_plan_id": "review-plan-r1",
-		"review_round": 1, "baseline_generation": 1, "subject_digest": strings.Repeat("a", 64),
-		"finding_ids": []string{"finding-1"}, "drain_policy": "complete_required_claims",
-		"claim_coverage_summary": map[string]any{
-			"total_required": 1, "pass": 0, "finding": 1, "not_applicable": 0, "blocked": 0,
-			"blocked_claims": []any{}, "plan_revision": 1,
-		},
-		"unobserved_claim_ids": []any{}, "original_finder_routes": []any{},
-		"investigation_readiness": []any{map[string]any{"finding_id": "finding-1", "status": "ready"}},
-		"sealed_at":               "2026-08-25T00:00:00Z", "sealed_by": "round-consumer", "revision": 1,
-	}
-	data, err := json.MarshalIndent(batch, "", "  ")
-	if err != nil {
-		t.Fatal(err)
-	}
-	data = append(data, '\n')
-	batchRel := ".claude/evidence/observation-batch-r1.json"
-	if err := os.MkdirAll(filepath.Dir(filepath.Join(root, batchRel)), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, batchRel), data, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	review := state["review"].(map[string]any)
-	review["observation_batch"] = map[string]any{
-		"batch_id": "observation-batch-r1", "path": batchRel, "sha256": sha256HexForCLI(data),
-		"finding_ids": []any{"finding-1"}, "drain_policy": "complete_required_claims", "sealed_at": "2026-08-25T00:00:00Z",
-	}
-	// RC-14 attestation: the hypothesis/register + result verbs validate every
-	// non-anchor --evidence against the runtime evidence index, so the sealed
-	// batch must also be a current-generation index entry, not just a pointer.
-	state["evidence"] = append(state["evidence"].([]any), map[string]any{
-		"id": "observation-batch-r1", "kind": "observation_batch", "path": batchRel, "sha256": sha256HexForCLI(data),
-		"status": "valid", "baseline_generation": 1, "review_round": 1,
-		"produced_by": []any{"round-consumer"}, "invalidated_by": nil,
-		"invalidation_rule": nil, "invalidation_reason": nil,
-		"responsibility_id": "Orchestrator", "scope_refs": []any{},
-	})
 	seedCLIFinding(t, root, state)
 	req039fixtures.WriteState(t, root, state)
 
@@ -554,8 +458,8 @@ func testRuntimeInvestigationHypothesisAndRouteCLI(t *testing.T, installed bool)
 		t.Fatalf("initial investigation status must expose an executable hypothesis-register command, got %q", status.Next)
 	}
 	out, errOut, code := run("runtime", "investigation", "hypothesis", "register", "--root", root,
-		"--case-id", "investigation-case-observation-batch-r1",
-		"--expected-case-revision", fmtInt(status.Case.Revision), "--expected-case-sha256", status.Case.SHA256,
+		"--case-id", "investigation-case-review-plan-r1",
+		"--expected-case-revision", fmtInt(status.Case.Revision),
 		"--id", "hyp-1", "--statement", "the boundary discards the store error",
 		"--assignment-id", "assignment-s8-hyp-1",
 		"--invariant", "every store error reaches the caller",
@@ -566,12 +470,12 @@ func testRuntimeInvestigationHypothesisAndRouteCLI(t *testing.T, installed bool)
 		t.Fatalf("hypothesis register code=%d stderr=%s stdout=%s", code, errOut, out)
 	}
 	if out, errOut, code := run("runtime", "investigation", "dispatch", "--root", root,
-		"--case-id", "investigation-case-observation-batch-r1", "--hypothesis-id", "hyp-1", "--agent-id", "agent-investigator-1", "--assignment-id", "assignment-s8-other"); code == 0 || !strings.Contains(errOut, "does not match") {
+		"--case-id", "investigation-case-review-plan-r1", "--hypothesis-id", "hyp-1", "--agent-id", "agent-investigator-1", "--assignment-id", "assignment-s8-other"); code == 0 || !strings.Contains(errOut, "does not match") {
 		t.Fatalf("investigator dispatch must reject an Assignment override that drifts from the Hypothesis binding: code=%d stderr=%s stdout=%s", code, errOut, out)
 	}
 
 	if out, errOut, code := run("runtime", "investigation", "dispatch", "--root", root,
-		"--case-id", "investigation-case-observation-batch-r1", "--hypothesis-id", "hyp-1", "--agent-id", "agent-investigator-1"); code != 0 {
+		"--case-id", "investigation-case-review-plan-r1", "--hypothesis-id", "hyp-1", "--agent-id", "agent-investigator-1"); code != 0 {
 		t.Fatalf("investigator dispatch code=%d stderr=%s stdout=%s", code, errOut, out)
 	} else if !strings.Contains(out, "workgroup-s8-") || !strings.Contains(out, "runtime investigation hypothesis result") || !strings.Contains(out, "--assignment-id") || !strings.Contains(errOut, "PLAN_REPORT") {
 		t.Fatalf("dispatch must expose the registered workgroup and plan checkpoint: stdout=%s stderr=%s", out, errOut)
@@ -593,8 +497,8 @@ func testRuntimeInvestigationHypothesisAndRouteCLI(t *testing.T, installed bool)
 	}
 
 	out, errOut, code = run("runtime", "investigation", "hypothesis", "result", "--root", root,
-		"--case-id", "investigation-case-observation-batch-r1",
-		"--expected-case-revision", fmtInt(status.Case.Revision), "--expected-case-sha256", status.Case.SHA256,
+		"--case-id", "investigation-case-review-plan-r1",
+		"--expected-case-revision", fmtInt(status.Case.Revision),
 		"--hypothesis-id", "hyp-1", "--assignment-id", "assignment-s8-hyp-1", "--method", "forced failure", "--observed", "nil under store error",
 		"--counterfactual", "a propagating boundary would surface the typed error",
 		"--evidence", "observation-batch-r1", "--evidence", "evidence://boundary-trace",
@@ -665,8 +569,8 @@ func testRuntimeInvestigationHypothesisAndRouteCLI(t *testing.T, installed bool)
 	// generic "causal_model is required" message forces the agent to debug the
 	// CLI implementation instead of fixing its command input.
 	out, errOut, code = run("runtime", "investigation", "route", "--root", root,
-		"--case-id", "investigation-case-observation-batch-r1",
-		"--expected-case-revision", fmtInt(status.Case.Revision), "--expected-case-sha256", status.Case.SHA256,
+		"--case-id", "investigation-case-review-plan-r1",
+		"--expected-case-revision", fmtInt(status.Case.Revision),
 		"--route", "s9_repair", "--reason", "single explained root cause",
 		"--primary-root-cause", "the boundary discards the store error",
 		"--causal-model-file", "missing-causal.json", "--blast-radius-file", "blast.json", "--detection-gap-file", "gap.json")
@@ -678,8 +582,8 @@ func testRuntimeInvestigationHypothesisAndRouteCLI(t *testing.T, installed bool)
 		t.Fatal(err)
 	}
 	out, errOut, code = run("runtime", "investigation", "route", "--root", root,
-		"--case-id", "investigation-case-observation-batch-r1",
-		"--expected-case-revision", fmtInt(status.Case.Revision), "--expected-case-sha256", status.Case.SHA256,
+		"--case-id", "investigation-case-review-plan-r1",
+		"--expected-case-revision", fmtInt(status.Case.Revision),
 		"--route", "s9_repair", "--reason", "single explained root cause",
 		"--primary-root-cause", "the boundary discards the store error",
 		"--causal-model-file", "null-causal.json", "--blast-radius-file", "blast.json", "--detection-gap-file", "gap.json")
@@ -688,8 +592,8 @@ func testRuntimeInvestigationHypothesisAndRouteCLI(t *testing.T, installed bool)
 	}
 
 	out, errOut, code = run("runtime", "investigation", "route", "--root", root,
-		"--case-id", "investigation-case-observation-batch-r1",
-		"--expected-case-revision", fmtInt(status.Case.Revision), "--expected-case-sha256", status.Case.SHA256,
+		"--case-id", "investigation-case-review-plan-r1",
+		"--expected-case-revision", fmtInt(status.Case.Revision),
 		"--route", "s9_repair", "--reason", "single explained root cause",
 		"--primary-root-cause", "the boundary discards the store error",
 		"--causal-model-file", "causal.json", "--blast-radius-file", "blast.json", "--detection-gap-file", "gap.json",

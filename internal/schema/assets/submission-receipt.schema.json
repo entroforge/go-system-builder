@@ -120,7 +120,7 @@
     },
     "submission_key": {
       "type": "string",
-      "pattern": "^([a-f0-9]{64}|review-result-[a-f0-9]{64}|runtime:investigation-case:investigation-case-[A-Za-z0-9._-]+:[1-9][0-9]*|runtime:s9:issued-plan-report:packet-[a-f0-9]{64}|runtime:s9:issued-repair-candidate:packet-[a-f0-9]{64}|runtime:s9:issued-repair-result:packet-[a-f0-9]{64}|runtime:agent:[A-Za-z0-9._-]+:(work_blocked|blocker_resolved):[1-9][0-9]*)$"
+      "minLength": 1
     },
     "status": {
       "$ref": "work-status.schema.json"
@@ -279,7 +279,7 @@
             "const": true
           },
           "submission_key": {
-            "pattern": "^runtime:s9:issued-repair-candidate:packet-[a-f0-9]{64}$"
+            "pattern": "^runtime:s9:issued-repair-candidate:packet-.+$"
           },
           "domain_refs": {
             "minItems": 1
@@ -296,7 +296,7 @@
       "if": {
         "properties": {
           "submission_key": {
-            "pattern": "^runtime:s9:issued-repair-candidate:packet-[a-f0-9]{64}$"
+            "pattern": "^runtime:s9:issued-repair-candidate:packet-.+$"
           }
         },
         "required": [
@@ -356,7 +356,7 @@
       "if": {
         "properties": {
           "submission_key": {
-            "pattern": "^runtime:s9:issued-repair-result:packet-[a-f0-9]{64}$"
+            "pattern": "^runtime:s9:issued-repair-result:packet-.+$"
           }
         },
         "required": [
@@ -399,7 +399,7 @@
             "const": true
           },
           "submission_key": {
-            "pattern": "^runtime:s9:issued-repair-result:packet-[a-f0-9]{64}$"
+            "pattern": "^runtime:s9:issued-repair-result:packet-.+$"
           },
           "domain_refs": {
             "minItems": 1

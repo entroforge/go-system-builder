@@ -27,6 +27,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	loopruntime "github.com/entroforge/go-system-builder/internal/runtime"
@@ -71,8 +72,7 @@ func AdvanceTask(
 		return loopruntime.Snapshot{}, fmt.Errorf("decode runtime: %w", err)
 	}
 	runtimeID, _ := current["runtime_id"].(string)
-	commitRevision, err := commitRevision(request.ExpectedRevision, current)
-	if err != nil {
+	if _, err := commitRevision(request.ExpectedRevision, current); err != nil {
 		return loopruntime.Snapshot{}, err
 	}
 	lifecycle, _ := current["lifecycle"].(map[string]any)
@@ -81,15 +81,28 @@ func AdvanceTask(
 	if occurredAt.IsZero() {
 		occurredAt = time.Now().UTC()
 	}
+	// The intent of a TASK lifecycle event is the domain artifact it answers.
+	// It is an already recorded domain fact and never a Runtime write counter
+	// (G18 §1.2).
+	task, taskFound := findRegisteredTask(current, request.TaskID)
+	if !taskFound {
+		return loopruntime.Snapshot{}, fmt.Errorf("Task %s is not registered", request.TaskID)
+	}
+	intent := taskEventIntent(task, request)
+	if strings.TrimSpace(intent) == "" {
+		return loopruntime.Snapshot{}, fmt.Errorf("Task %s has no recorded domain intent for event %s", request.TaskID, request.Event)
+	}
 
 	store := loopruntime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{})
 	mutation := loopruntime.Mutation{
 		Audit: loopruntime.AuditEnvelope{
-			EventID:        fmt.Sprintf("evt-task-%s-%s-r%d", request.TaskID, request.Event, commitRevision+1),
+			// The identity of a TASK lifecycle event is the TASK, the operation
+			// and the domain artifact it answers (G18 §1/§1.3).
+			EventID:        fmt.Sprintf("evt-task-%s-%s-%s", request.TaskID, request.Event, intent),
 			TransitionID:   "TASK-LIFECYCLE",
 			Event:          request.Event,
 			Actor:          "orchestrator",
-			IdempotencyKey: fmt.Sprintf("runtime:task:%s:%s:%d", request.TaskID, request.Event, commitRevision),
+			IdempotencyKey: fmt.Sprintf("runtime:task:%s:%s:%s", request.TaskID, request.Event, intent),
 			RuntimeID:      runtimeID,
 			From:           cursor,
 			To:             cursor,
@@ -135,6 +148,76 @@ func AdvanceTask(
 	return updateRuntime(store, request.ExpectedRevision, mutation)
 }
 
+// findRegisteredTask returns the registered TASK row of the current runtime
+// state. The row is the domain record the lifecycle event is about.
+func findRegisteredTask(state map[string]any, taskID string) (map[string]any, bool) {
+	entities, _ := state["entities"].(map[string]any)
+	tasks, _ := entities["tasks"].([]any)
+	for _, raw := range tasks {
+		task, _ := raw.(map[string]any)
+		if task == nil {
+			continue
+		}
+		if id, _ := task["id"].(string); id == taskID {
+			return task, true
+		}
+	}
+	return nil, false
+}
+
+// taskEventIntent returns the domain artifact a TASK lifecycle event answers.
+// Every value is an already recorded domain fact: the evidence the catalog
+// guard binds to the event, the TASK document itself, or the artifact the
+// event refers to. It never comes from the Runtime write counter, so two
+// repetitions of one operation inside the same responsibility stay distinct
+// only when the domain actually produced a new artifact (G18 §1.2).
+func taskEventIntent(task map[string]any, request TaskEventRequest) string {
+	switch request.Event {
+	case "document_pass_lock":
+		return taskEventParam(request, "document_pass_ref")
+	case "builder_activated":
+		return taskEventParam(request, "activation_ref")
+	case "builder_reported":
+		return taskEventParam(request, "completion_report_ref")
+	case "task_closing_contract_passed":
+		return taskEventParam(request, "verification_evidence")
+	case "task_blocked":
+		return taskEventParam(request, "blocker_evidence")
+	case "task_cancelled":
+		return taskEventParam(request, "cancellation_reason")
+	case "internal_review_passed":
+		// The reviewed artifact is the TASK document itself.
+		return taskEventField(task, "path")
+	case "task_resumed":
+		// Resuming answers the blocker currently recorded on the TASK.
+		return taskEventField(task, "blocker_evidence")
+	case "integration_rework_requested":
+		// The rework answers the Builder Result currently under review.
+		return taskEventField(task, "completion_report_ref")
+	default:
+		// A remaining operation carries no artifact of its own; the recorded
+		// responsibility holder is the domain fact that names it.
+		owners, _ := task["owner_agent_ids"].([]any)
+		parts := make([]string, 0, len(owners))
+		for _, raw := range owners {
+			if value, ok := raw.(string); ok && value != "" {
+				parts = append(parts, value)
+			}
+		}
+		return strings.Join(parts, ",")
+	}
+}
+
+func taskEventParam(request TaskEventRequest, key string) string {
+	value, _ := request.Params[key].(string)
+	return strings.TrimSpace(value)
+}
+
+func taskEventField(task map[string]any, key string) string {
+	value, _ := task[key].(string)
+	return strings.TrimSpace(value)
+}
+
 // applyTaskEventGuards enforces the per-event guard requirements. The
 // guards are checked against the supplied params and (where relevant) the
 // task entity's existing fields. The catalog guards (task_manifest_complete
@@ -143,13 +226,9 @@ func AdvanceTask(
 func applyTaskEventGuards(task map[string]any, request TaskEventRequest, resolvedTo string) error {
 	switch request.Event {
 	case "internal_review_passed":
-		// task_manifest_complete: the task must have a non-empty path and
-		// sha256 (manifest = the locked task spec).
+		// task_manifest_complete needs the actual TASK source path.
 		if path, _ := task["path"].(string); path == "" {
 			return fmt.Errorf("guard task_manifest_complete failed: task path is empty")
-		}
-		if sha, _ := task["sha256"].(string); sha == "" {
-			return fmt.Errorf("guard task_manifest_complete failed: task sha256 is empty")
 		}
 	case "document_pass_lock":
 		// joint_document_pass: caller supplies evidence that document_pass

@@ -37,7 +37,7 @@ func TestCompleteTaskWorkerClosureUnavailableIsDurableAndAliasReplays(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(accepted.WorkerCheckFacts) != 1 || accepted.WorkerCheckFacts[0].Status != "unavailable" || accepted.ToolClosureDigest == "" || assignmentresult.WorkerClosureComplete(record, accepted) {
+	if len(accepted.WorkerCheckFacts) != 1 || accepted.WorkerCheckFacts[0].Status != "unavailable" || assignmentresult.WorkerClosureComplete(record, accepted) {
 		t.Fatalf("unavailable closure must remain unproven: %+v", accepted)
 	}
 	message["message_id"] = "msg-worker-closure-alias"
@@ -68,7 +68,7 @@ func TestCompleteTaskWorkerClosureUnavailableIsDurableAndAliasReplays(t *testing
 		t.Fatal(err)
 	}
 	var persisted assignmentresult.AcceptedResult
-	if err := json.Unmarshal(data, &persisted); err != nil || persisted.ToolClosureDigest != accepted.ToolClosureDigest {
+	if err := json.Unmarshal(data, &persisted); err != nil || len(persisted.WorkerCheckFacts) != len(accepted.WorkerCheckFacts) {
 		t.Fatalf("durable closure decode: %v", err)
 	}
 }

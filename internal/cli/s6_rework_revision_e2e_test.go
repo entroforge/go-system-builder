@@ -10,9 +10,9 @@ import (
 	"testing"
 
 	"github.com/entroforge/go-system-builder/internal/assignmentrecord"
+	"github.com/entroforge/go-system-builder/internal/assignmentresult"
 	"github.com/entroforge/go-system-builder/internal/cli"
 	"github.com/entroforge/go-system-builder/internal/integration"
-	"github.com/entroforge/go-system-builder/internal/workpacket"
 	"github.com/entroforge/go-system-builder/internal/workspace"
 )
 
@@ -85,12 +85,8 @@ func TestCanonicalS6WorkspaceReworkRequiresNamedAssignmentRevision(t *testing.T)
 	if err := json.Unmarshal(commitBytes, &commitRequest); err != nil {
 		t.Fatalf("decode bootstrap commit request draft: %v", err)
 	}
-	head, err := workspace.Git(context.Background(), e.Path, "rev-parse", "HEAD")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if commitRequest.ExpectedHead != head || commitRequest.ExpectedHead != e.BaseCommit || commitRequest.Message != "" || len(commitRequest.Paths) != 0 {
-		t.Fatalf("bootstrap commit request does not carry the current registered Worker HEAD scaffold: draft=%+v current=%s base=%s", commitRequest, head, e.BaseCommit)
+	if commitRequest.Message != "" || len(commitRequest.Paths) != 0 {
+		t.Fatalf("bootstrap commit request prefilled the Worker's choices: %+v", commitRequest)
 	}
 	commitRequest.Message = "Record the canonical S6 candidate"
 	commitRequest.Paths = []string{productRef}
@@ -110,15 +106,45 @@ func TestCanonicalS6WorkspaceReworkRequiresNamedAssignmentRevision(t *testing.T)
 	if accepted.ResultRef == "" || !accepted.Current {
 		t.Fatalf("original Writer did not accept the current canonical Result: %+v", accepted)
 	}
+	savedResult, err := os.ReadFile(completionPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var savedEnvelope struct {
+		MessageID string `json:"message_id"`
+	}
+	if err := json.Unmarshal(savedResult, &savedEnvelope); err != nil || savedEnvelope.MessageID == "" {
+		t.Fatalf("natural save did not bind its actual internal message: %+v %v", savedEnvelope, err)
+	}
 	beforeReplay := stageSnapshot(t, root).Revision
 	replayed := s6DecodeCanonicalTaskCompleteOutput(t, s6SaveQuestionnaireHook(t, root, e.Path, e.AgentID, completionPath)).Acceptance
 	if replayed.ResultRef != accepted.ResultRef || stageSnapshot(t, root).Revision != beforeReplay {
 		t.Fatal("same saved Result repeated its domain reception")
 	}
-	resultBytes, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(accepted.ResultRef)))
-	if err != nil || workpacket.Digest(resultBytes) != accepted.ResultSHA256 {
-		t.Fatalf("read original accepted Result: %v", err)
+	assertOriginalResult := func() {
+		t.Helper()
+		data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(accepted.ResultRef)))
+		if err != nil {
+			t.Fatalf("read original accepted Result: %v", err)
+		}
+		var result assignmentresult.AcceptedResult
+		if err := json.Unmarshal(data, &result); err != nil {
+			t.Fatalf("decode original accepted Result: %v", err)
+		}
+		if result.Conclusion != "submitted" || result.RuntimeID != record.RuntimeID || result.BaselineGeneration != record.BaselineGeneration ||
+			result.AssignmentRecord != record.Reference() || result.ProducerAgentID != owner || result.TaskID != taskID ||
+			result.ResultRevision != accepted.ResultRevision || result.SubmissionKey != savedEnvelope.MessageID ||
+			result.Answer.Summary != "The reviewed package candidate is committed and ready for Main integration." {
+			t.Fatalf("accepted Result lost original responsibility or author's conclusion: %+v", result)
+		}
+		if len(result.Answer.AssertionEvidence) != 1 || result.Answer.AssertionEvidence[0].Assertion != assertion ||
+			result.Answer.AssertionEvidence[0].Oracle != oracle || len(result.Answer.AssertionEvidence[0].EvidenceRefs) != 1 ||
+			result.Answer.AssertionEvidence[0].EvidenceRefs[0] != productRef {
+			t.Fatalf("accepted Result lost the author's original evidence: %+v", result.Answer.AssertionEvidence)
+		}
+		s6AssertCurrentResultRefs(t, stageSnapshot(t, root).State, record, accepted.ResultRef)
 	}
+	assertOriginalResult()
 
 	dirtyRef := "src/pkg/uncommitted-after-result.txt"
 	dirtyBytes := []byte("preserve this real uncommitted integration blocker\n")
@@ -159,28 +185,16 @@ func TestCanonicalS6WorkspaceReworkRequiresNamedAssignmentRevision(t *testing.T)
 	var reworkOut, reworkErr bytes.Buffer
 	reworkCode := cli.Run([]string{"runtime", "workspace", "rework", "--root", root,
 		"--assignment", assignmentID, "--agent", owner, "--reason", "Correct the failed integration candidate"}, nil, &reworkOut, &reworkErr)
-	recordRefJSON, err := json.Marshal(record.Reference())
-	if err != nil {
-		t.Fatal(err)
-	}
-	recordSHA, err := record.Digest()
-	if err != nil {
-		t.Fatal(err)
-	}
 	if reworkCode == 0 || !strings.Contains(reworkErr.String(), "--revise-assignment") ||
-		!strings.Contains(reworkErr.String(), "--revision-intent-key") ||
-		!strings.Contains(reworkErr.String(), "--expected-record-ref '") ||
-		!strings.Contains(reworkErr.String(), string(recordRefJSON)) ||
-		!strings.Contains(reworkErr.String(), "--expected-record-sha256 "+recordSHA) {
+		strings.Contains(reworkErr.String(), "--revision-intent-key") ||
+		strings.Contains(reworkErr.String(), "--expected-record-sha256") {
 		t.Fatalf("canonical same-Record rework was not rejected with the original named-revision action: code=%d stderr=%s stdout=%s", reworkCode, reworkErr.String(), reworkOut.String())
 	}
 	s6AssertCanonicalRuntimePair(t, root, stateBefore, journalBefore)
 	if after, err := os.ReadFile(checkpointPath); err != nil || !bytes.Equal(after, checkpointBytes) {
 		t.Fatalf("rejected rework changed the preserved checkpoint: %v", err)
 	}
-	if after, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(accepted.ResultRef))); err != nil || !bytes.Equal(after, resultBytes) {
-		t.Fatalf("rejected rework changed the immutable accepted Result: %v", err)
-	}
+	assertOriginalResult()
 	if after, err := os.ReadFile(filepath.Join(e.Path, filepath.FromSlash(dirtyRef))); err != nil || !bytes.Equal(after, dirtyBytes) {
 		t.Fatalf("rejected rework changed the dirty Worker file: %v", err)
 	}

@@ -62,7 +62,7 @@ mapping. Evidence reports may be review-round scoped; product test assets may no
 into a round-named location.
 For cold-start work, include the actual scripts/fixtures used from the declared
 workspace in the original Claim/check `evidence_refs` as `path:<repository-relative file>`;
-the original consumer supplies hashes. Output logs, screenshots and command_output
+the original consumer retains their paths. Output logs, screenshots and command_output
 show what happened, but do not identify those asset dependencies. Cite only real
 dependencies, not every other Reviewer's workspace file. Existing selected reuse
 assets keep their original Plan bindings. Unknown dependencies after workspace
@@ -91,7 +91,7 @@ gate. Preserve browser coverage and real independence when work is partitioned.
 
 ## Core Principle
 
-Main 提供原 `s7-review-result-v1` 题目与准确私人答案位置。读取真实材料，完成本人的独立浏览器验证，只填写专业 `answer`，保存本人原答卷；PreToolUse 高频监听就绪原答卷，成功 PostToolUse 与 Stop／SubagentStop 兜底调用原消费者，不增加提交手续，不等待收尾消息或返回引用；完成后向 Main 汇报真实结果。新原生责任不增加通用 PLAN／激活或保存回执前置。保留机器预填与 `verification_artifact_digest=null`；消费者从实际执行来源固定并校验摘要，作者不计算或抄写。浏览器责任仍须完成本人分配 Claims/CASE/PATH 的真实执行、证据来源和专业结论；完整当前模块覆盖由 Main 在整轮计划与结果中核对。
+Main 提供原 `s7-review-result-v1` 题目与准确私人答案位置。读取真实材料，完成本人的独立浏览器验证，只填写专业 `answer`，保存本人原答卷；PreToolUse 高频监听就绪原答卷，成功 PostToolUse 与 Stop／SubagentStop 兜底调用原消费者，不增加提交手续，不等待收尾消息或返回引用；完成后向 Main 汇报真实结果。新原生责任不增加通用 PLAN／激活或保存回执前置。保留题面中的系统已知字段；接收不重新核验执行摘要，作者不计算或抄写。浏览器责任仍须完成本人分配 Claims/CASE/PATH 的真实执行、证据来源和专业结论；完整当前模块覆盖由 Main 在整轮计划与结果中核对。
 
 E2E tests are the **executable transcription of current module `flows.md` and CASE oracle**.
 The current module package is the source of truth; the spec is its compiled, runnable form.
@@ -355,7 +355,7 @@ Anti-patterns:
 
 ## Finding Handoff from Failures
 
-脚本失败时，在原答卷中记录可以交给调查者的 Finding：实际入口、首次偏差、终态和证据。S8 负责归并、因果判断及后续 BUG 投射，S7 不手写 BUG 文件。实际经过可以直接写入 timeline；已有 `capture step` 缓冲只补无作者时间线且关联准确的 Finding，原 `capture exec` 保留真正命令执行与输出来源。证据作者选择实际 `path:<相对路径>` 或 `command_output:<原捕获路径>`，摘要、字节数和截断元数据由原接收／捕获机制承接；不得让作者手填，也不得从文件存在推断命令执行。冷启动资产的摘要由原消费者从本人实际工作区绑定，执行后改动脚本或夹具仍须重做受影响流程。P0 Finding 如实写 `capture_gaps`，说明不能安全采集的内容和原因。同一 Reviewer 尚未执行的 Claim 可从答卷的空白项中移除，原消费者在接收真实 P0 后从计划推导未观察集合；不补造 pass/fail 或产品阻塞。以下清单帮助整理原答卷的事实，不要求另交 Markdown 报告：
+脚本失败时，在原答卷中记录可以交给调查者的 Finding：实际入口、首次偏差、终态和证据。S8 负责归并、因果判断及后续 BUG 投射，S7 不手写 BUG 文件。实际经过可以直接写入原答卷的 timeline，保留真正的命令执行与输出来源。证据使用实际路径、命令或观察，不要求作者或系统登记摘要，也不得从文件存在推断命令执行。脚本或夹具发生实际变化时，按影响判断必要的后续验证。P0 Finding 如实写 `capture_gaps`，说明不能安全采集的内容和原因。同一 Reviewer 尚未执行的 Claim 可从答卷的空白项中移除，原消费者在接收真实 P0 后从计划推导未观察集合；不补造 pass/fail 或产品阻塞。以下清单帮助整理原答卷的事实，不要求另交 Markdown 报告：
 
 ```markdown
 ### Finding record: {short title}
@@ -374,9 +374,9 @@ Severity rules:
 - **P1** — flow partially blocked or wrong behavior with workaround
 - **P2** — cosmetic, perf, or edge-case-only
 
-The e2e-tester does not file a BUG or assert a root cause. The Orchestrator hands the
-sealed ObservationBatch to S8, which may create a canonical BUG only after causal
-investigation and an explicit repair contract.
+The e2e-tester does not file a BUG or assert a root cause. The original accepted
+Finding and observations go to Main and S8 without a separate batch proof; S8
+undertakes causal investigation and the original repair decision.
 
 ## Idempotent Re-Execution
 
@@ -423,10 +423,10 @@ cannot clear delivery and QA obligations or authorize repair:
 
 Report an observed product deviation as a Finding; missing environment or evidence
 requires its actual recovery owner. Ordinary Findings continue safe coverage and
-reach S8 through a sealed batch. Repair requires the original investigation and
+reach S8 through the original accepted Finding. Repair requires the original investigation and
 approval route. Valid P0 early termination retains unobserved Claims and gaps; it
 is not a clean round, and none of these criteria requires unsafe recapture.
 
 ## Selecting existing assets
 
-Read the original ReviewPlan and its adjacent planning guidance. A script mentioning a CASE is only a candidate. Main selects the exact `cases.json#CASE` and script path with actual selector, route and environment facts; the original receiver fills omitted asset IDs and digests. Do not copy machine hashes or infer a usable browser environment from a module label. Unresolved planning remains a draft. Cold-start may reuse confirmed assets and author only missing scripts in its declared workspace; every selected reusable asset retains its original fingerprint checks.
+Read the original ReviewPlan and its adjacent planning guidance. A script mentioning a CASE is only a candidate. Main selects the relevant `cases.json#CASE` and script path using actual selector, route and environment facts; the original receiver uses the actual original paths and responsibility. Do not copy machine hashes or infer a usable browser environment from a module label. A usable partial Plan can be received and naturally revised as remaining decisions become clear. Cold-start may reuse confirmed assets and author only missing scripts in its declared workspace; Main and the Reviewer assess whether existing assets suit the actual task; no fingerprint check qualifies reuse.

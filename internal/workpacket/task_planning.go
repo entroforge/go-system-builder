@@ -58,45 +58,31 @@ type TaskPlanningDraft struct {
 }
 
 type TaskPlanningPacket struct {
-	ID          string             `json:"packet_id"`
-	TemplateID  string             `json:"template_id"`
-	TemplateSHA string             `json:"template_sha256"`
-	Binding     PlanningBinding    `json:"binding"`
-	Inputs      TaskPlanningInputs `json:"inputs"`
-	ViewPath    string             `json:"view_path"`
-	AnswerPath  string             `json:"answer_path"`
-	Draft       TaskPlanningDraft  `json:"draft"`
+	ID         string             `json:"packet_id"`
+	TemplateID string             `json:"template_id"`
+	Binding    PlanningBinding    `json:"binding"`
+	Inputs     TaskPlanningInputs `json:"inputs"`
+	ViewPath   string             `json:"view_path"`
+	AnswerPath string             `json:"answer_path"`
+	Draft      TaskPlanningDraft  `json:"draft"`
 }
 
 // BuildTaskPlanning creates the S4 Main questionnaire from resolved original
 // inputs. The task set itself is left empty until the professional answer is
 // submitted; callers must resolve it from the actual REQ-scoped directory.
 func BuildTaskPlanning(binding PlanningBinding, inputs TaskPlanningInputs) (TaskPlanningPacket, error) {
-	return BuildTaskPlanningWithTemplate(binding, inputs, "")
-}
-
-// BuildTaskPlanningWithTemplate preserves known issued templates without trusting
-// caller-supplied prompt bytes. Empty selects the current template for new work.
-func BuildTaskPlanningWithTemplate(binding PlanningBinding, inputs TaskPlanningInputs, templateSHA string) (TaskPlanningPacket, error) {
-	if binding.Stage != "S4" || binding.Owner != "Main" || !safeComponent(binding.RuntimeID) || binding.Generation < 1 || binding.StageEntry < 0 || !taskPlanningREQIDRE.MatchString(binding.Requirement.ID) || !validTaskPlanningRequirementPath(binding.Requirement.ID, binding.Requirement.Path) || binding.Requirement.Version == "" || !digestPattern.MatchString(binding.Requirement.SHA256) {
+	if binding.Stage != "S4" || binding.Owner != "Main" || !safeComponent(binding.RuntimeID) || binding.Generation < 1 || binding.StageEntry < 0 || !taskPlanningREQIDRE.MatchString(binding.Requirement.ID) || !validTaskPlanningRequirementPath(binding.Requirement.ID, binding.Requirement.Path) || binding.Requirement.Version == "" {
 		return TaskPlanningPacket{}, fmt.Errorf("S4 requires the actual Main stage and frozen requirement binding")
 	}
 	canonical, err := canonicalTaskPlanningInputs(binding, inputs)
 	if err != nil {
 		return TaskPlanningPacket{}, err
 	}
-	var data []byte
-	for _, asset := range []string{"stage-form-s4-template.json", "stage-form-s4-template-before-guidance.json"} {
-		data, err = schema.ReadAsset(asset)
-		if err != nil {
-			return TaskPlanningPacket{}, err
-		}
-		if templateSHA == "" || Digest(data) == templateSHA {
-			break
-		}
-	}
-	if templateSHA != "" && Digest(data) != templateSHA {
-		return TaskPlanningPacket{}, fmt.Errorf("unknown S4 questionnaire template")
+	// Historical packets are read from their original persisted path. New
+	// responsibilities use the current template without hashing it.
+	data, err := schema.ReadAsset("stage-form-s4-template.json")
+	if err != nil {
+		return TaskPlanningPacket{}, err
 	}
 	var template struct {
 		Stage, Adapter, Title, Instruction string
@@ -105,16 +91,7 @@ func BuildTaskPlanningWithTemplate(binding PlanningBinding, inputs TaskPlanningI
 	if err := json.Unmarshal(data, &template); err != nil || template.Stage != "S4" || template.Adapter != "task_planning" || len(template.Questions) != 3 {
 		return TaskPlanningPacket{}, fmt.Errorf("unregistered S4 task planning template")
 	}
-	templateSHA = Digest(data)
-	identity, err := json.Marshal(struct {
-		Binding     PlanningBinding
-		Inputs      TaskPlanningInputs
-		TemplateSHA string
-	}{binding, canonical, templateSHA})
-	if err != nil {
-		return TaskPlanningPacket{}, err
-	}
-	id := "packet-" + Digest(identity)
+	id := planningPacketID(binding)
 	base := fmt.Sprintf("%s/g%d/S4/e%d/%s", binding.RuntimeID, binding.Generation, binding.StageEntry, id)
 	read := []ReadItem{{Path: binding.Requirement.Path, Purpose: "Use the frozen locked REQ and its complete acceptance denominator."}}
 	for _, contract := range canonical.Contracts {
@@ -125,7 +102,7 @@ func BuildTaskPlanningWithTemplate(binding PlanningBinding, inputs TaskPlanningI
 	}
 	answer := TaskPlanningAnswer{TaskPaths: []string{}}
 	return TaskPlanningPacket{
-		ID: id, TemplateID: "s4-task-planning-v1", TemplateSHA: templateSHA,
+		ID: id, TemplateID: "s4-task-planning-v1",
 		Binding: binding, Inputs: canonical,
 		ViewPath:   ".claude/work-packets/" + base + ".json",
 		AnswerPath: ".claude/submissions/" + base + "/Main/answer.json",
@@ -166,7 +143,7 @@ func canonicalTaskPlanningInputs(binding PlanningBinding, inputs TaskPlanningInp
 	contractIDs := map[string]bool{}
 	indexCount := 0
 	for _, ref := range out.Contracts {
-		if !safeRelative(ref.Path) || filepath.ToSlash(filepath.Dir(ref.Path)) != "docs/dev/contracts" || !strings.HasSuffix(ref.Path, ".md") || strings.Contains(strings.ToLower(filepath.Base(ref.Path)), "template") || ref.ID == "" || ref.Version == "" || !digestPattern.MatchString(ref.SHA256) || seenPath[ref.Path] || contractIDs[ref.ID] {
+		if !safeRelative(ref.Path) || filepath.ToSlash(filepath.Dir(ref.Path)) != "docs/dev/contracts" || !strings.HasSuffix(ref.Path, ".md") || strings.Contains(strings.ToLower(filepath.Base(ref.Path)), "template") || ref.ID == "" || ref.Version == "" || seenPath[ref.Path] || contractIDs[ref.ID] {
 			return TaskPlanningInputs{}, fmt.Errorf("S4 locked contract input has invalid or duplicate identity")
 		}
 		if filepath.Base(ref.Path) != ref.ID+".md" {
@@ -187,7 +164,7 @@ func canonicalTaskPlanningInputs(binding PlanningBinding, inputs TaskPlanningInp
 		return TaskPlanningInputs{}, fmt.Errorf("S4 requires exactly one registered CONTRACTS index")
 	}
 	for _, source := range out.Sources {
-		if !safeRelative(source.Path) || !digestPattern.MatchString(source.SHA256) || seenPath[source.Path] {
+		if !safeRelative(source.Path) || seenPath[source.Path] {
 			return TaskPlanningInputs{}, fmt.Errorf("S4 source input has invalid or duplicate identity")
 		}
 		seenPath[source.Path] = true
@@ -283,17 +260,6 @@ func ValidateTaskPlanningAnswer(p TaskPlanningPacket, data []byte) (TaskPlanning
 	return answer, nil
 }
 
-func TaskPlanningAnswerDigest(answer TaskPlanningAnswer) (string, error) {
-	copyAnswer := answer
-	copyAnswer.TaskPaths = append([]string(nil), answer.TaskPaths...)
-	sort.Strings(copyAnswer.TaskPaths)
-	data, err := json.Marshal(copyAnswer)
-	if err != nil {
-		return "", err
-	}
-	return Digest(data), nil
-}
-
 // TaskPlanningEvidence projects validated S4 authoring into the original
 // planning_task evidence shape. It never asserts that TasksCheck passed; the
 // trusted composition callback runs that original checker before this is used.
@@ -311,14 +277,14 @@ func TaskPlanningEvidence(p TaskPlanningPacket, id string, artifacts []Reference
 	}
 	subjects := make([]Subject, 0, 1+len(p.Inputs.Sources)+len(p.Inputs.Contracts)+len(ordered))
 	req := p.Binding.Requirement
-	if req.Path == "" || req.Version == "" || !digestPattern.MatchString(req.SHA256) {
+	if req.Path == "" || req.Version == "" {
 		return nil, fmt.Errorf("planning_task evidence has an invalid frozen REQ subject")
 	}
-	subjects = append(subjects, Subject{Path: req.Path, Version: req.Version, SHA256: req.SHA256})
+	subjects = append(subjects, Subject{Path: req.Path, Version: req.Version})
 	sources := append([]Subject(nil), p.Inputs.Sources...)
 	sort.Slice(sources, func(i, j int) bool { return sources[i].Path < sources[j].Path })
 	for _, source := range sources {
-		if !safeRelative(source.Path) || !digestPattern.MatchString(source.SHA256) {
+		if !safeRelative(source.Path) {
 			return nil, fmt.Errorf("planning_task evidence has an invalid frozen source subject")
 		}
 		subjects = append(subjects, source)
@@ -326,13 +292,13 @@ func TaskPlanningEvidence(p TaskPlanningPacket, id string, artifacts []Reference
 	contracts := append([]Reference(nil), p.Inputs.Contracts...)
 	sort.Slice(contracts, func(i, j int) bool { return contracts[i].Path < contracts[j].Path })
 	for _, contract := range contracts {
-		if !safeRelative(contract.Path) || contract.Version == "" || !digestPattern.MatchString(contract.SHA256) {
+		if !safeRelative(contract.Path) || contract.Version == "" {
 			return nil, fmt.Errorf("planning_task evidence has an invalid actual contract subject")
 		}
-		subjects = append(subjects, Subject{Path: contract.Path, Version: contract.Version, SHA256: contract.SHA256})
+		subjects = append(subjects, Subject{Path: contract.Path, Version: contract.Version})
 	}
 	for _, artifact := range ordered {
-		subjects = append(subjects, Subject{Path: artifact.Path, Version: artifact.Version, SHA256: artifact.SHA256})
+		subjects = append(subjects, Subject{Path: artifact.Path, Version: artifact.Version})
 	}
 	seen := map[string]bool{}
 	for _, subject := range subjects {
@@ -378,7 +344,7 @@ func canonicalTaskPlanningArtifacts(answer TaskPlanningAnswer, artifacts []Refer
 	ordered := append([]Reference(nil), artifacts...)
 	seenPath, seenID := map[string]bool{}, map[string]bool{}
 	for _, artifact := range ordered {
-		if !safeRelative(artifact.Path) || filepath.ToSlash(filepath.Dir(artifact.Path)) != "docs/dev/tasks" || !strings.HasSuffix(artifact.Path, ".md") || strings.Contains(strings.ToLower(filepath.Base(artifact.Path)), "template") || artifact.Version == "" || !digestPattern.MatchString(artifact.SHA256) || (artifact.Path != *answer.IndexPath && !strings.HasPrefix(filepath.Base(artifact.Path), "TASK-")) {
+		if !safeRelative(artifact.Path) || filepath.ToSlash(filepath.Dir(artifact.Path)) != "docs/dev/tasks" || !strings.HasSuffix(artifact.Path, ".md") || strings.Contains(strings.ToLower(filepath.Base(artifact.Path)), "template") || artifact.Version == "" || (artifact.Path != *answer.IndexPath && !strings.HasPrefix(filepath.Base(artifact.Path), "TASK-")) {
 			return nil, fmt.Errorf("planning_task evidence has an invalid or unrequested actual artifact")
 		}
 		name := strings.TrimSuffix(filepath.Base(artifact.Path), ".md")

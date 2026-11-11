@@ -5,29 +5,21 @@
 // `capture_pause_checkpoint` which is the SINGLE capture path covering
 // GTR-001..GTR-005 and TR-005 / TR-010 / TR-011 / TR-014 / TR-018
 // (BUG-001 §4b.2(c) line 279 and §4b.2(f)).
-//
-// TASK-015 (BUG-003 §4b.2(e)) owns the inline extension of
-// `record_finding_batch` — the previous stub is replaced with a real
-// implementation that creates S8 investigation-intake BUG drafts with
-// deduplication by finding fingerprint. The signature is unchanged; a draft
-// is not an accepted canonical BUG until S8 supplies the causal model and
-// Closing Contract.
 package transition
 
 import (
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"github.com/entroforge/go-system-builder/internal/docscope"
 	"github.com/entroforge/go-system-builder/internal/fileview"
 	"github.com/entroforge/go-system-builder/internal/projectlayout"
+	"github.com/entroforge/go-system-builder/internal/reviewmeta"
 	loopruntime "github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/semantic"
 	"github.com/entroforge/go-system-builder/internal/workpacket"
 	"github.com/entroforge/go-system-builder/internal/workstate"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -125,7 +117,6 @@ func InitActionRegistry() {
 		"set_verification_phase_planned":        actionSetVerificationPhase("planned"),
 		"set_bug_phase_investigation":           actionSetBugPhase("investigation"),
 		"set_bug_phase_bug_report_review":       actionSetBugPhase("bug_report_review"),
-		"set_bug_phase_repair_readback":         actionSetBugPhase("repair_readback"),
 		"set_bug_phase_fixing":                  actionSetBugPhase("fixing"),
 		"set_bug_phase_targeted_reverification": actionSetBugPhase("targeted_reverification"),
 		"set_bug_phase_ready_for_full_review":   actionSetBugPhase("ready_for_full_review"),
@@ -134,19 +125,13 @@ func InitActionRegistry() {
 		"register_planning_tasks":               actionRegisterPlanningTasks,
 		"start_review_round":                    actionStartReviewRound,
 		"start_new_review_round":                actionStartNewReviewRound,
-		"record_bug_drafts":                     actionRecordBugDrafts,
-		"record_canonical_bug_batch":            actionRecordCanonicalBugBatch,
-		"record_bug_review_feedback":            actionRecordBugReviewFeedback,
-		"record_repair_activation":              actionRecordRepairActivation,
 		"invalidate_affected_evidence":          actionInvalidateAffectedEvidence,
 		"invalidate_consumed_review_evidence":   actionInvalidateConsumedReviewEvidence,
 		"record_repair_completion":              actionRecordRepairCompletion,
 		"record_targeted_reverification":        actionRecordTargetedReverification,
-		"record_finding_batch":                  actionRecordFindingBatch,
 		"record_delivery_result":                actionRecordDeliveryResult,
 		"record_qa_result":                      actionRecordQAResult,
 		"record_e2e_result":                     actionRecordE2EResult,
-		"record_clean_round":                    actionRecordCleanRound,
 		"record_acc":                            actionRecordACC,
 		"record_release_audit":                  actionRecordReleaseAudit,
 		"reset_s7_review_after_governance":      actionResetS7ReviewAfterGovernance,
@@ -242,62 +227,41 @@ func actionSetBugPhase(target string) ActionFn {
 	}
 }
 
-// actionStartReviewRound increments review.round and clears review.clean_round.
-// It is the canonical "open a new review round" action used by TR-006 / TR-012
-// / TR-016. PTR-VERIFY-05 uses start_new_review_round instead, which is the
-// distinct action registered below.
+// actionStartReviewRound binds an actual S7 entry to its original commit event.
+// The saved Plan identity locates this responsibility; legacy numbers are history.
 func actionStartReviewRound(state map[string]any, ctx *ActionContext) (ActionResult, error) {
 	if ctx == nil {
 		return ActionResult{Status: "failed", Detail: "transition context missing"}, fmt.Errorf("start_review_round requires transition context")
 	}
-	review, ok := state["review"].(map[string]any)
+	rev, ok := state["review"].(map[string]any)
 	if !ok {
 		return ActionResult{Status: "failed", Detail: "review missing"}, fmt.Errorf("review missing")
 	}
-	currentRound := integer(review["round"])
-	if maxRounds, err := configuredMaxFullReviewRounds(state); err != nil {
-		return ActionResult{Status: "failed", Detail: err.Error()}, err
-	} else if currentRound >= maxRounds {
-		err := fmt.Errorf("S7 full-review budget exhausted at round %d of %d; human decision required: run `loop-harness runtime s7-budget-decision --file <decision.json> --actor <user>` with increase_budget or return_to_governance", currentRound, maxRounds)
-		return ActionResult{Status: "failed", Detail: err.Error()}, err
+	runtimeID, _ := state["runtime_id"].(string)
+	planID := reviewmeta.NewPlanID(runtimeID, ctx.EventID)
+	if planID == "" {
+		return ActionResult{Status: "failed", Detail: "entry event missing"}, fmt.Errorf("start_review_round requires the original runtime and entry event")
 	}
-	nextRound := currentRound + 1
-	roundEntry := map[string]any{
+	if reviewmeta.FromRoundEntry(rev).PlanID == planID {
+		return ActionResult{Status: "skipped", Detail: "original S7 entry already saved"}, nil
+	}
+	entry := map[string]any{
 		"transition_id":       ctx.Spec.ID,
-		"round":               nextRound,
+		"plan_id":             planID,
 		"baseline_generation": baselineGeneration(state),
 		"change_impact_ref":   nil,
 	}
 	if ctx.Spec.ID == "TR-012" || ctx.Spec.ID == "TR-016" || ctx.Spec.ID == "TR-031" {
-		changeImpactRef := ""
-		if ctx != nil && ctx.Evidence != nil {
-			changeImpactRef = strings.TrimSpace(ctx.Evidence["change_impact_record"])
+		impactRef := strings.TrimSpace(ctx.Evidence["change_impact_record"])
+		if impactRef == "" {
+			err := fmt.Errorf("%s requires a change_impact_record binding so the next S7 plan can freeze its baseline", ctx.Spec.ID)
+			return ActionResult{Status: "failed", Detail: err.Error()}, err
 		}
-		if changeImpactRef == "" {
-			return ActionResult{Status: "failed", Detail: "TR-012 requires change_impact_record"}, fmt.Errorf("%s requires a change_impact_record binding so the next S7 plan can freeze its baseline", ctx.Spec.ID)
-		}
-		roundEntry["change_impact_ref"] = changeImpactRef
+		entry["change_impact_ref"] = impactRef
 	}
-	review["round"] = nextRound
-	review["clean_round"] = nil
-	review["round_entry"] = roundEntry
-	return ActionResult{Status: "committed", MutationApplied: true, Detail: "review.round++"}, nil
-}
-
-func configuredMaxFullReviewRounds(state map[string]any) (int, error) {
-	configuration, ok := state["configuration"].(map[string]any)
-	if !ok {
-		return 0, fmt.Errorf("runtime configuration missing while opening S7 review round")
-	}
-	repair, ok := configuration["repair"].(map[string]any)
-	if !ok {
-		return 0, fmt.Errorf("runtime configuration.repair missing while opening S7 review round")
-	}
-	max := integer(repair["max_full_review_rounds"])
-	if max < 1 {
-		return 0, fmt.Errorf("max_full_review_rounds must be at least 1")
-	}
-	return max, nil
+	rev["clean_round"] = nil
+	rev["round_entry"] = entry
+	return ActionResult{Status: "committed", MutationApplied: true, Detail: "S7 entry Plan identity saved"}, nil
 }
 
 // actionResetS7ReviewAfterGovernance clears the review projection when a
@@ -310,13 +274,11 @@ func actionResetS7ReviewAfterGovernance(state map[string]any, ctx *ActionContext
 	if !ok {
 		return ActionResult{Status: "failed", Detail: "review missing"}, fmt.Errorf("reset_s7_review_after_governance: review missing")
 	}
-	review["round"] = 0
 	review["clean_round"] = nil
 	review["round_entry"] = nil
 	review["plan"] = nil
 	review["claims"] = map[string]any{}
 	review["assignments"] = map[string]any{}
-	review["observation_batch"] = nil
 
 	items, ok := state["evidence"].([]any)
 	if !ok {
@@ -347,11 +309,8 @@ func actionResetS7ReviewAfterGovernance(state map[string]any, ctx *ActionContext
 	}, nil
 }
 
-// actionStartNewReviewRound is the action declared by PTR-VERIFY-05. It is
-// intentionally distinct from start_review_round:
-// it is invoked when a clean round was incomplete and the verification phase
-// must restart at delivery. For TASK-013 the semantic is the same as
-// start_review_round; the registered name preserves the spec.
+// actionStartNewReviewRound retains the historical registry alias. Any actual
+// entry through it uses the same original event relation and never counts work.
 func actionStartNewReviewRound(state map[string]any, ctx *ActionContext) (ActionResult, error) {
 	return actionStartReviewRound(state, ctx)
 }
@@ -391,31 +350,20 @@ func CapturePauseCheckpoint(state map[string]any, reason string, occurredAt time
 	if baseline != nil {
 		baselineGeneration = integer(baseline["generation"])
 	}
-	review, _ := state["review"].(map[string]any)
-	reviewRound := 0
-	if review != nil {
-		reviewRound = integer(review["round"])
-	}
-	documents := documentFingerprints(state)
-
 	state["pause"] = map[string]any{
 		"from_state":            fromState,
 		"from_phase":            fromPhase,
 		"phase_revision":        phaseRevision,
 		"baseline_generation":   baselineGeneration,
-		"review_round":          reviewRound,
 		"reason":                reason,
 		"required_human_action": pauseRequiredAction(fromState),
-		"document_fingerprints": documents,
 		"paused_at":             occurredAt.UTC().Format(time.RFC3339Nano),
 	}
 	return nil
 }
 
-// actionRestoreFromPause re-hashes every document referenced in the pause
-// checkpoint's document_fingerprints and rejects the resume if any file has
-// drifted. On success it clears state["pause"]. The target state / phase are
-// read from the pause checkpoint so the engine can move the cursor back.
+// actionRestoreFromPause resumes the actual saved responsibility without
+// revalidating old document digests or inventing an external-change guarantee.
 func actionRestoreFromPause(state map[string]any, ctx *ActionContext) (ActionResult, error) {
 	if err := restoreFromPauseAction(ctx.Root, state); err != nil {
 		return ActionResult{Status: "failed", Detail: err.Error()}, err
@@ -488,9 +436,6 @@ func actionRegisterLockedContracts(state map[string]any, ctx *ActionContext) (Ac
 		if err != nil {
 			return ActionResult{Status: "failed", Detail: err.Error()}, err
 		}
-		if err := accepted.validateSources(actionRoot(state, ctx), ctx.Request.Files); err != nil {
-			return ActionResult{Status: "failed", Detail: err.Error()}, err
-		}
 	}
 	if ctx.Spec.ID == "TR-002" && loopruntime.PacketEnabled(state) {
 		if ctx.Request == nil || ctx.Request.SubmissionFollowupID == "" {
@@ -513,7 +458,7 @@ func actionRegisterLockedContracts(state map[string]any, ctx *ActionContext) (Ac
 		for _, ref := range accepted.contracts {
 			state["documents"] = appendDocument(state["documents"], map[string]any{
 				"id": ref.ID, "kind": "contract", "path": ref.Path, "version": ref.Version,
-				"sha256": ref.SHA256, "status": "locked", "generation": integerOf(state["baseline"].(map[string]any)["generation"]),
+				"status": "locked", "generation": integerOf(state["baseline"].(map[string]any)["generation"]),
 				"author_agent_id": ctx.Request.Actor, "registered_at": ctx.OccurredAt.UTC().Format(time.RFC3339Nano),
 			})
 			registered++
@@ -534,39 +479,6 @@ type acceptedS3ContractBatch struct {
 	sharedOutputs map[string]bool
 }
 
-// Registration consumes the complete accepted source closure. It does not
-// redo the professional review or let a delayed followup adopt newer bytes.
-func (batch *acceptedS3ContractBatch) validateSources(root string, files fileview.Reader) error {
-	if files == nil {
-		files = fileview.Disk{Root: root}
-	}
-	paths := make([]string, 0, len(batch.subjects))
-	for path := range batch.subjects {
-		paths = append(paths, path)
-	}
-	sort.Strings(paths)
-	if err := fileview.ReadFiles(files, paths, func(i int, data []byte, err error) error {
-		path := paths[i]
-		if err != nil {
-			return fmt.Errorf("read accepted S3 source %s: %w", path, err)
-		}
-		checkout, err := workpacket.ReadFile(root, path, 4<<20)
-		if err != nil {
-			return fmt.Errorf("read accepted S3 checkout source %s: %w", path, err)
-		}
-		if SHA256(data) != batch.subjects[path].SHA256 || SHA256(checkout) != batch.subjects[path].SHA256 {
-			return fmt.Errorf("accepted S3 source changed before registration: %s; preserve the accepted evidence and restore its source bytes for the original followup, or use controlled planning rework for a professional change", path)
-		}
-		return nil
-	}); err != nil {
-		return err
-	}
-	if view, ok := files.(interface{ Verify() error }); ok {
-		return view.Verify()
-	}
-	return nil
-}
-
 func acceptedContractArtifacts(state map[string]any, ctx *ActionContext) (*acceptedS3ContractBatch, error) {
 	entities, _ := state["entities"].(map[string]any)
 	rows, _ := entities["submissions"].([]any)
@@ -583,19 +495,15 @@ func acceptedContractArtifacts(state map[string]any, ctx *ActionContext) (*accep
 		if err != nil || !found {
 			return nil, fmt.Errorf("S3 registration has no original reception: %v", err)
 		}
-		var files fileview.Reader = fileview.Disk{Root: actionRoot(state, ctx)}
-		if ctx.Request.Files != nil {
-			files = ctx.Request.Files
-		}
 		evidence, _ := state["evidence"].([]any)
 		for _, raw := range evidence {
 			ev, _ := raw.(map[string]any)
 			if ev["id"] != record.EvidenceID {
 				continue
 			}
-			data, err := files.ReadFile(fmt.Sprint(ev["path"]))
-			if err != nil || SHA256(data) != ev["sha256"] {
-				return nil, fmt.Errorf("S3 registration original evidence changed: %v", err)
+			data, err := workpacket.ReadFile(actionRoot(state, ctx), fmt.Sprint(ev["path"]), workpacket.ContractEvidenceReadLimit(packet))
+			if err != nil {
+				return nil, fmt.Errorf("S3 accepted report is unavailable: %w", err)
 			}
 			var envelope struct {
 				Answer   workpacket.ContractAnswer `json:"contract_answer"`
@@ -604,9 +512,8 @@ func acceptedContractArtifacts(state map[string]any, ctx *ActionContext) (*accep
 			if err := json.Unmarshal(data, &envelope); err != nil {
 				return nil, err
 			}
-			digest, err := workpacket.ContractAnswerDigest(envelope.Answer)
-			if err != nil || digest != record.ContentHash || envelope.Answer.IndexPath == nil {
-				return nil, fmt.Errorf("S3 registration original answer differs")
+			if envelope.Answer.IndexPath == nil {
+				return nil, fmt.Errorf("S3 accepted answer has no original index path")
 			}
 			paths := append([]string{*envelope.Answer.IndexPath}, envelope.Answer.ContractPaths...)
 			batch := &acceptedS3ContractBatch{subjects: map[string]workpacket.Subject{}, sharedOutputs: map[string]bool{}}
@@ -636,17 +543,12 @@ func acceptedContractArtifacts(state map[string]any, ctx *ActionContext) (*accep
 					if subject.Path != path {
 						continue
 					}
-					refs = append(refs, workpacket.Reference{ID: strings.TrimSuffix(filepath.Base(path), filepath.Ext(path)), Path: path, Version: subject.Version, SHA256: subject.SHA256})
+					refs = append(refs, workpacket.Reference{ID: strings.TrimSuffix(filepath.Base(path), filepath.Ext(path)), Path: path, Version: subject.Version})
 					found = true
 					break
 				}
 				if !found {
 					return nil, fmt.Errorf("S3 registration received contract is missing: %s", path)
-				}
-			}
-			if verified, ok := files.(interface{ Verify() error }); ok {
-				if err := verified.Verify(); err != nil {
-					return nil, err
 				}
 			}
 			batch.contracts = refs
@@ -724,9 +626,9 @@ func acceptedTaskPlanningBatch(state map[string]any, ctx *ActionContext) (accept
 	if evidencePath == "" || filepath.IsAbs(evidencePath) || filepath.ToSlash(cleanEvidencePath) != evidencePath || cleanEvidencePath == ".." || strings.HasPrefix(cleanEvidencePath, ".."+string(filepath.Separator)) {
 		return acceptedS4TaskPlanningBatch{}, fmt.Errorf("TR-002 original S4 evidence path is invalid")
 	}
-	envelopeBytes, err := files.ReadFile(evidencePath)
-	if err != nil || SHA256(envelopeBytes) != evidence["sha256"] {
-		return acceptedS4TaskPlanningBatch{}, fmt.Errorf("TR-002 original S4 evidence bytes differ from the registered hash: %s", evidencePath)
+	envelopeBytes, err := loopruntime.ReadTaskPlanningReport(actionRoot(state, ctx), evidencePath)
+	if err != nil {
+		return acceptedS4TaskPlanningBatch{}, fmt.Errorf("TR-002 accepted S4 report is unavailable: %w", err)
 	}
 	var envelope struct {
 		Answer      workpacket.TaskPlanningAnswer `json:"task_planning_answer"`
@@ -735,26 +637,12 @@ func acceptedTaskPlanningBatch(state map[string]any, ctx *ActionContext) (accept
 	if err := json.Unmarshal(envelopeBytes, &envelope); err != nil {
 		return acceptedS4TaskPlanningBatch{}, fmt.Errorf("decode TR-002 original S4 evidence: %w", err)
 	}
-	digest, err := workpacket.TaskPlanningAnswerDigest(envelope.Answer)
-	if err != nil || digest != record.ContentHash {
-		return acceptedS4TaskPlanningBatch{}, fmt.Errorf("TR-002 original S4 professional answer differs from its accepted digest")
-	}
 	if err := loopruntime.ValidateTaskPlanningEnvelope(packet, record.EvidenceID, envelope.Answer, envelopeBytes); err != nil {
 		return acceptedS4TaskPlanningBatch{}, fmt.Errorf("revalidate TR-002 original S4 envelope: %w", err)
 	}
 	artifacts, err := loopruntime.TaskPlanningArtifacts(actionRoot(state, ctx), projection, packet, envelope.Answer, files)
 	if err != nil {
 		return acceptedS4TaskPlanningBatch{}, fmt.Errorf("revalidate complete TR-002 S4 batch and frozen source closure: %w", err)
-	}
-	subjects := make(map[string]workpacket.Subject, len(envelope.SubjectRefs))
-	for _, subject := range envelope.SubjectRefs {
-		subjects[subject.Path] = subject
-	}
-	for _, artifact := range artifacts {
-		subject, ok := subjects[artifact.Path]
-		if !ok || subject.Version != artifact.Version || subject.SHA256 != artifact.SHA256 {
-			return acceptedS4TaskPlanningBatch{}, fmt.Errorf("TR-002 S4 accepted artifact differs from current source bytes: %s", artifact.Path)
-		}
 	}
 	if verified, ok := files.(interface{ Verify() error }); ok {
 		if err := verified.Verify(); err != nil {
@@ -800,7 +688,7 @@ func actionRegisterExecutionBatch(state map[string]any, ctx *ActionContext) (Act
 		if !docscope.Belongs(data, boundID) {
 			return ActionResult{Status: "failed"}, fmt.Errorf("foreign TASK in registered batch: %s; repair batch scope before review", rel)
 		}
-		if SHA256(data) != doc["sha256"] || ParseMarkdownField(string(data), "状态", "Status") != "complete" {
+		if ParseMarkdownField(string(data), "状态", "Status") != "complete" {
 			return ActionResult{Status: "failed"}, fmt.Errorf("reviewed TASK changed: %s; repeat document verification", rel)
 		}
 		registered++
@@ -835,7 +723,9 @@ func actionRegisterExecutionBatch(state map[string]any, ctx *ActionContext) (Act
 		if err != nil {
 			return ActionResult{Status: "failed", Detail: err.Error()}, err
 		}
-		detail = fmt.Sprintf("%s; s6_main_start_sha256=%s", detail, start.ReceiptSHA256)
+		if start.TransitionEventID == "" {
+			detail += "; earlier S6 start is unknown"
+		}
 	}
 	return ActionResult{Status: "committed", MutationApplied: true, Detail: detail}, nil
 }
@@ -870,8 +760,8 @@ func actionRegisterPlanningTasks(state map[string]any, ctx *ActionContext) (Acti
 				continue
 			}
 			data, err := files.ReadFile(ref.Path)
-			if err != nil || SHA256(data) != ref.SHA256 {
-				err = fmt.Errorf("accepted S4 TASK bytes changed during TR-002 registration: %s", ref.Path)
+			if err != nil {
+				err = fmt.Errorf("accepted S4 TASK is unavailable during TR-002 registration: %s", ref.Path)
 				return ActionResult{Status: "failed", Detail: err.Error()}, err
 			}
 			status := ParseMarkdownField(string(data), "状态", "Status")
@@ -882,12 +772,12 @@ func actionRegisterPlanningTasks(state map[string]any, ctx *ActionContext) (Acti
 				err := fmt.Errorf("accepted S4 TASK status is %q, want complete or cancelled: %s", status, ref.Path)
 				return ActionResult{Status: "failed", Detail: err.Error()}, err
 			}
-			if err := refreshRuntimeTaskDocument(state, ref.ID, ref.Path, ref.SHA256); err != nil {
+			if err := refreshRuntimeTaskDocument(state, ref.ID, ref.Path); err != nil {
 				return ActionResult{Status: "failed", Detail: err.Error()}, err
 			}
 			state["documents"] = appendDocument(state["documents"], map[string]any{
 				"id": ref.ID, "kind": "task", "path": ref.Path, "version": ref.Version,
-				"sha256": ref.SHA256, "status": status, "generation": generation,
+				"status": status, "generation": generation,
 				"author_agent_id": actor, "registered_at": ctx.OccurredAt.UTC().Format(time.RFC3339Nano),
 			})
 			registered++
@@ -968,7 +858,7 @@ func registerDocumentsFromDisk(root string, state map[string]any, ctx *ActionCon
 			return registered, fmt.Errorf("%s status is %q, want %q — register refuses partial batches (fix the file or finish the batch)", rel, status, wantStatus)
 		}
 		if kind == "task" {
-			if err := refreshRuntimeTaskDocument(state, id, rel, SHA256(data)); err != nil {
+			if err := refreshRuntimeTaskDocument(state, id, rel); err != nil {
 				return registered, err
 			}
 		}
@@ -982,72 +872,21 @@ func registerDocumentsFromDisk(root string, state map[string]any, ctx *ActionCon
 		}
 		state["documents"] = appendDocument(state["documents"], map[string]any{
 			"id": id, "kind": kind, "path": rel, "version": version,
-			"sha256": SHA256(data), "status": status, "generation": generation,
+			"status": status, "generation": generation,
 			"author_agent_id": actor, "registered_at": occurredAt,
 		})
-		if kind == "task" {
-			// S8 spec rework re-locks the TASK at a new fingerprint while a
-			// prior-generation Assignment Record still pins the old one. The
-			// S6 dispatch projection then refuses both the replay branch
-			// (stale TASK fingerprint) and the revision branch (changed
-			// sources). Re-pin same-generation records to the re-locked TASK
-			// in this same Writer transaction so the record, the runtime
-			// entity and the locked document agree again.
-			repinStaleAssignmentTaskRefs(state, id, version, SHA256(data))
-		}
+
 		registered++
 	}
 	return registered, nil
 }
 
-// repinStaleAssignmentTaskRefs re-pins same-generation Assignment Records to
-// a re-locked TASK fingerprint. Without it, an S8-driven specification
-// rework leaves the prior S6 Assignment Record pointing at the pre-rework
-// TASK while the runtime entity already carries the new one, and S6 dispatch
-// refuses both branches. Work state and owner bindings are untouched; only
-// the TASK source ref (version/sha) is advanced. Best-effort: rows that do
-// not decode as records are left alone for the record validator.
-func repinStaleAssignmentTaskRefs(state map[string]any, taskID, version, sha256 string) {
-	entities, _ := state["entities"].(map[string]any)
-	if entities == nil {
-		return
-	}
-	baseline, _ := state["baseline"].(map[string]any)
-	generation := integerOf(baseline["generation"])
-	runtimeID, _ := state["runtime_id"].(string)
-	rows, _ := entities["assignments"].([]any)
-	for _, raw := range rows {
-		row, _ := raw.(map[string]any)
-		if row == nil {
-			continue
-		}
-		if rid, _ := row["runtime_id"].(string); rid != runtimeID {
-			continue
-		}
-		if integerOf(row["baseline_generation"]) != generation {
-			continue
-		}
-		task, _ := row["task"].(map[string]any)
-		if task == nil {
-			continue
-		}
-		if tid, _ := task["id"].(string); tid != taskID {
-			continue
-		}
-		if cur, _ := task["sha256"].(string); cur == sha256 {
-			continue
-		}
-		task["version"] = version
-		task["sha256"] = sha256
-	}
-}
-
 // refreshRuntimeTaskDocument keeps the mutable Runtime TASK projection aligned
 // with an accepted/re-registered TASK document. Work state and owner facts are
-// independent lifecycle data, so this only refreshes the source path/hash.
-func refreshRuntimeTaskDocument(state map[string]any, taskID, path, sha256 string) error {
-	if taskID == "" || path == "" || sha256 == "" {
-		return fmt.Errorf("accepted TASK document identity/path/fingerprint is incomplete")
+// independent lifecycle data, so this only refreshes the source path.
+func refreshRuntimeTaskDocument(state map[string]any, taskID, path string) error {
+	if taskID == "" || path == "" {
+		return fmt.Errorf("accepted TASK document identity/path is incomplete")
 	}
 	entities, _ := state["entities"].(map[string]any)
 	if entities == nil {
@@ -1069,7 +908,6 @@ func refreshRuntimeTaskDocument(state map[string]any, taskID, path, sha256 strin
 		return nil
 	}
 	found["path"] = path
-	found["sha256"] = sha256
 	return nil
 }
 
@@ -1109,34 +947,10 @@ func actionRecordDocumentResult(state map[string]any, ctx *ActionContext) (Actio
 	return actionEvidenceRecorded(ctx, "document result")
 }
 
-// actionRecordBugDrafts is PTR-BUG-01's legacy compatibility action
-// (RC-06, S8-9). PTR-BUG-01 is declared as a legacy projection path only
-// (deprecated: legacy compatibility; see loop-harness.md "Legacy (PTR-BUG)";
-// see its loop-definition.json description): the real BUG-draft producer on
-// the modern path is record_finding_batch (TR-008), which derives drafts from
-// the sealed ObservationBatch with content-hash dedup. This stub therefore
-// only asserts that current evidence context exists — it must not grow real
-// draft-creation logic, or the two paths would diverge on identity rules.
-func actionRecordBugDrafts(state map[string]any, ctx *ActionContext) (ActionResult, error) {
-	return actionEvidenceRecorded(ctx, "bug drafts (legacy PTR-BUG-01 projection)")
-}
-func actionRecordCanonicalBugBatch(state map[string]any, ctx *ActionContext) (ActionResult, error) {
-	return actionEvidenceRecorded(ctx, "canonical bug batch")
-}
-func actionRecordBugReviewFeedback(state map[string]any, ctx *ActionContext) (ActionResult, error) {
-	return actionEvidenceRecorded(ctx, "bug review feedback")
-}
-func actionRecordRepairActivation(state map[string]any, ctx *ActionContext) (ActionResult, error) {
-	return actionEvidenceRecorded(ctx, "repair activation")
-}
 func actionInvalidateAffectedEvidence(state map[string]any, ctx *ActionContext) (ActionResult, error) {
-	// RC-05 (S10-6): an empty AffectedPaths list used to degrade into a
-	// silent "no affected evidence to invalidate" commit — the invalidation
-	// write barrier became a no-op exactly when the caller forgot to declare
-	// what changed. The transition now fails closed: declare the affected
-	// paths, or explicitly declare the full surface with the single "all"
-	// token (which the Controller emits only when the request itself
-	// authorizes a full sweep).
+	// Transitions for actual changes use the explicitly supplied affected paths.
+	// A TR-016 re-review decision can instead reflect insufficient previous
+	// verification and need not assert a product change.
 	var changedPaths []string
 	all := false
 	if ctx.Request != nil {
@@ -1144,7 +958,9 @@ func actionInvalidateAffectedEvidence(state map[string]any, ctx *ActionContext) 
 	}
 	if ctx.Spec.ID == "TR-016" {
 		// S10's original re-review impact owns the scope. A save or later
-		// recovery Hook names its tool target, not the affected product.
+		// recovery Hook names its tool target, not the affected product. Do not
+		// substitute that target if the accepted impact has no product paths.
+		changedPaths = nil
 		ref := ctx.Evidence["change_impact_record"]
 		rows, _ := state["evidence"].([]any)
 		for _, raw := range rows {
@@ -1155,6 +971,9 @@ func actionInvalidateAffectedEvidence(state map[string]any, ctx *ActionContext) 
 				}
 				break
 			}
+		}
+		if len(changedPaths) == 0 {
+			return ActionResult{Status: "committed", Detail: "re-review decision has no affected product paths; existing evidence retained"}, nil
 		}
 	}
 	if len(changedPaths) == 1 && strings.TrimSpace(changedPaths[0]) == "all" {
@@ -1214,140 +1033,6 @@ func actionRecordTargetedReverification(state map[string]any, ctx *ActionContext
 	return actionEvidenceRecorded(ctx, "targeted reverification")
 }
 
-// actionRecordFindingBatch implements TR-008's record_finding_batch action.
-//
-// L3-S7 P0: the batch source is the sealed ObservationBatch in
-// state.review.observation_batch — the exact Finding set the round consumer
-// sealed — not a free-form ctx.Params payload. For every Finding entity in
-// the batch this creates one investigation-intake BUG draft with
-// deduplication by finding content hash, so S8 starts from immutable
-// observation facts (finding file + encounter) instead of a hand-carried
-// summary. S8 still owns causal acceptance; this action does not claim that
-// the symptom has a root cause or that a repair is authorized.
-//
-// BUG schema constraints (loop-state.schema.json §bug):
-// - additionalProperties: false; only the 7 canonical keys are allowed.
-// - original_finder_agent_ids: array, minItems: 1, uniqueItems.
-// - id: pattern ^BUG-[0-9]{3,}$.
-// - state: enum {draft, investigating, ...}; new BUGs land in "draft".
-//
-// Dedup fingerprint: the finding entity's sha256 (the finding is immutable,
-// so its content hash is a stable identity), encoded as `<path>#fp=<sha256>`.
-func actionRecordFindingBatch(state map[string]any, ctx *ActionContext) (ActionResult, error) {
-	reviewMap, _ := state["review"].(map[string]any)
-	batch, _ := reviewMap["observation_batch"].(map[string]any)
-	if batch == nil {
-		return ActionResult{Status: "failed", Detail: "observation batch missing"}, fmt.Errorf("record_finding_batch: no sealed ObservationBatch — the S7 round consumer seals it when the final required Claim disposition lands")
-	}
-	batchIDs, _ := batch["finding_ids"].([]any)
-	if len(batchIDs) == 0 {
-		return ActionResult{Status: "failed", Detail: "observation batch carries no findings"}, fmt.Errorf("record_finding_batch: sealed ObservationBatch has an empty finding set")
-	}
-	entities, ok := state["entities"].(map[string]any)
-	if !ok {
-		return ActionResult{Status: "failed", Detail: "entities missing"}, fmt.Errorf("record_finding_batch: entities missing")
-	}
-	findings, _ := entities["findings"].([]any)
-	byID := map[string]map[string]any{}
-	for _, raw := range findings {
-		row, _ := raw.(map[string]any)
-		if row == nil {
-			continue
-		}
-		if id, _ := row["finding_id"].(string); id != "" {
-			byID[id] = row
-		}
-	}
-	bugs, _ := entities["bugs"].([]any)
-
-	registered := 0
-	deduplicated := 0
-	registeredIDs := make([]string, 0)
-	for _, rawID := range batchIDs {
-		findingID, _ := rawID.(string)
-		row := byID[findingID]
-		if row == nil {
-			return ActionResult{Status: "failed", Detail: "finding entity missing"}, fmt.Errorf("record_finding_batch: batch references finding %s which has no entity row", findingID)
-		}
-		path, _ := row["path"].(string)
-		sha, _ := row["sha256"].(string)
-		finder, _ := row["original_finder"].(string)
-		severity, _ := row["severity"].(string)
-		if path == "" || sha == "" || finder == "" || severity == "" {
-			return ActionResult{Status: "failed", Detail: "finding row incomplete"}, fmt.Errorf("record_finding_batch: finding %s row is missing path/sha256/original_finder/severity", findingID)
-		}
-		if existing := findBugByFingerprint(bugs, sha); existing != "" {
-			deduplicated++
-			continue
-		}
-		nextID := nextBugID(bugs)
-		newBug := map[string]any{
-			"id":                          nextID,
-			"state":                       "draft",
-			"path":                        path + "#fp=" + sha,
-			"severity":                    severity,
-			"attempt_count":               0,
-			"same_contract_failure_count": 0,
-			"original_finder_agent_ids":   []any{finder},
-		}
-		// RC-02 (L3-S7 §10.1): blocking is a business judgment carried from
-		// the Finding, never a severity synonym. P0 is implicitly blocking;
-		// a non-P0 Finding with blocking=true stays blocking downstream.
-		if findingBlocking, ok := row["blocking"].(bool); ok {
-			newBug["blocking"] = findingBlocking
-		} else if severity == "P0" {
-			newBug["blocking"] = true
-		}
-		bugs = append(bugs, newBug)
-		registered++
-		registeredIDs = append(registeredIDs, nextID)
-	}
-	entities["bugs"] = bugs
-	detail := fmt.Sprintf("finding batch processed from sealed ObservationBatch: registered=%d deduplicated=%d ids=%v", registered, deduplicated, registeredIDs)
-	return ActionResult{Status: "committed", MutationApplied: registered > 0, Detail: detail}, nil
-}
-
-// computeFindingFingerprint derives a stable hash for a single finding.
-// The fingerprint is deterministic so duplicate findings (same reporter,
-// same body, same path) hash to the same value and are deduplicated.
-//
-// Formula: sha256(reporter_agent_id + "\n" + sorted(finding_body lines) +
-// "\n" + finding_path). Sorting the body lines (instead of the whole body)
-// is intentional: whitespace-only reorderings of multi-line findings still
-// dedup, but semantic re-orderings within a paragraph do not.
-func computeFindingFingerprint(reporter, body, path string) string {
-	lines := strings.Split(body, "\n")
-	sort.Strings(lines)
-	normalized := strings.Join(lines, "\n")
-	h := sha256.New()
-	h.Write([]byte(reporter))
-	h.Write([]byte{'\n'})
-	h.Write([]byte(normalized))
-	h.Write([]byte{'\n'})
-	h.Write([]byte(path))
-	return fmt.Sprintf("%x", h.Sum(nil))
-}
-
-// findBugByFingerprint scans an entities.bugs array for an entry whose path
-// encodes the supplied fingerprint. The expected encoding is
-// "<path>#fp=<sha256>". When a match is found the BUG id is returned;
-// otherwise the empty string.
-func findBugByFingerprint(bugs []any, fingerprint string) string {
-	suffix := "#fp=" + fingerprint
-	for _, raw := range bugs {
-		bug, ok := raw.(map[string]any)
-		if !ok {
-			continue
-		}
-		p, _ := bug["path"].(string)
-		if strings.HasSuffix(p, suffix) {
-			id, _ := bug["id"].(string)
-			return id
-		}
-	}
-	return ""
-}
-
 // nextBugID returns the next "BUG-NNN" id for entities.bugs. It scans the
 // existing array for the highest numeric suffix and increments. IDs that
 // already exist in [closed, rejected, duplicate] states still count toward
@@ -1393,14 +1078,6 @@ func actionRecordQAResult(state map[string]any, ctx *ActionContext) (ActionResul
 func actionRecordE2EResult(state map[string]any, ctx *ActionContext) (ActionResult, error) {
 	return actionEvidenceRecorded(ctx, "e2e browser result")
 }
-func actionRecordCleanRound(state map[string]any, ctx *ActionContext) (ActionResult, error) {
-	review, ok := state["review"].(map[string]any)
-	if !ok || integer(review["round"]) < 1 {
-		return ActionResult{Status: "failed", Detail: "active review round missing"}, fmt.Errorf("record_clean_round: active review round missing")
-	}
-	review["clean_round"] = integer(review["round"])
-	return ActionResult{Status: "committed", MutationApplied: true, Detail: "clean round recorded"}, nil
-}
 func actionRecordACC(state map[string]any, ctx *ActionContext) (ActionResult, error) {
 	return actionEvidenceRecorded(ctx, "acceptance")
 }
@@ -1420,7 +1097,6 @@ func actionRecordHumanReleaseDecision(state map[string]any, ctx *ActionContext) 
 		// The human problem is the new intake source. Retire only the current
 		// S7/S8 entry pointers; their recorded observations and files remain.
 		if review, _ := state["review"].(map[string]any); review != nil {
-			review["observation_batch"] = nil
 			review["investigation"] = nil
 		}
 	}

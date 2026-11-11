@@ -4,11 +4,8 @@
   "assignment_id": "assignment-qa-logic-1",
   "assignment_revision": 1,
   "review_plan_id": "review-plan-example-1",
-  "review_round": 1,
   "baseline_generation": 1,
   "producer_agent_id": "agent-qa-1",
-  "subject_digest": "0000000000000000000000000000000000000000000000000000000000000000",
-  "verification_artifact_digest": null,
   "claim_results": [
     {
       "claim_id": "claim-qa-error-path-1",

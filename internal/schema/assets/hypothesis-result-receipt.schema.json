@@ -2,12 +2,11 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://vibe-coding.local/schemas/hypothesis-result-receipt.schema.json",
   "title": "Original S8 HypothesisResult receipt",
-  "description": "Stored in the original immutable Case revision. The containing Case SHA is derived from the original pointer/revision history, avoiding self-reference.",
+  "description": "The accepted original result is recorded in the Case revision.",
   "type": "object",
   "additionalProperties": false,
   "required": [
     "contract",
-    "submitted_answer",
     "packet_id",
     "owner_agent_id",
     "runtime_id",
@@ -21,13 +20,7 @@
     "accepted_event_id",
     "accepted_idempotency_key",
     "successor_case_ref",
-    "packet_sha256",
-    "answer_sha256",
-    "assignment_sha256",
-    "task_sha256",
-    "manifest_sha256",
     "baseline_generation",
-    "review_round",
     "accepted_after_runtime_revision",
     "accepted_sequence",
     "successor_case_revision"
@@ -106,31 +99,7 @@
       "type": "string",
       "minLength": 1
     },
-    "packet_sha256": {
-      "type": "string",
-      "pattern": "^[a-f0-9]{64}$"
-    },
-    "answer_sha256": {
-      "type": "string",
-      "pattern": "^[a-f0-9]{64}$"
-    },
-    "assignment_sha256": {
-      "type": "string",
-      "pattern": "^[a-f0-9]{64}$"
-    },
-    "task_sha256": {
-      "type": "string",
-      "pattern": "^[a-f0-9]{64}$"
-    },
-    "manifest_sha256": {
-      "type": "string",
-      "pattern": "^[a-f0-9]{64}$"
-    },
     "baseline_generation": {
-      "type": "integer",
-      "minimum": 1
-    },
-    "review_round": {
       "type": "integer",
       "minimum": 1
     },
@@ -145,6 +114,12 @@
     "successor_case_revision": {
       "type": "integer",
       "minimum": 1
-    }
+    },
+    "packet_sha256": {},
+    "answer_sha256": {},
+    "assignment_sha256": {},
+    "task_sha256": {},
+    "manifest_sha256": {},
+    "review_round": {}
   }
 }

@@ -43,17 +43,17 @@
     "verification": {
       "stage": "S7",
       "category": "review",
-      "description": "One frozen baseline, one ReviewPlan with an exact required Claim set, 1..N DV/QA/E2E reviewer Assignments, one Canonical ReviewResult per Assignment, and a machine-computed CleanRound or sealed ObservationBatch.",
+      "description": "Main organizes the current ReviewPlan and independent reviewer responsibilities; natural events receive their original results and route accepted Findings or completed responsibilities.",
       "phase_machine": "verification",
       "entry_condition": "S6 builder results are integrated and consumed (or S9 targeted re-verification passed) and a new review round is open.",
-      "exit_condition": "The machine CleanRound passes (TR-009), a sealed ObservationBatch hands the exact Finding set to S8 (TR-008), or the Loop pauses on a verdict (TR-010/TR-011)."
+      "exit_condition": "Accepted Findings enter S8 (TR-008), required responsibilities complete without Findings and enter S10 (TR-009), or a pause verdict applies (TR-010/TR-011)."
     },
     "bug_resolution": {
       "stage": "S8/S9",
       "category": "work",
-      "description": "S8 consumes sealed S7 Findings into InvestigationCases, derives causal models and approved RepairContracts; S9 repairs only from an approved RepairContract. Canonical BUGs are compatibility projections, not authorities.",
+      "description": "S8 consumes accepted S7 Findings into InvestigationCases, derives causal models and approved RepairContracts; S9 repairs only from an approved RepairContract. Canonical BUGs are compatibility projections, not authorities.",
       "phase_machine": "bug_resolution",
-      "entry_condition": "A sealed S7 ObservationBatch with an exact immutable Finding set exists, or a human release decision routes a finding into S8.",
+      "entry_condition": "An accepted S7 Finding or a human release decision enters the original S8 intake.",
       "exit_condition": "The approved RepairContract completes targeted re-verification and hands back to S7, or the InvestigationCase is routed to specification, REQ, duplicate, no-change, or further investigation."
     },
     "acceptance": {
@@ -61,7 +61,7 @@
       "category": "work",
       "description": "ACC is assembled from the locked baseline and one valid clean round.",
       "phase_machine": null,
-      "entry_condition": "All required same-round evidence passes and no blocking BUG remains.",
+      "entry_condition": "The applicable required S7 responsibilities completed without an accepted Finding.",
       "exit_condition": "ACC is complete or evidence requires another full review."
     },
     "release_audit": {
@@ -329,31 +329,31 @@
         "planned": {
           "description": "A review round is open but no ReviewPlan is registered yet.",
           "entry_condition": "TR-006/TR-012/TR-016 opened a new review round.",
-          "exit_condition": "A schema-valid ReviewPlan with an exactly-partitioned required Claim set is registered via runtime review-plan."
+          "exit_condition": "Main saves the original ReviewPlan questionnaire; its consumer registers applicable responsibilities."
         },
         "running": {
-          "description": "The ReviewPlan is registered; static DV/QA Claims and (after they settle) behavior E2E Claims are dispatched and consumed.",
+          "description": "The ReviewPlan is registered; dispatch executable review responsibilities according to their actual explicit dependencies and consume each original result as it arrives. Independent unfinished responsibilities do not impose a global ordering.",
           "entry_condition": "ReviewPlan registered for the current round.",
           "exit_condition": "Every required Claim has a consumed disposition; a finding flips the round to cannot_clean."
         },
         "cannot_clean": {
           "description": "At least one confirmed Finding exists; the clean path is closed but ordinary safe discovery continues.",
           "entry_condition": "A consumed ReviewResult carried a Finding.",
-          "exit_condition": "The remaining required Claims complete (discovery_draining) or a P0 finding seals the batch immediately."
+          "exit_condition": "The original Finding can be handed to S8; Main decides which remaining work may continue safely."
         },
         "discovery_draining": {
-          "description": "The remaining required Claims are being completed after a confirmed ordinary finding (drain_policy=complete_required_claims).",
-          "entry_condition": "cannot_clean with undispositioned required Claims still being consumed.",
-          "exit_condition": "The final required Claim disposition lands and the ObservationBatch seals."
+          "description": "Compatibility phase: Main handles remaining responsibilities after an accepted Finding.",
+          "entry_condition": "An accepted Finding and remaining responsibilities are available to Main.",
+          "exit_condition": "The original Finding and remaining responsibilities are handed to S8."
         },
         "observation_sealed": {
-          "description": "The final required Claim set is dispositioned and the ObservationBatch carries the exact Finding set for S8.",
-          "entry_condition": "Round consumer sealed the ObservationBatch.",
-          "exit_condition": "TR-008 hands the batch to bug_resolution."
+          "description": "Compatibility phase for the accepted Finding handoff to S8.",
+          "entry_condition": "The original consumer received a Finding.",
+          "exit_condition": "TR-008 hands accepted Findings and outstanding responsibilities to bug_resolution."
         },
         "clean": {
-          "description": "Every applicable Claim was consumed without findings; the machine CleanRound snapshot is registered.",
-          "entry_condition": "Round consumer computed the CleanRound over the exact Claim set.",
+          "description": "Applicable required responsibilities completed with accepted conclusions and no Finding.",
+          "entry_condition": "The original consumer recorded the applicable conclusions and responsibility progress.",
           "exit_condition": "TR-009 promotes the clean round into acceptance."
         }
       },
@@ -371,7 +371,7 @@
       "phases": {
         "investigation": {
           "description": "Investigators consume S7 encounter/raw evidence, form competing hypotheses and answer independent discriminator questions. Reproduction is an exception for missing or contradictory evidence, not an intake requirement.",
-          "entry_condition": "TR-008 has handed the sealed ObservationBatch to investigation, or an actual human defect decision has entered the original intake route. Main saves the supplied intake rationale; the original consumer validates the source set and frozen baseline before creating the InvestigationCase.",
+          "entry_condition": "TR-008 hands the accepted Finding to investigation, or an actual human defect decision enters the original intake route. Main saves the supplied intake rationale; the original consumer prepares the InvestigationCase.",
           "exit_condition": "The Case has a supported causal model, or an explicit route to investigate_more, specification rework, REQ decision, duplicate, or no-change."
         },
         "bug_report_review": {
@@ -470,172 +470,6 @@
           "required_evidence": [],
           "on_guard_failure": "reject",
           "description": "Only the explicit execution checkpoint releases implementation writes."
-        },
-        {
-          "id": "PTR-BUG-01",
-          "from": "investigation",
-          "selector": "SEL-BUG-OUTCOME",
-          "automation": {
-            "eligible": true,
-            "human_boundary": false
-          },
-          "event": "bug_drafts_ready",
-          "to": "bug_report_review",
-          "actors": [
-            "orchestrator",
-            "hook_controller"
-          ],
-          "guards": [
-            "root_cause_evidence_complete"
-          ],
-          "actions": [
-            "record_bug_drafts"
-          ],
-          "required_evidence": [
-            "observation_batch_record",
-            "root_cause_record"
-          ],
-          "on_guard_failure": "reject",
-          "auto_trigger": {
-            "enabled": true,
-            "event": "PreToolUse",
-            "actor": "hook_controller",
-            "quality_gate_id": "GATE-BUG-DRAFTS-READY",
-            "max_per_event": 1,
-            "human_required": false
-          },
-          "description": "Legacy compatibility transition only. If an older implementation emits bug_drafts_ready, the resulting BUG records are projections that must be reconciled into an InvestigationCase; new paths keep the Case status in its artifact and do not create a second runtime phase machine."
-        },
-        {
-          "id": "PTR-BUG-02",
-          "from": "bug_report_review",
-          "selector": "SEL-BUG-OUTCOME",
-          "automation": {
-            "eligible": true,
-            "human_boundary": false
-          },
-          "event": "canonical_bugs_accepted",
-          "to": "repair_readback",
-          "actors": [
-            "orchestrator",
-            "hook_controller"
-          ],
-          "guards": [
-            "canonical_bug_mapping_complete",
-            "bug_closing_contracts_complete"
-          ],
-          "actions": [
-            "record_canonical_bug_batch"
-          ],
-          "required_evidence": [
-            "bug_batch_record"
-          ],
-          "on_guard_failure": "reject",
-          "auto_trigger": {
-            "enabled": true,
-            "event": "PreToolUse",
-            "actor": "hook_controller",
-            "quality_gate_id": "GATE-CANONICAL-BUGS-ACCEPTED",
-            "max_per_event": 1,
-            "human_required": false
-          },
-          "description": "Legacy compatibility projection only. A canonical BUG acceptance event cannot authorize S9 unless an approved RepairContract is already present; new paths do not enter bug_report_review."
-        },
-        {
-          "id": "PTR-BUG-03",
-          "from": "bug_report_review",
-          "selector": "SEL-BUG-OUTCOME",
-          "automation": {
-            "eligible": true,
-            "human_boundary": false
-          },
-          "event": "bug_reports_rejected",
-          "to": "investigation",
-          "actors": [
-            "orchestrator",
-            "hook_controller"
-          ],
-          "guards": [],
-          "actions": [
-            "record_bug_review_feedback"
-          ],
-          "required_evidence": [
-            "bug_batch_record"
-          ],
-          "on_guard_failure": "reject",
-          "auto_trigger": {
-            "enabled": true,
-            "event": "PreToolUse",
-            "actor": "hook_controller",
-            "quality_gate_id": "GATE-BUG-REPORTS-REJECTED",
-            "max_per_event": 1,
-            "human_required": false
-          },
-          "description": "Legacy compatibility projection only. Rejected BUG projections return to the InvestigationCase rather than creating another per-Finding BUG draft."
-        },
-        {
-          "id": "PTR-BUG-08",
-          "from": "investigation",
-          "selector": "SEL-BUG-OUTCOME",
-          "automation": {
-            "eligible": true,
-            "human_boundary": false
-          },
-          "event": "repair_contract_approved",
-          "to": "repair_readback",
-          "actors": [
-            "orchestrator",
-            "hook_controller"
-          ],
-          "guards": [
-            "root_cause_evidence_complete",
-            "bug_closing_contract_complete",
-            "bug_closing_contracts_complete"
-          ],
-          "actions": [
-            "set_bug_phase_repair_readback"
-          ],
-          "required_evidence": [
-            "root_cause_record",
-            "repair_record"
-          ],
-          "on_guard_failure": "reject",
-          "description": "Legacy compatibility projection only. The current S8 main path is `runtime investigation contract approve`, which writes immutable approved Case/Contract revisions, pins their hashes, and enters S9 repair_readback directly; it does not invoke this PTR-BUG-08 catalog transition. No canonical BUG acceptance is required or sufficient."
-        },
-        {
-          "id": "PTR-BUG-04",
-          "from": "repair_readback",
-          "selector": "SEL-BUG-OUTCOME",
-          "automation": {
-            "eligible": true,
-            "human_boundary": false
-          },
-          "event": "repair_builders_activated",
-          "to": "fixing",
-          "actors": [
-            "orchestrator",
-            "hook_controller"
-          ],
-          "guards": [
-            "repair_understanding_approved",
-            "repair_activation_recorded"
-          ],
-          "actions": [
-            "record_repair_activation"
-          ],
-          "required_evidence": [
-            "activation_record"
-          ],
-          "on_guard_failure": "reject",
-          "auto_trigger": {
-            "enabled": true,
-            "event": "PreToolUse",
-            "actor": "hook_controller",
-            "quality_gate_id": "GATE-REPAIR-BUILDERS-ACTIVATED",
-            "max_per_event": 1,
-            "human_required": false
-          },
-          "description": "Legacy compatibility projection only. Current S9 dispatch uses `runtime repair dispatch` for each RepairAssignment, then the explicit `runtime repair execution begin` checkpoint releases implementation writes."
         },
         {
           "id": "PTR-BUG-05",
@@ -1372,7 +1206,7 @@
         "max_per_event": 1,
         "human_required": false
       },
-      "description": "Start a complete review round after every TASK in the TR-003 exact execution batch has a Builder Result with passing checks, no unapproved scope deviations, and a verified integration checkpoint. S7 verification planning starts from the real integrated diff at its own entry; the building stage no longer demands S7 team-manifest evidence it cannot legitimately produce."
+      "description": "Start a complete review round after every TASK in the TR-003 exact execution batch has an accepted Builder Result with its completion judgment and a verified integration checkpoint with required actual checks. Main considers the original risk and scope statements against the TASK and actual changes; a nonempty list alone neither blocks the exit nor approves a deviation. S7 verification planning starts from the real integrated diff at its own entry; the building stage no longer demands S7 team-manifest evidence it cannot legitimately produce."
     },
     {
       "id": "TR-007",
@@ -1429,14 +1263,12 @@
         "hook_controller"
       ],
       "guards": [
-        "observation_batch_sealed"
+        "accepted_finding_present"
       ],
       "actions": [
         "set_bug_phase_investigation"
       ],
-      "required_evidence": [
-        "observation_batch_record"
-      ],
+      "required_evidence": [],
       "on_guard_failure": "reject",
       "auto_trigger": {
         "enabled": true,
@@ -1446,7 +1278,7 @@
         "max_per_event": 1,
         "human_required": false
       },
-      "description": "A sealed ObservationBatch carries the exact immutable Finding set (with encounters, wall actions and evidence refs) into S8 on the next Main PreToolUse. TR-008 records only the cursor handoff. Main then reads the supplied Batch/Findings and saves grouping_rationale in the exact S8 intake questionnaire; its original ingest consumer creates the InvestigationCase after exact-set/hash/baseline validation. The runtime investigation ingest command remains a direct domain/recovery entry, not a second required submission. S8 consumes the observed facts without re-reproducing symptoms by default. No per-Finding BUG draft is created; any legacy BUG draft is only a compatibility projection of the Case.",
+      "description": "An accepted Finding enters S8 in the same original reception handoff; preserve in-flight responsibilities for Main without waiting for them to complete.",
       "from_phase": "observation_sealed"
     },
     {
@@ -1467,12 +1299,8 @@
       "guards": [
         "clean_round_valid"
       ],
-      "actions": [
-        "record_clean_round"
-      ],
-      "required_evidence": [
-        "clean_round_record"
-      ],
+      "actions": [],
+      "required_evidence": [],
       "on_guard_failure": "reject",
       "auto_trigger": {
         "enabled": true,
@@ -1482,7 +1310,7 @@
         "max_per_event": 1,
         "human_required": false
       },
-      "description": "The final accepted ReviewResult continues the original Gate/TR-009 in the same completion event, then prepares the current S10 acceptance questionnaire. Every required Claim of the current ReviewPlan needs a consumed PASS; clean_round_valid recomputes the snapshot, current product baseline and applicable E2E assets at promotion. Reception, transition and material preparation are separate facts. Resume a pending original exit with runtime review-continue; recover missing current S10 materials with runtime audit-prepare. PreToolUse remains a compatibility recovery path."
+      "description": "Continue from original accepted S7 conclusions and necessary responsibility completion in the same reception event; preserve in-flight original responsibilities."
     },
     {
       "id": "TR-010",
@@ -1517,7 +1345,7 @@
         "max_per_event": 1,
         "human_required": false
       },
-      "description": "A ReviewResult verdict of req_change_required pauses the loop for a human REQ decision. The verdict transaction (runtime review-result submit) already created the single authoritative pause checkpoint; this transition only moves the cursor."
+      "description": "An accepted Reviewer verdict of req_change_required pauses the loop for a human REQ decision; the original answer consumer prepares the pause checkpoint."
     },
     {
       "id": "TR-011",
@@ -1550,7 +1378,7 @@
         "max_per_event": 1,
         "human_required": false
       },
-      "description": "A ReviewResult verdict of release_blocked pauses the loop for a human release decision. The verdict transaction (runtime review-result submit) already created the single authoritative pause checkpoint; this transition only moves the cursor."
+      "description": "An accepted Reviewer verdict of release_blocked pauses the loop for a human release decision; the original answer consumer prepares the pause checkpoint."
     },
     {
       "id": "TR-012",
@@ -1685,15 +1513,13 @@
         "hook_controller"
       ],
       "guards": [
-        "acc_complete",
-        "clean_round_still_valid"
+        "acc_complete"
       ],
       "actions": [
         "record_acc"
       ],
       "required_evidence": [
-        "acceptance_record",
-        "clean_round_record"
+        "acceptance_record"
       ],
       "on_guard_failure": "reject",
       "auto_trigger": {
@@ -1704,7 +1530,7 @@
         "max_per_event": 1,
         "human_required": false
       },
-      "description": "Release audit starts only from current ACC and clean-round evidence."
+      "description": "Release audit starts from the accepted S10 report and the original completed S7 handoff."
     },
     {
       "id": "TR-016",
@@ -1758,16 +1584,14 @@
       ],
       "guards": [
         "release_audit_approved",
-        "acc_complete",
-        "clean_round_still_valid"
+        "acc_complete"
       ],
       "actions": [
         "record_release_audit"
       ],
       "required_evidence": [
         "release_audit_record",
-        "acceptance_record",
-        "clean_round_record"
+        "acceptance_record"
       ],
       "on_guard_failure": "reject",
       "auto_trigger": {
@@ -2355,7 +2179,7 @@
       ],
       "human_decision_scope": "runtime_governance",
       "on_guard_failure": "reject",
-      "description": "When the S7 full-review budget is exhausted, a human may return the Runtime to planning for specification or architecture governance instead of authorizing another review round."
+      "description": "Consume an existing real human governance decision through its original compatibility route. Legacy review-budget configuration does not itself request a decision or limit continued professional work."
     }
   ],
   "forbidden_events": [
@@ -2378,11 +2202,6 @@
       "event": "lock_unverified_execution_batch",
       "enforcement": "strong_block",
       "reason": "Only jointly verified contract and task versions may lock."
-    },
-    {
-      "event": "create_acc_without_clean_round",
-      "enforcement": "strong_block",
-      "reason": "Acceptance requires one valid complete review round."
     },
     {
       "event": "run_release_audit_without_acc",
@@ -2448,7 +2267,7 @@
     },
     {
       "id": "INV-009",
-      "statement": "S8 consumes the sealed ObservationBatch encounter and raw evidence; symptom re-reproduction is not a default investigation prerequisite.",
+      "statement": "S8 consumes the accepted Finding and available observations; symptom re-reproduction is not a default investigation prerequisite.",
       "enforcement": "guard"
     },
     {
@@ -2463,7 +2282,7 @@
     },
     {
       "id": "INV-012",
-      "statement": "A clean round uses current evidence from one complete round and has no unresolved blocking InvestigationCase or approved RepairContract.",
+      "statement": "A clean round reflects the applicable required responsibilities and accepted conclusions of the current round, without a Finding.",
       "enforcement": "combined"
     },
     {

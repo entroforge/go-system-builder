@@ -2,7 +2,6 @@ package review
 
 import (
 	"fmt"
-	"reflect"
 	"strings"
 
 	"github.com/entroforge/go-system-builder/internal/workstate"
@@ -15,14 +14,14 @@ func canRegisterS9Seed(root string, state map[string]any, next *Plan) (bool, err
 	ptr := PlanPointerFromState(state)
 	review, _ := state["review"].(map[string]any)
 	entry, _ := review["round_entry"].(map[string]any)
-	if ptr == nil || entry["transition_id"] != "TR-012" || ptr.Revision != 1 || ptr.Status != "running" || entry["review_plan_seed_ref"] != ptr.Path || entry["review_plan_seed_sha256"] != ptr.SHA256 {
+	if ptr == nil || entry["transition_id"] != "TR-012" || ptr.Revision != 1 || ptr.Status != "running" || entry["review_plan_seed_ref"] != ptr.Path {
 		return false, nil
 	}
 	current, _, err := LoadPlan(root, state)
 	if err != nil {
 		return false, fmt.Errorf("read original S9 seed: %w", err)
 	}
-	if current.CreatedBy != "s9-handoff" || intField(entry["round"]) != current.ReviewRound || intField(entry["baseline_generation"]) != current.BaselineGeneration {
+	if current.CreatedBy != "s9-handoff" || intField(entry["baseline_generation"]) != current.BaselineGeneration {
 		return false, nil
 	}
 	unresolved := false
@@ -32,8 +31,8 @@ func canRegisterS9Seed(root string, state map[string]any, next *Plan) (bool, err
 	if !unresolved {
 		return false, nil
 	}
-	if next.ReviewPlanID != current.ReviewPlanID || next.ReviewRound != current.ReviewRound || next.BaselineGeneration != current.BaselineGeneration || !reflect.DeepEqual(next.ProductBaseline, current.ProductBaseline) {
-		return false, fmt.Errorf("first S9 seed registration keeps the original plan id, round, generation and pinned product baseline")
+	if next.ReviewPlanID != current.ReviewPlanID || next.BaselineGeneration != current.BaselineGeneration {
+		return false, fmt.Errorf("first S9 seed registration keeps the original plan identity and generation")
 	}
 	assignments, _ := review["assignments"].(map[string]any)
 	if len(assignments) != len(current.Assignments) {

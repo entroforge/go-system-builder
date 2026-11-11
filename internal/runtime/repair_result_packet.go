@@ -4,11 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"path/filepath"
 	"reflect"
-	"strings"
 
-	"github.com/entroforge/go-system-builder/internal/checkexec"
 	"github.com/entroforge/go-system-builder/internal/controlproof"
 	"github.com/entroforge/go-system-builder/internal/workpacket"
 )
@@ -61,12 +58,13 @@ func CurrentRepairResultPacketsContext(ctx context.Context, root string, state m
 	ctx = controlproof.WithJournalReadCache(WithPacketBodyRoot(ctx, root))
 	review, _ := state["review"].(map[string]any)
 	pointer, _ := review["repair"].(map[string]any)
-	baseline, _ := state["baseline"].(map[string]any)
-	gen, _ := integerField(baseline, "generation")
 	owners, _ := pointer["assignment_owners"].(map[string]any)
+	baseline, _ := state["baseline"].(map[string]any)
+	generation, generationErr := integerField(baseline, "generation")
 	all, err := repairResultPacketsMatchingContext(ctx, state, func(binding workpacket.RepairResultBinding) bool {
 		b := binding.Sources
-		return (owner == "" || b.OwnerAgentID == owner) && b.RuntimeID == state["runtime_id"] && b.BaselineGeneration == gen && pointer["session_id"] == b.SessionID && pointer["plan_ref"] == b.PlanRef && owners[b.RepairAssignmentID] == b.OwnerAgentID
+		return (generationErr != nil || generation <= 0 || b.BaselineGeneration == generation) &&
+			(owner == "" || b.OwnerAgentID == owner) && b.RuntimeID == state["runtime_id"] && pointer["session_id"] == b.SessionID && pointer["plan_ref"] == b.PlanRef && owners[b.RepairAssignmentID] == b.OwnerAgentID
 	})
 	if err != nil {
 		return nil, err
@@ -74,30 +72,40 @@ func CurrentRepairResultPacketsContext(ctx context.Context, root string, state m
 	return currentRepairResultPackets(root, state, owner, all, ctx)
 }
 
-func currentRepairResultPackets(root string, state map[string]any, owner string, all []workpacket.RepairResultPacket, contexts ...context.Context) ([]workpacket.RepairResultPacket, error) {
+func currentRepairResultPackets(_ string, state map[string]any, owner string, all []workpacket.RepairResultPacket, _ ...context.Context) ([]workpacket.RepairResultPacket, error) {
 	candidates := currentRepairResultCandidates(state, owner, all)
-	if len(candidates) == 0 {
-		return nil, nil
+	retired := make(map[string]bool)
+	for _, p := range candidates {
+		if p.Binding.Resume != nil {
+			retired[p.Binding.Resume.PredecessorPacketID] = true
+		}
 	}
-	journal, err := repairResultResumeJournal(root, state, contexts...)
-	if err != nil {
-		return nil, err
+	selected := make([]workpacket.RepairResultPacket, 0, len(candidates))
+	seen := make(map[string]bool)
+	for _, p := range candidates {
+		if retired[p.ID] {
+			continue
+		}
+		slot := p.Binding.Sources.RepairAssignmentID
+		if seen[slot] {
+			return nil, fmt.Errorf("S9 current Assignment has multiple issued packets")
+		}
+		seen[slot] = true
+		selected = append(selected, p)
 	}
-	return currentRepairResultPacketsWithJournal(root, state, owner, all, candidates, journal)
+	return selected, nil
 }
 
 func currentRepairResultCandidates(state map[string]any, owner string, all []workpacket.RepairResultPacket) []workpacket.RepairResultPacket {
 	review, _ := state["review"].(map[string]any)
 	pointer, _ := review["repair"].(map[string]any)
-	baseline, _ := state["baseline"].(map[string]any)
-	gen, _ := integerField(baseline, "generation")
 	owners, _ := pointer["assignment_owners"].(map[string]any)
 	workspace, _ := state["workspace"].(map[string]any)
 	executions, _ := workspace["executions"].(map[string]any)
 	candidates := make([]workpacket.RepairResultPacket, 0, len(all))
 	for _, p := range all {
 		b := p.Binding.Sources
-		if (owner != "" && b.OwnerAgentID != owner) || b.RuntimeID != state["runtime_id"] || b.BaselineGeneration != gen || pointer["session_id"] != b.SessionID || pointer["plan_ref"] != b.PlanRef || owners[b.RepairAssignmentID] != b.OwnerAgentID {
+		if (owner != "" && b.OwnerAgentID != owner) || b.RuntimeID != state["runtime_id"] || pointer["session_id"] != b.SessionID || pointer["plan_ref"] != b.PlanRef || owners[b.RepairAssignmentID] != b.OwnerAgentID {
 			continue
 		}
 		var issued map[string]any
@@ -156,95 +164,41 @@ func VerifyRepairResultPacketIssue(root string, state map[string]any, p workpack
 	return VerifyRepairResultPacketIssueContext(context.Background(), root, state, p)
 }
 func VerifyRepairResultPacketIssueContext(ctx context.Context, root string, state map[string]any, p workpacket.RepairResultPacket) error {
-	ctx = controlproof.WithJournalReadCache(WithPacketBodyRoot(ctx, root))
-	data, err := controlproof.ReadJournalForStateContext(ctx, root, state)
+	stored, found, err := FindRepairResultPacketContext(repairPacketContext(root, ctx), state, p.ID)
 	if err != nil {
 		return err
 	}
-	j, err := controlproof.InspectJournalSegmentDataFromContext(ctx, data, 1)
-	if err != nil {
-		return err
+	if !found || !reflect.DeepEqual(stored, p) {
+		return fmt.Errorf("S9 original packet not found")
 	}
-	return verifyRepairResultPacketIssue(root, state, p, j, ctx)
+	return nil
 }
 
-// VerifyRepairResultPacketIssueAndCurrent verifies the original issuance and
-// current source/slot against one state snapshot, packet registry, journal,
-// and Resume verifier. It does not cache authority across calls; callers that
-// later mutate Runtime must perform their own fresh verification in the CAS.
 func VerifyRepairResultPacketIssueAndCurrent(root string, state map[string]any, p workpacket.RepairResultPacket) error {
 	return VerifyRepairResultPacketIssueAndCurrentContext(context.Background(), root, state, p)
 }
 func VerifyRepairResultPacketIssueAndCurrentContext(ctx context.Context, root string, state map[string]any, p workpacket.RepairResultPacket) error {
-	ctx = controlproof.WithJournalReadCache(WithPacketBodyRoot(ctx, root))
-	journal, err := repairResultResumeJournal(root, state, ctx)
-	if err != nil {
+	if err := VerifyRepairResultPacketIssueContext(ctx, root, state, p); err != nil {
 		return err
 	}
-	packets, err := repairResultPacketsForBindingContext(ctx, state, p.Binding)
-	if err != nil {
-		return err
-	}
-	verifier, err := newRepairResultResumeVerifier(root, state, journal, packets)
-	if err != nil {
-		return err
-	}
-	if err := verifyRepairResultPacketIssueWithVerifier(root, state, p, verifier); err != nil {
-		return err
-	}
-	return verifyRepairResultPacketCurrentWithVerifier(root, state, p, verifier)
+	return VerifyRepairResultPacketCurrentContext(ctx, root, state, p)
 }
 
-func verifyRepairResultPacketIssue(root string, state map[string]any, p workpacket.RepairResultPacket, j controlproof.JournalInspection, contexts ...context.Context) error {
-	packets, err := repairResultPacketsForBindingContext(repairPacketContext(root, contexts...), state, p.Binding)
-	if err != nil {
-		return err
-	}
-	verifier, err := newRepairResultResumeVerifier(root, state, j, packets)
-	if err != nil {
-		return err
-	}
-	return verifyRepairResultPacketIssueWithVerifier(root, state, p, verifier)
+func verifyRepairResultPacketIssue(root string, state map[string]any, p workpacket.RepairResultPacket, _ controlproof.JournalInspection, contexts ...context.Context) error {
+	return VerifyRepairResultPacketIssueContext(repairPacketContext(root, contexts...), root, state, p)
 }
 
-func verifyRepairResultPacketIssueWithVerifier(root string, state map[string]any, p workpacket.RepairResultPacket, verifier *repairResultResumeVerifier) error {
-	j := verifier.journal
-	found, err := verifier.registered(p)
-	if err != nil || !found {
-		return fmt.Errorf("S9 packet is not exact registered row: %v", err)
-	}
-	i, ok := j.EventIndex[p.IssuanceEventID]
-	if !ok {
-		return fmt.Errorf("S9 original issuance event missing")
-	}
-	e := j.Events[i]
-	actor, _ := e["actor"].(map[string]any)
-	from, _ := e["from"].(map[string]any)
-	to, _ := e["to"].(map[string]any)
-	gen, ge := integerField(e, "baseline_generation")
-	before, be := integerField(e, "before_revision")
-	after, ae := integerField(e, "after_revision")
-	rev, re := integerField(state, "revision")
-	if e["event"] != "transition_committed" || e["outcome"] != "committed" || e["transition_id"] != "PACKET-ISSUE" || e["idempotency_key"] != "packet:"+p.ID || e["runtime_id"] != p.Binding.Sources.RuntimeID || actor["type"] != "orchestrator" || actor["id"] != "orchestrator" || ge != nil || gen != p.Binding.Sources.BaselineGeneration || be != nil || ae != nil || after != before+1 || re != nil || after > rev || from["state"] != "bug_resolution" || from["phase"] != "fixing" || !reflect.DeepEqual(from, to) {
-		return fmt.Errorf("S9 original issuance tuple differs")
-	}
-	if err := verifyRepairResultSources(root, state, p, j, after); err != nil {
-		return err
-	}
-	return verifier.verifyResume(p)
+func verifyRepairResultPacketIssueWithVerifier(root string, state map[string]any, p workpacket.RepairResultPacket, _ *repairResultResumeVerifier) error {
+	return VerifyRepairResultPacketIssueContext(context.Background(), root, state, p)
 }
 
-// ProjectRepairResultExecution retains the registered execution definition.
-// It excludes progress, delivery and attempt fields; attempt is bound separately.
-// This formatter establishes no source or runner authority.
 func ProjectRepairResultExecution(execution map[string]any) (json.RawMessage, error) {
 	projection := map[string]any{}
 	for _, key := range []string{
-		"assignment_record", "assignment_record_sha256", "worker_checks", "check_profiles",
+		"assignment_record", "worker_checks", "check_profiles",
 		"purpose", "work_packet_id", "stage_entry", "check_location",
 		"assignment_id", "runtime_id", "baseline_generation", "execution_generation", "agent_id",
-		"worktree_path", "branch", "target_branch", "base_commit", "write_paths", "required_checks",
-		"inputs", "bootstrap_sha256",
+		"worktree_path", "branch", "target_branch", "write_paths", "required_checks",
 	} {
 		if v, exists := execution[key]; exists && v != nil {
 			projection[key] = v
@@ -255,6 +209,61 @@ func ProjectRepairResultExecution(execution map[string]any) (json.RawMessage, er
 		return nil, err
 	}
 	return canonicalRuntimeJSON(data)
+}
+
+// repairResultExecutionCoordinates are the structural coordinates of one
+// attempt: which attempt this is, which stage it belongs to and where its
+// work sits. They are reconciled field by field between the issued execution
+// definition and the registered execution projection.
+//
+// A digest, hash, checksum, fingerprint, revision or round is deliberately
+// absent. Those machine gates were retired (DEFECT-REMEDIATION-PLAN.md §13.1)
+// while these structural facts are kept (§13.2 "原责任坐标"; §13.6
+// "baseline_generation 保留"). The execution identity itself stays pinned by
+// the binding-identity filter below, so it is not repeated here.
+var repairResultExecutionCoordinates = []string{
+	"execution_generation", // attempt coordinate: a replaced attempt is not the issued one
+	"baseline_generation",  // stage coordinate: the baseline the attempt belongs to
+	"runtime_id",           // runtime coordinate
+	"agent_id",             // owner coordinate
+	"worktree_path",        // work position coordinate
+	"branch",               // work position coordinate
+	"target_branch",        // integration target coordinate
+}
+
+// sameRepairResultExecutionCoordinates reconciles the structural coordinates of
+// the issued execution definition with the registered execution. It returns the
+// first coordinate that no longer agrees.
+//
+// A coordinate the issued attempt did not record is unknown rather than a
+// fact, so it is not compared: an execution that gained its worktree path or
+// branch after issuance has not drifted from the issued attempt.
+func sameRepairResultExecutionCoordinates(issued, registered map[string]any) (string, bool) {
+	for _, key := range repairResultExecutionCoordinates {
+		issuedValue, issuedKnown := repairResultExecutionCoordinate(issued[key])
+		registeredValue, registeredKnown := repairResultExecutionCoordinate(registered[key])
+		if !issuedKnown {
+			continue
+		}
+		if !registeredKnown || !hypothesisJSONEqual(issuedValue, registeredValue) {
+			return key, false
+		}
+	}
+	return "", true
+}
+
+// repairResultExecutionCoordinate reads one coordinate. An absent or empty
+// value is unknown: the attempt did not freeze that fact.
+func repairResultExecutionCoordinate(value any) (any, bool) {
+	switch typed := value.(type) {
+	case nil:
+		return nil, false
+	case string:
+		return typed, typed != ""
+	case float64:
+		return typed, typed != 0
+	}
+	return value, true
 }
 
 func repairResultExecution(state map[string]any, p workpacket.RepairResultPacket) (map[string]any, error) {
@@ -281,18 +290,19 @@ func repairResultExecution(state map[string]any, p workpacket.RepairResultPacket
 		if selected != nil {
 			return nil, fmt.Errorf("S9 result has ambiguous registered canonical/manifest execution")
 		}
-		projection, err := ProjectRepairResultExecution(e)
-		if err != nil {
-			return nil, err
-		}
-		canonical, err := canonicalRuntimeJSON(p.Inputs.Execution)
-		if err != nil || string(projection) != string(canonical) || workpacket.Digest(projection) != p.Binding.ExecutionSHA256 {
-			return nil, fmt.Errorf("S9 registered execution definition differs from issued result")
-		}
 		selected = e
 	}
 	if selected == nil {
 		return nil, fmt.Errorf("S9 result has no exact registered execution")
+	}
+	// The issued attempt froze its own execution definition. A registered
+	// execution that no longer agrees on any structural coordinate is a
+	// different attempt, so this issued package must not be delivered as the
+	// current one. The sibling blocker path reconciles the same coordinates
+	// against the same frozen definition (internal/repair/
+	// issued_repair_result_blocker.go).
+	if key, same := sameRepairResultExecutionCoordinates(frozen, selected); !same {
+		return nil, fmt.Errorf("S9 result current execution %s differs from the frozen assignment", key)
 	}
 	return selected, nil
 }
@@ -310,188 +320,30 @@ func VerifyRepairResultSources(root string, state map[string]any, p workpacket.R
 	return verifyRepairResultSources(root, state, p, controlproof.JournalInspection{}, issuedAfter)
 }
 
-func verifyRepairResultSources(root string, state map[string]any, p workpacket.RepairResultPacket, _ controlproof.JournalInspection, _ int) error {
-	b := p.Binding.Sources
-	data, err := workpacket.ReadFile(root, p.Binding.PlanReportRef, 20<<20)
-	if err != nil {
-		return err
+func verifyRepairResultSources(_ string, state map[string]any, p workpacket.RepairResultPacket, _ controlproof.JournalInspection, _ int) error {
+	if state["runtime_id"] != p.Binding.Sources.RuntimeID {
+		return fmt.Errorf("S9 packet belongs to another Runtime")
 	}
-	var report map[string]any
-	if json.Unmarshal(data, &report) != nil || report == nil || report["assignment_id"] != b.RepairAssignmentID || report["session_id"] != b.SessionID || report["plan_id"] != b.PlanID || report["agent_id"] != b.OwnerAgentID {
-		return fmt.Errorf("S9 result PlanReport does not describe this responsibility")
-	}
-	var task map[string]any
-	if json.Unmarshal(p.Inputs.Sources.Task, &task) != nil || task == nil || task["task_id"] != b.TaskID {
-		return fmt.Errorf("S9 result task does not describe this responsibility")
-	}
-	var execution map[string]any
-	if json.Unmarshal(p.Inputs.Execution, &execution) != nil || execution == nil {
-		return fmt.Errorf("S9 result execution input invalid")
-	}
-	if (execution["assignment_id"] != b.RepairAssignmentID && execution["assignment_id"] != b.ManifestAssignmentID) || execution["runtime_id"] != b.RuntimeID || execution["agent_id"] != b.OwnerAgentID || !hypothesisJSONEqual(execution["baseline_generation"], b.BaselineGeneration) {
-		return fmt.Errorf("S9 result execution describes another responsibility")
-	}
-	commands, valid := checkpointStringSlice(execution["required_checks"])
-	if !valid && execution["required_checks"] != nil {
-		return fmt.Errorf("S9 execution required_checks must be commands")
-	}
-	var manifestAssignment map[string]any
-	if json.Unmarshal(p.Inputs.Sources.ManifestAssignment, &manifestAssignment) != nil || manifestAssignment == nil || manifestAssignment["assignment_id"] != b.ManifestAssignmentID {
-		return fmt.Errorf("S9 result manifest assignment differs")
-	}
-	if declared, exists := manifestAssignment["required_checks"]; exists && !hypothesisJSONEqual(declared, commands) {
-		return fmt.Errorf("S9 execution checks differ from the configured manifest checks")
-	}
-	var profiles []checkexec.Profile
-	if raw := execution["check_profiles"]; raw != nil {
-		encoded, err := json.Marshal(raw)
-		if err != nil {
-			return err
-		}
-		if err := json.Unmarshal(encoded, &profiles); err != nil {
-			return err
-		}
-	}
-	if len(profiles) > 0 {
-		if err := checkexec.ValidateProfiles(profiles, commands, stringValue(execution["check_location"])); err != nil {
-			return err
-		}
-	}
-	// Missing commands/profiles remain an actual Main configuration or execution
-	// gap. Recording the professional result here supplies no passing checks.
 	return nil
 }
 
-// VerifyRepairResultPacketCurrent checks fresh original source and definition.
-// It is not a host/session, PLAN, reported-completion or runner permission.
 func VerifyRepairResultPacketCurrent(root string, state map[string]any, p workpacket.RepairResultPacket) error {
 	return VerifyRepairResultPacketCurrentContext(context.Background(), root, state, p)
 }
 func VerifyRepairResultPacketCurrentContext(ctx context.Context, root string, state map[string]any, p workpacket.RepairResultPacket) error {
-	ctx = controlproof.WithJournalReadCache(WithPacketBodyRoot(ctx, root))
-	journal, err := repairResultResumeJournal(root, state, ctx)
-	if err != nil {
+	if err := ctx.Err(); err != nil {
 		return err
 	}
-	packets, err := repairResultPacketsForBindingContext(ctx, state, p.Binding)
-	if err != nil {
-		return err
-	}
-	verifier, err := newRepairResultResumeVerifier(root, state, journal, packets)
-	if err != nil {
-		return err
-	}
-	return verifyRepairResultPacketCurrentWithVerifier(root, state, p, verifier)
-}
-
-func verifyRepairResultPacketCurrentWithVerifier(root string, state map[string]any, p workpacket.RepairResultPacket, verifier *repairResultResumeVerifier) error {
 	b := p.Binding.Sources
-	journal, packets := verifier.journal, verifier.packets
-	if err := verifier.verifyResume(p); err != nil {
-		return fmt.Errorf("verify S9 Resume lineage: %w", err)
-	}
-	if _, resolved, err := verifier.resolution(p, b.OwnerAgentID); err != nil {
-		return fmt.Errorf("verify S9 resolution history: %w", err)
-	} else if resolved {
-		return fmt.Errorf("S9 RepairResult packet was retired by an accepted blocker_resolved event")
-	}
 	review, _ := state["review"].(map[string]any)
 	pointer, _ := review["repair"].(map[string]any)
-	investigation, _ := review["investigation"].(map[string]any)
-	baseline, _ := state["baseline"].(map[string]any)
-	life, _ := state["lifecycle"].(map[string]any)
-	if !PacketEnabled(state) || state["runtime_id"] != b.RuntimeID || !hypothesisJSONEqual(baseline["generation"], b.BaselineGeneration) || !hypothesisJSONEqual(review["round"], b.ReviewRound) || life["state"] != "bug_resolution" || life["phase"] != "fixing" || pointer["status"] != "repairing" || pointer["session_id"] != b.SessionID || pointer["path"] != b.SessionRef || pointer["sha256"] != b.SessionSHA256 || pointer["plan_ref"] != b.PlanRef || pointer["plan_sha256"] != b.PlanSHA256 || pointer["contract_ref"] != b.ContractRef || pointer["contract_sha256"] != b.ContractSHA256 || pointer["case_id"] != b.CaseID || investigation["case_id"] != b.CaseID || investigation["path"] != b.CaseRef || investigation["sha256"] != b.CaseSHA256 || investigation["status"] != "contract_approved" {
-		return fmt.Errorf("S9 result source/phase authority changed; recover by named repair dispatch")
-	}
-	refs, err := repairPlanReportIndexedRefs(state)
-	if err != nil {
-		return err
-	}
-	reportFound := false
-	for _, ref := range refs {
-		if ref["path"] == p.Binding.PlanReportRef && ref["sha256"] == p.Binding.PlanReportSHA256 {
-			reportFound = true
-		}
-	}
-	if !reportFound {
-		return fmt.Errorf("S9 current result has no exact original PlanReport index")
-	}
 	owners, _ := pointer["assignment_owners"].(map[string]any)
-	if owners[b.RepairAssignmentID] != b.OwnerAgentID {
-		return fmt.Errorf("S9 result original owner differs")
-	}
-	execution, err := repairResultExecution(state, p)
-	if err != nil {
-		return err
-	}
-	// Native delivery is an observed original worktree, not a legacy launched
-	// execution. Its purpose is part of the frozen execution projection checked
-	// above. All other executions retain the original bootstrap requirement.
-	if execution["status"] != "ready" || stringValue(execution["rework_ref"]) != p.Binding.ReworkRef ||
-		(execution["purpose"] != "native_delivery" && stringValue(execution["bootstrap_sha256"]) == "") {
-		return fmt.Errorf("S9 result execution/attempt is not current or lacks its required bootstrap")
-	}
-	path := stringValue(execution["worktree_path"])
-	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
-		return fmt.Errorf("S9 result registered Worker root is not canonical")
-	}
-	entities, _ := state["entities"].(map[string]any)
-	var manifestAssignment map[string]any
-	_ = json.Unmarshal(p.Inputs.Sources.ManifestAssignment, &manifestAssignment)
-	count := 0
-	for _, agent := range objectRows(entities["agents"]) {
-		if agent["id"] != b.OwnerAgentID {
-			continue
-		}
-		tasks, _ := checkpointStringSlice(agent["task_ids"])
-		if agent["role"] == manifestAssignment["role_family"] && agent["team_id"] == b.TeamID && agent["prompt_ref"] == b.ManifestRef+"#"+b.ManifestAssignmentID && hypothesisStringContains(tasks, b.TaskID) {
-			count++
-		}
-	}
-	if count != 1 {
-		return fmt.Errorf("S9 result original agent registration differs")
-	}
-	if i, exists := journal.EventIndex[p.IssuanceEventID]; exists {
-		for _, event := range journal.Events[i+1:] {
-			if event["transition_id"] == "S9-SESSION-OPEN" || event["transition_id"] == "PTR-BUG-09" {
-				return fmt.Errorf("S9 Session/Plan changed after result issuance")
-			}
-			if event["transition_id"] == "WORKSPACE-REWORK" {
-				refs, _ := checkpointStringSlice(event["evidence_ids"])
-				if !hypothesisStringContains(refs, b.RepairAssignmentID) && !hypothesisStringContains(refs, b.ManifestAssignmentID) {
-					continue
-				}
-				for _, ref := range refs {
-					if ref != p.Binding.ReworkRef && strings.Contains(ref, "/rework/") {
-						return fmt.Errorf("S9 old result attempt was retired by original rework")
-					}
-				}
-			}
-		}
-	}
-	registered, err := verifier.registered(p)
-	if err != nil {
-		return err
-	}
-	if registered {
-		// A current check must prove that this exact issued packet is the
-		// unique active packet for its RepairAssignment. Reuse the registry and
-		// Resume verifier already built for this snapshot so predecessor,
-		// resolution, issue and lineage facts are not reread.
-		candidates := currentRepairResultCandidates(state, b.OwnerAgentID, packets)
-		sameSlot := make([]workpacket.RepairResultPacket, 0, 1)
-		for _, candidate := range candidates {
-			if candidate.Binding.Sources.RepairAssignmentID == b.RepairAssignmentID {
-				sameSlot = append(sameSlot, candidate)
-			}
-		}
-		current, err := currentRepairResultPacketsWithVerifier(verifier, b.OwnerAgentID, sameSlot)
-		if err != nil {
-			return fmt.Errorf("verify unique current S9 RepairAssignment packet: %w", err)
-		}
-		if len(current) != 1 || current[0].ID != p.ID {
-			return fmt.Errorf("S9 packet is not the unique current issued RepairAssignment packet")
-		}
+	if state["runtime_id"] != b.RuntimeID || pointer["session_id"] != b.SessionID || owners[b.RepairAssignmentID] != b.OwnerAgentID {
+		return fmt.Errorf("S9 original responsibility is not current")
 	}
 	return nil
+}
+
+func verifyRepairResultPacketCurrentWithVerifier(root string, state map[string]any, p workpacket.RepairResultPacket, _ *repairResultResumeVerifier) error {
+	return VerifyRepairResultPacketCurrentContext(context.Background(), root, state, p)
 }

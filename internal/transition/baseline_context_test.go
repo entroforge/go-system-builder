@@ -34,7 +34,7 @@ func TestCurrentEvidenceBaselineStopsAfterCanceledSourceRead(t *testing.T) {
 	body := []byte(`{"original":"completion"}`)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	state := map[string]any{"baseline": map[string]any{"generation": 1}, "evidence": []any{map[string]any{"id": "result", "kind": "completion_report", "status": "valid", "baseline_generation": 1, "path": "result.json", "sha256": SHA256(body)}}}
+	state := map[string]any{"baseline": map[string]any{"generation": 1}, "evidence": []any{map[string]any{"id": "result", "kind": "completion_report", "status": "valid", "baseline_generation": 1, "path": "result.json"}}}
 	err := validateCurrentEvidenceWithFiles(t.TempDir(), state, "builder_report_record", "result", canceledBaselineEvidenceRead{body, cancel}, ctx)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("source cancellation became canonical-baseline refusal: %v", err)

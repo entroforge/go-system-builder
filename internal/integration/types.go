@@ -26,7 +26,6 @@ import (
 
 	"github.com/entroforge/go-system-builder/internal/assignmentrecord"
 	"github.com/entroforge/go-system-builder/internal/assignmentresult"
-	"github.com/entroforge/go-system-builder/internal/checkexec"
 	"github.com/entroforge/go-system-builder/internal/hookctx"
 )
 
@@ -95,22 +94,24 @@ type CheckResult struct {
 // this struct to Integrate so the decision is reproducible from a recorded
 // snapshot (idempotency).
 type Inspection struct {
-	Ready        bool     `json:"ready"`
-	Blockers     []string `json:"blockers,omitempty"`
-	AssignmentID string   `json:"assignment_id,omitempty"`
-	TaskID       string   `json:"task_id,omitempty"`
-	WorktreePath string   `json:"worktree_path,omitempty"`
-	SourceBranch string   `json:"source_branch,omitempty"`
-	TargetBranch string   `json:"target_branch,omitempty"`
-	SourceHead   string   `json:"source_head,omitempty"`
-	TargetHead   string   `json:"target_head,omitempty"`
-	MergeBase    string   `json:"merge_base,omitempty"`
-	// ChangedPaths and ChangedPathsSHA256 capture the full Git-derived
-	// merge-base..source-head path set. They are computed by Inspect, never
-	// accepted from a completion message, and compared again under Integrate's
-	// workspace lock before merge.
+	// WorktreeObservation is transient Main guidance about the Builder
+	// worktree state. It never decides readiness and never reaches the
+	// checkpoint.
+	WorktreeObservation []string `json:"-"`
+	// WorktreeDirty lists the uncommitted or untracked material actually
+	// present in the Builder worktree. It is a recorded worktree fact, not a
+	// gate: the integration still runs, and the preserved checkpoint keeps
+	// the material as a blocker so the site is retained for Main's judgement.
+	WorktreeDirty []string `json:"worktree_dirty,omitempty"`
+	Ready         bool     `json:"ready"`
+	Blockers      []string `json:"blockers,omitempty"`
+	AssignmentID  string   `json:"assignment_id,omitempty"`
+	TaskID        string   `json:"task_id,omitempty"`
+	WorktreePath  string   `json:"worktree_path,omitempty"`
+	SourceBranch  string   `json:"source_branch,omitempty"`
+	TargetBranch  string   `json:"target_branch,omitempty"`
+	// ChangedPaths are the actual branch changes observed by Inspect.
 	ChangedPaths        []string `json:"changed_paths,omitempty"`
-	ChangedPathsSHA256  string   `json:"changed_paths_sha256,omitempty"`
 	EffectiveWritePaths []string `json:"effective_write_paths,omitempty"`
 	// AssignmentProjection is copied from the original Hook projection so
 	// Integrate can re-resolve opt-in and Record authority under its workspace
@@ -128,12 +129,8 @@ type Inspection struct {
 	OutOfScopeDiff []string `json:"out_of_scope_diff,omitempty"`
 	Conflicts      []string `json:"conflicts,omitempty"`
 	NonSquashMode  bool     `json:"non_squash_mode"`
-	// CompletionReportPath and CompletionReportSHA256 bind the inspected
-	// Builder Result to the integration decision. The path is always a
-	// repository-relative path under InspectRequest.Root; Integrate uses the
-	// pair to reject a report that changed after inspection.
-	CompletionReportPath   string `json:"completion_report_path,omitempty"`
-	CompletionReportSHA256 string `json:"completion_report_sha256,omitempty"`
+	// CompletionReportPath identifies the received Builder Result.
+	CompletionReportPath string `json:"completion_report_path,omitempty"`
 
 	// BaselineGeneration is echoed from InspectRequest so callers can build
 	// the idempotent checkpoint key without re-supplying it.
@@ -171,43 +168,27 @@ type Result struct {
 }
 
 // Checkpoint is the durable integration record. The IdempotencyKey is the
-// merge-attempt identity (assignment_id + source_head + target_branch +
-// baseline_generation); CAS uses Revision as the optimistic lock.
+// merge-attempt identity (assignment_id, target_branch and baseline_generation);
+// CAS uses Revision as the optimistic lock.
 type Checkpoint struct {
 	// PreviousMainRoots preserves receipt provenance across explicit Main relocation.
 	PreviousMainRoots []string `json:"previous_main_roots,omitempty"`
 	VerifiedAt        string   `json:"verified_at,omitempty"` // Last successful checks; cleanup must not advance this time.
-	// CompletionReportPath and CompletionReportSHA256 identify the exact
-	// Builder Result whose contents were covered by the successful checks.
-	// They are written only when the verified transition succeeds and are
-	// preserved unchanged by acknowledgement and cleanup.
-	CompletionReportPath   string `json:"completion_report_path,omitempty"`
-	CompletionReportSHA256 string `json:"completion_report_sha256,omitempty"`
-	// AssignmentRecord and AssignmentRecordSHA256 identify the current Record
-	// revision for early canonical checkpoints that do not yet carry
-	// CanonicalMainFacts. Once Main facts exist, their ResultBinding is the
-	// sole duplicated-free Record authority; these optional fields remain
-	// empty. Legacy checkpoints keep their original wire shape.
-	AssignmentRecord       *assignmentrecord.RecordReference `json:"assignment_record,omitempty"`
-	AssignmentRecordSHA256 string                            `json:"assignment_record_sha256,omitempty"`
-	AssignmentID           string                            `json:"assignment_id"`
-	TaskID                 string                            `json:"task_id,omitempty"`
-	SourceBranch           string                            `json:"source_branch,omitempty"`
-	SourceHead             string                            `json:"source_head,omitempty"`
-	TargetBranch           string                            `json:"target_branch,omitempty"`
-	TargetHead             string                            `json:"target_head,omitempty"`
-	MergeBase              string                            `json:"merge_base,omitempty"`
-	ChangedPaths           []string                          `json:"changed_paths,omitempty"`
-	ChangedPathsSHA256     string                            `json:"changed_paths_sha256,omitempty"`
-	CanonicalMainFacts     *assignmentresult.MainFacts       `json:"canonical_main_facts,omitempty"`
-	MergeCommit            string                            `json:"merge_commit,omitempty"`
-	BaselineGeneration     int                               `json:"baseline_generation"`
-	State                  string                            `json:"state"`
-	Revision               int64                             `json:"revision"`
-	IdempotencyKey         string                            `json:"idempotency_key,omitempty"`
-	CheckReceipts          []string                          `json:"check_receipts,omitempty"`
-	ToolCheckReceipts      []checkexec.ToolReceipt           `json:"tool_check_receipts,omitempty"`
-	TestedHead             string                            `json:"tested_head,omitempty"`
+	// CompletionReportPath identifies the received Builder Result.
+	CompletionReportPath string `json:"completion_report_path,omitempty"`
+	// AssignmentRecord identifies the current responsibility revision.
+	AssignmentRecord   *assignmentrecord.RecordReference `json:"assignment_record,omitempty"`
+	AssignmentID       string                            `json:"assignment_id"`
+	TaskID             string                            `json:"task_id,omitempty"`
+	SourceBranch       string                            `json:"source_branch,omitempty"`
+	TargetBranch       string                            `json:"target_branch,omitempty"`
+	ChangedPaths       []string                          `json:"changed_paths,omitempty"`
+	CanonicalMainFacts *assignmentresult.MainFacts       `json:"canonical_main_facts,omitempty"`
+	BaselineGeneration int                               `json:"baseline_generation"`
+	State              string                            `json:"state"`
+	Revision           int64                             `json:"revision"`
+	IdempotencyKey     string                            `json:"idempotency_key,omitempty"`
+	CheckReceipts      []string                          `json:"check_receipts,omitempty"`
 	// WorktreePath is persisted so the loader's coordinate fallback chain
 	// can recover the worktree location from this durable record alone
 	// (L3-S6 §11.2 "worktree 元数据分裂" — the checkpoint previously never

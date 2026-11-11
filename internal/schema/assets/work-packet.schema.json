@@ -2,11 +2,10 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://vibe-coding.local/schemas/work-packet.schema.json",
   "type": "object",
-  "additionalProperties": false,
+  "additionalProperties": true,
   "required": [
     "packet_id",
     "template_id",
-    "template_sha256",
     "binding",
     "inputs",
     "answer_path",
@@ -21,20 +20,15 @@
     "template_id": {
       "const": "s5-document-review-v1"
     },
-    "template_sha256": {
-      "type": "string",
-      "pattern": "^[a-f0-9]{64}$"
-    },
     "binding": {
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "runtime_id",
         "generation",
         "stage_entry",
         "owner",
         "assignment_id",
-        "assignment_sha256",
         "responsibility",
         "attempt"
       ],
@@ -59,10 +53,6 @@
           "type": "string",
           "minLength": 1
         },
-        "assignment_sha256": {
-          "type": "string",
-          "pattern": "^[a-f0-9]{64}$"
-        },
         "responsibility": {
           "enum": [
             "DV-SPEC-CONSISTENCY",
@@ -75,7 +65,7 @@
         },
         "previous_submission_key": {
           "type": "string",
-          "pattern": "^[a-f0-9]{64}$"
+          "pattern": "^\\S+$"
         },
         "revision_reason": {
           "type": "string",
@@ -129,12 +119,11 @@
       "type": "array",
       "items": {
         "type": "object",
-        "additionalProperties": false,
+        "additionalProperties": true,
         "required": [
           "id",
           "path",
-          "version",
-          "sha256"
+          "version"
         ],
         "properties": {
           "id": {
@@ -148,10 +137,6 @@
           "version": {
             "type": "string",
             "minLength": 1
-          },
-          "sha256": {
-            "type": "string",
-            "pattern": "^[a-f0-9]{64}$"
           }
         }
       },
@@ -363,20 +348,15 @@
     },
     "task_analysis": {
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "path",
-        "sha256",
         "parser_version"
       ],
       "properties": {
         "path": {
           "type": "string",
-          "pattern": "^\\.claude/work-packets/analysis/[a-f0-9]{64}\\.json$"
-        },
-        "sha256": {
-          "type": "string",
-          "pattern": "^[a-f0-9]{64}$"
+          "pattern": "^\\.claude/work-packets/analysis/[^\\\\:]+\\.json$"
         },
         "parser_version": {
           "const": "1.0.0"

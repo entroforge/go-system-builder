@@ -55,7 +55,7 @@ func TestDraftPlanForRootProjectsCanonicalCompletionEnvelope(t *testing.T) {
 		"scope_refs": []any{},
 	}}
 
-	plan, notes := DraftPlanForRoot(root, state, 1)
+	plan, notes := DraftPlanForRoot(root, state)
 	if plan == nil {
 		t.Fatal("DraftPlanForRoot returned nil plan")
 	}
@@ -84,7 +84,7 @@ func TestDraftPlanForRootProjectsCanonicalCompletionEnvelope(t *testing.T) {
 
 func TestDraftPlanNotApplicableCoverageJustificationMarshalsAsNull(t *testing.T) {
 	root := t.TempDir()
-	plan, _ := DraftPlanForRoot(root, baseDraftState(t), 1)
+	plan, _ := DraftPlanForRoot(root, baseDraftState(t))
 	if plan.CoverageJustification != nil {
 		t.Fatalf("not-applicable draft coverage_justification = %v, want nil", *plan.CoverageJustification)
 	}
@@ -159,7 +159,7 @@ func TestDraftPlanQAClaimsUseRealChangedSurface(t *testing.T) {
 		completionEnvelope([]string{"internal/cli/foo.go", "internal/review/bar.go"}),
 		completionEnvelope([]string{"internal/review/bar.go"}), // duplicate
 	}
-	plan, notes := DraftPlan(state, 1)
+	plan, notes := DraftPlan(state)
 	if plan == nil {
 		t.Fatal("DraftPlan returned a nil plan")
 	}
@@ -192,7 +192,7 @@ func TestDraftPlanQAClaimsUseRealChangedSurface(t *testing.T) {
 func TestDraftPlanSplitsQABaselineIntoIndependentAssignments(t *testing.T) {
 	state := baseDraftState(t)
 	state["documents"] = []any{taskFixture("TASK-1", "internal/example/service.go")}
-	plan, _ := DraftPlan(state, 1)
+	plan, _ := DraftPlan(state)
 	want := map[string]bool{
 		"design-boundary":    false,
 		"pattern-idiom-fit":  false,
@@ -250,7 +250,7 @@ func TestDraftPlanQAClaimsFallbackToFrozenSubjects(t *testing.T) {
 	// Round=1 plan must reference a fingerprinted frozen subject;
 	// inject one via DraftPlan's normal documents walk by also pinning
 	// a TASK above (its path becomes a frozen subject).
-	plan, notes := DraftPlan(state, 1)
+	plan, notes := DraftPlan(state)
 	if plan == nil {
 		t.Fatal("DraftPlan returned a nil plan")
 	}
@@ -293,7 +293,7 @@ func TestDraftPlanQAClaimsEmitTODOWhenSurfaceIsUnknown(t *testing.T) {
 	state := baseDraftState(t)
 	state["documents"] = []any{} // no TASK docs, no frozen subjects
 	state["evidence"] = []any{}  // no completion envelopes
-	plan, notes := DraftPlan(state, 1)
+	plan, notes := DraftPlan(state)
 	if plan == nil {
 		t.Fatal("DraftPlan returned a nil plan")
 	}
@@ -314,10 +314,8 @@ func TestDraftPlanQAClaimsEmitTODOWhenSurfaceIsUnknown(t *testing.T) {
 	if qaFound == 0 {
 		t.Fatalf("QA claims missing from draft; plan JSON:\n%s", string(planJSON))
 	}
-	// Sorted deterministic note: the disclosure MUST name the
-	// registration-time consequence (the registration gate is what
-	// the planner is trying to pass next).
-	want := []string{"QA claim `target` is a TODO marker", "registration"}
+	// Guidance should identify unknown scope without inventing a registration gate.
+	want := []string{"QA change surface", "not yet known"}
 	haveNote := false
 	for _, note := range notes {
 		ok := true
@@ -332,7 +330,7 @@ func TestDraftPlanQAClaimsEmitTODOWhenSurfaceIsUnknown(t *testing.T) {
 		}
 	}
 	if !haveNote {
-		t.Errorf("planner note disclosing the registration-time rejection not found; notes=%v", notes)
+		t.Errorf("planner note disclosing the unknown scope not found; notes=%v", notes)
 	}
 	// Sanity: the literal fictional placeholder must not be used.
 	planStr := string(planJSON)

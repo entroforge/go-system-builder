@@ -2,7 +2,6 @@ package assignmentresult
 
 import (
 	"fmt"
-	"strings"
 	"testing"
 
 	"github.com/entroforge/go-system-builder/internal/assignmentrecord"
@@ -11,13 +10,12 @@ import (
 func supersededAcceptedFixture(t *testing.T) (map[string]any, assignmentrecord.Record, assignmentrecord.Record, string, string, map[string][]byte) {
 	t.Helper()
 	state, previous, resultRef, files := acceptedFixture(t)
-	previousSHA := mustRecordDigest(t, previous)
 	successor := previous
 	successor.Revision++
 	successor.RegistrationRevision++
 	successor.RevisionIssuance = &assignmentrecord.RevisionIssuance{
-		IntentKey: "revision-intent-2", RequestDigest: strings.Repeat("d", 64),
-		PreviousRecord: previous.Reference(), PreviousRecordSHA256: previousSHA,
+		IntentKey:      "revision-intent-2",
+		PreviousRecord: previous.Reference(),
 	}
 	if err := assignmentrecord.ValidateRecord(successor); err != nil {
 		t.Fatalf("fixture successor Record: %v", err)
@@ -37,8 +35,8 @@ func TestLoadSupersededAcceptedValidatesOriginalHistoricalClosure(t *testing.T) 
 	successor3.Revision++
 	successor3.RegistrationRevision++
 	successor3.RevisionIssuance = &assignmentrecord.RevisionIssuance{
-		IntentKey: "revision-intent-3", RequestDigest: strings.Repeat("e", 64),
-		PreviousRecord: successor.Reference(), PreviousRecordSHA256: mustRecordDigest(t, successor),
+		IntentKey:      "revision-intent-3",
+		PreviousRecord: successor.Reference(),
 	}
 	if err := assignmentrecord.ValidateRecord(successor3); err != nil {
 		t.Fatalf("fixture later successor Record: %v", err)
@@ -57,7 +55,7 @@ func TestLoadSupersededAcceptedValidatesOriginalHistoricalClosure(t *testing.T) 
 	if err != nil {
 		t.Fatalf("valid historical Result rejected: %v", err)
 	}
-	if result.AssignmentRecord != previous.Reference() || result.AssignmentRecordSHA256 != mustRecordDigest(t, previous) || result.TaskID != previous.Task.ID {
+	if result.AssignmentRecord != previous.Reference() || result.TaskID != previous.Task.ID {
 		t.Fatalf("history reader returned the wrong predecessor binding: %+v", result)
 	}
 	if _, err := LoadAccepted(state, previous, resultRef, read); err == nil {
@@ -73,8 +71,8 @@ func TestLoadSupersededAcceptedValidatesOriginalHistoricalClosure(t *testing.T) 
 func TestLoadSupersededAcceptedRejectsUnprovenRevisionAndEvidenceBindings(t *testing.T) {
 	for _, name := range []string{
 		"wrong event", "wrong status", "wrong invalidation rule", "duplicate evidence path",
-		"duplicate evidence ID", "missing predecessor", "missing successor", "issuance points elsewhere", "successor gap",
-		"changed result bytes", "changed plan bytes", "oversized result",
+		"duplicate evidence ID", "missing predecessor", "missing successor", "successor gap",
+		"oversized result",
 	} {
 		t.Run(name, func(t *testing.T) {
 			state, previous, successor, eventID, resultRef, files := supersededAcceptedFixture(t)
@@ -102,19 +100,8 @@ func TestLoadSupersededAcceptedRejectsUnprovenRevisionAndEvidenceBindings(t *tes
 				state["entities"].(map[string]any)["assignments"] = []any{mustRecordMap(t, successor)}
 			case "missing successor":
 				state["entities"].(map[string]any)["assignments"] = []any{mustRecordMap(t, previous)}
-			case "issuance points elsewhere":
-				bad := successor
-				issuance := *successor.RevisionIssuance
-				issuance.PreviousRecordSHA256 = strings.Repeat("a", 64)
-				bad.RevisionIssuance = &issuance
-				state["entities"].(map[string]any)["assignments"] = []any{mustRecordMap(t, previous), mustRecordMap(t, bad)}
-				successor = bad
 			case "successor gap":
 				successor.Revision++
-			case "changed result bytes":
-				files[resultRef] = append(files[resultRef], []byte(" ")...)
-			case "changed plan bytes":
-				files[".claude/plans/accepted-s6.json"] = []byte(`{"message_type":"plan_report"}`)
 			case "oversized result":
 				files[resultRef] = make([]byte, EvidenceReadLimit+1)
 			}

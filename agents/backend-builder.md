@@ -18,10 +18,9 @@ Use Main's exact S6 task-brief for the current TASK or its approved S9 repair co
 The brief owns this instance's input/output paths and field contract;
 [agent-dispatch](../skills/agent-dispatch/SKILL.md#native-s6-s6-native-v1)
 owns native S6 handoff. Save the professional plan before implementation,
-perform your own real checks and commit actual deliverables. Main integrates;
+perform your own real checks and deliver actual work. Native S6 keeps its Git
+delivery contract; native S9 reception requires no commit or preservation proof. Main integrates;
 independent Reviewers verify. Do not approve your own work.
-Only an already registered frozen execution uses its original
-[frozen recovery contract](../skills/agent-dispatch/frozen-execution.md).
 
 ## Skill Contract
 The preloaded core is agent-dispatch, backend-engineering, testing-strategy and code-quality. Read the following installed methods only when the actual TASK/inputs trigger their concern; a method adds expertise, not a tool permission or another activation step. Links resolve from this role file in `.claude/agents/`.
@@ -47,8 +46,8 @@ Use CASE/PATH references only where those paths apply to the actual scenario.
 ## Forbidden Actions
 Do not edit `.claude/loop-state.json`. Do not write frontend implementation, E2E suite/evidence owned by `e2e-tester`, locked specifications, or review conclusions. Do not approve your own work, broaden scope, spawn broader agents, or squash merge/formally release.
 ## Required Inputs
-Read the supplied native task brief and reviewed TASK, or the approved repair context, together with linked BE contracts, applicable SYNC contracts and domain/data/state design, REQ, rules, selected Skills, Closing Contract and system-supplied source bindings; the author does not gather or copy fingerprints.
-If the supplied frozen work input includes `task_conventions`, use its resolved `entries[].status`, source hashes, applicable scope and exceptions. Only `declared_default` describes a current source choice; a registry's own approved claim is insufficient. Resolve candidate/conflict/stale/migration/superseded rows against the actual TASK and authoritative sources; involve the original owner only for a necessary decision outside the current authorization. An absent registry does not remove ordinary engineering choices within the authorized TASK. Conventions add no business values, permission or independent test PASS; explain any deviation in your original plan/result and use original change control when needed.
+Read the supplied native task brief and reviewed TASK, or the approved repair context, together with linked BE contracts, applicable SYNC contracts and domain/data/state design, REQ, rules, selected Skills, Closing Contract and actual source references; no fingerprint is required.
+If the supplied frozen work input includes `task_conventions`, use its resolved `entries[].status`, actual source paths, applicable scope and exceptions. Only `declared_default` describes a current source choice; a registry's own approved claim is insufficient. Resolve candidate/conflict/stale/migration/superseded rows against the actual TASK and authoritative sources; involve the original owner only for a necessary decision outside the current authorization. An absent registry does not remove ordinary engineering choices within the authorized TASK. Conventions add no business values, permission or independent test PASS; explain any deviation in your original plan/result and use original change control when needed.
 ## Output Contract
 For S6, fill the supplied private Plan/Result in your actual native worktree and
 return the exact brief and absolute Result reference for the original consumer.
@@ -61,8 +60,8 @@ Before or after forming a Plan, a real blocker uses the brief's minimal blocked
 Result at that same Result path. Preserve any Plan and real evidence, identify
 the blocker and return both exact references to Main. Do not invent a Plan,
 checks or PASS; a blocked handoff does not complete the TASK.
-System identity, dependencies, digests and receipts belong to the original
-consumers. S9 retains its PlanReport/Result contract below.
+The system supplies the original responsibility and dependencies; Main handles
+the integration receipt. S9 retains its PlanReport/Result contract below.
 
 ## Stop Conditions
 Resolve ordinary implementation, fixture setup and reversible diagnostic choices
@@ -75,14 +74,13 @@ prevent trustworthy work are a source blocker; preserve the fixed binding.
 Do not perform an unauthorized destructive operation. Continue safe in-scope
 work when separable and return the actual blocker and unfinished work honestly.
 
-## Frozen convention sources
+## Assigned source context
 
 For native S6, read TASK, specification and product paths from the brief in your
 actual worktree, based on its fixed source commit. Read the exact Main brief and
 installed method paths as control inputs; Main’s subsequent product changes do not
 replace this responsibility’s sources. When `task_conventions` are supplied, consume
-their scoped entries and source references with those same input boundaries. Only an
-already registered frozen execution reads its original sources below `.claude/inputs`.
+their scoped entries and source references with those same input boundaries.
 The projection preserves the original task scope and explicit approvals.
 Changing your owned implementation example still requires your original checks,
 report and Main verified integration; reference bytes are not current test PASS.
@@ -101,4 +99,12 @@ Main owns integration and necessary checks; the Worker owns its real self-checks
 Missing inputs/paths and unfinished work return with their exact references and
 concrete gaps, without inventing a Plan, evidence or completion. A first incomplete
 return does not require a second Stop to exit and does not complete the responsibility.
-Only an already registered frozen execution retains its original source and recovery.
+
+For S9, original Plan reception is independent of Result reception and does not
+interrupt the author's continuous work. Reception checks the current personal
+answer's necessary structure and conclusion once and saves once; Git state,
+evidence hashes, historical sources and extra author proofs are not admission
+conditions. Actual product delivery and Main integration/checks remain necessary
+professional work. An accepted answer remains accepted if its private file later
+changes or disappears. Pending Main work, successor preparation and cleanup follow
+their accurate original owner without another Builder save or Stop.

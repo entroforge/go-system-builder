@@ -24,9 +24,6 @@ type ManualOptions struct {
 	TargetPath string
 	// HarnessVersion labels the binary that produced this manual.
 	HarnessVersion string
-	// LoopDefinitionSHA256 pins the manual to the loop-definition.json it was
-	// generated from. doctor compares this against the on-disk definition.
-	LoopDefinitionSHA256 string
 }
 
 // RenderManual produces the full markdown manual.
@@ -43,7 +40,6 @@ func RenderManual(def *LoopDefinition, opts ManualOptions) string {
 	writeTopLevelTransitions(&b, def)
 	writePhaseTransitions(&b, def)
 	writeGlobalTransitions(&b, def)
-	writeLegacyPTRBUGSection(&b, def)
 	return b.String()
 }
 
@@ -87,25 +83,26 @@ func writeS11HumanGateway(b *strings.Builder) {
 func writeControlPlaneRecovery(b *strings.Builder) {
 	fmt.Fprintf(b, "## Controller recovery protocol\n\n")
 	fmt.Fprintf(b, "Hooks observe current responsibilities and connect natural delivery boundaries. "+
-		"Native Start gives bounded context; native Stop invokes the original professional consumer. "+
-		"Main saves its own questionnaires through their existing consumers. Ordinary Worker tools do not receive answers, "+
+		"Native Start gives bounded context; native Stop invokes the original professional consumer. S7/S8/S9 PreToolUse listens for ready original answers, with successful PostToolUse and Stop/SubagentStop fallback. "+
+		"Main saves its own questionnaires through their existing consumers. S5/S6 retain their original ordinary-tool reception contract. Ordinary tools do not "+
 		"activate work or run every stage gate. Milestone is an existing recovery cache, not proof that each event committed or context was delivered.\n\n")
 	fmt.Fprintf(b, "### Bootstrap binding boundary\n\n")
 	fmt.Fprintf(b, "S6 owners can query `runtime task-receipt --agent-id <owner> --assignment-id <id>`; registered Workers use the exact builder_receipt_command returned by prepare. The read-only receipt distinguishes current qualified delivery, own pending checks and Main integration; checks_source=original_report does not claim new check execution. Lost registered evidence and changed TASK input go to Main recovery/rework. The receipt neither advances TR-006 nor replaces S7 or S9 RepairResult completion.\n\n")
-	fmt.Fprintf(b, "`revision` has no global maximum. A Hook/controller checkpoint may advance the inactive bootstrap runtime before `TR-001`; binding lets the Writer read and commit the current Runtime under lock, archives the complete inactive state/journal pair, and installs a new `loop-REQ-*` runtime at revision `0` with an empty active journal. The `binding_receipt` carries `event=req_bound`, the approved REQ, and source runtime hashes. Do not edit revision by hand or reuse a pre-bind runtime snapshot after binding; the runtime identity changes and stale identities are rejected.\n\n")
+	fmt.Fprintf(b, "`revision` has no global maximum. A Hook/controller checkpoint may advance the inactive bootstrap runtime before `TR-001`; binding lets the Writer read and commit the current Runtime under lock, archives the complete inactive state/journal pair, and installs a new `loop-REQ-*` runtime at revision `0` with an empty active journal. The `binding_receipt` carries `event=req_bound`, the approved REQ and the original source runtime identity. Do not edit revision by hand or reuse a pre-bind runtime snapshot after binding; the runtime identity changes and stale identities are rejected.\n\n")
 	fmt.Fprintf(b, "1. Read the `Next` action and current `Stage` from the Hook packet, then follow its `Read in order` list.\n")
 	fmt.Fprintf(b, "2. Read the linked `docs/control/agent-protocol.md#sN` section before acting.\n")
-	fmt.Fprintf(b, "3. If blocked or the Runtime is unclear, read this Manual. Use `runtime reconcile` only for a provable journal/state integrity gap, not an ordinary CAS conflict; status is optional diagnostics, never a per-tool prerequisite. When the live Quality Gate checklist is unclear, run `loop-harness ready` (diagnostics; never hand-push a Transition from it). `doctor` is structural schema/manual/policy_ref only — not stage readiness or runtime health; use `loop-harness health` for cumulative runtime signals. For the complete S7→S8→S9→S7→S10 action sequence and compatibility notes, run `loop-harness actions`.\n")
+	fmt.Fprintf(b, "3. If blocked or the Runtime is unclear, read this Manual. Use `runtime reconcile` only for a provable journal/state integrity gap, not an ordinary CAS conflict; status is optional diagnostics, never a per-tool prerequisite. When the live Quality Gate checklist is unclear, run `loop-harness ready` (diagnostics; never hand-push a Transition from it). `doctor` is structural schema/manual/policy_ref only — not stage readiness or runtime health; use `loop-harness health` for cumulative runtime signals. For the S7→S8→S9→S7→S10 action sequence, run `loop-harness actions`.\n")
 	fmt.Fprintf(b, "4. Execute the one missing deliverable/evidence named by Hook/`ready` `missing[]`; do not invent a parallel lifecycle.\n")
-	fmt.Fprintf(b, "5. Main reads the native return and original receipt. S6 uses the supplied `runtime task-integrate --assignment-id <id> --root <main-root>`; S9 uses its supplied `runtime workspace integrate` command and necessary Main checks. Do not use one command for both contracts or re-wake a completed Worker for Main integration. No develop fallback or automatic Main checkout.\n")
-	fmt.Fprintf(b, "6. In new native S6, Main runs `s6 prepare --root <authority-root> --task <TASK> --role <Builder-role>` and passes its exact brief into Claude Code native Agent with worktree isolation (`worktree.baseRef: head`). No preselected platform IDs, Team, workspace prepare/launch, generic begin or activation. Builder saves its professional plan before implementation, continues with real TASK self-checks, commits products, saves Result and returns its exact brief and absolute Result reference. SubagentStart supplies short engineering context; SubagentStop invokes the original Result consumer. Ordinary save hooks do not receive native S6 delivery. Main explicitly runs `runtime task-integrate --assignment-id <id>` for the actual merge, required Main checks, ACK and cleanup. Rework uses `s6 prepare --revise-assignment <id> --revision-intent-key <stable-key>` through the original revision Writer. The exact TR-003 batch and TR-006 gate remain. Frozen s6-v1.2/workspace assignments keep their original recovery commands; never launch the same responsibility twice. See `docs/examples/s6-builder/README.md` and `docs/control/agent-protocol.md#s6`.\n")
-	fmt.Fprintf(b, "7. In S7, Main fills and saves the exact Hook-supplied ReviewPlan path; the original RegisterPlan consumer validates and registers it. Do not run `s7 draft` or `runtime review-plan` to submit a duplicate plan in the normal path. Main still dispatches the registered Assignments through `s7 manifest-draft` and `runtime register-workgroup`. Main actually dispatches native Agents with exact references. Each Reviewer saves and returns its exact answer for SubagentStop; the original consumer binds Claim/source facts and registers Findings or the round result. Do not run `runtime review-result submit` or copy subject digests and other machine metadata on the normal path. Use typed evidence and the real capture flow when the assigned questionnaire asks for them; the consumer binds its source and digest. `loop-harness s7 status` is a read-only board for plan, round, seed, claim dispositions, blockers, and next action. In TR-012 re-entry, the generated `.claude/review/repair/s7-seeds/review-plan-s9-round-<N>.json` supplies the changed-artifact baseline and TASK coverage; use the exact current ReviewPlan path the Hook prepares from that seed. A substantive change to an already registered plan follows the original controlled revision. A no-repair batch returns via TR-022 and runs the same S7 review. The Hook advances a sealed ObservationBatch; the final accepted ReviewResult continues the original CleanRound Gate/TR-009 and S10 material preparation in the same completion event. Recover a named pending clean exit with `runtime review-continue`; restore missing current S10 drafts with `runtime audit-prepare`. If the Hook explicitly reports that a lifecycle follow-up did not run, follow that named recovery action. Full role and dispatch contract: `docs/control/agent-protocol.md#s7`.\n")
-	fmt.Fprintf(b, "The supplied ReviewPlan includes its `coverage_inventory` and `e2e_assets`; inspect their current content and answer the professional questions without recreating machine fields. For a live timeline capture, use `loop-harness capture step --finding <id> --claim <id>` only when the assigned answer requires it; the original save consumer binds the buffer. If an explicitly named legacy/recovery command rejects an artifact, follow its missing facts, repair, next, verify, and reference details rather than inventing a command.\n")
-	fmt.Fprintf(b, "S7 questionnaire preparation uses the module's CASE inventory and Playwright mapping to propose the E2E Assignments. A complete CASE→spec mapping can use `regression_available`; missing mappings use `cold_start`, an `e2e-workspace/<round>` write surface, and one behavior Assignment per CASE. If CASE inventory is missing, the Hook names that input gap for Main; do not run `s7 draft` to reconstruct a second plan. In the ReviewPlan answer, Main resolves any professional coverage decision shown by the exact questionnaire. Evidence paths can be supplied as `path:<repo-relative>`; the original consumer binds current source and hashes.\n")
-	fmt.Fprintf(b, "8. Main follows the approved RepairContract and records actual professional division. Carry each exact prepared brief into native Agent with worktree isolation. Each Builder saves its private PlanReport before implementation, continues repair/self-checks, then saves and returns its private Result with the exact brief and absolute Result reference. SubagentStop imports professional Plan/Result through the original consumers; there is no separate plan acceptance wait. Main integrates the candidate with necessary checks before Final, then saves ChangeImpact and actually dispatches independent Targeted verification per approved Contract. The verifier returns its exact answer for Stop reception, without a Builder PlanReport or product writes. First incomplete native returns give Main the original rejection and exact gap without claiming completion. Once necessary work is complete, its original outlet records Handoff and the fresh S7 seed; no extra Handoff report, next-Hook wait or duplicate delivery. If Targeted was accepted but Handoff or S7 preparation failed, follow the supplied `runtime repair handoff complete --root <Main-root>` recovery to finish only the pending exit. The completed outlet supplies the original S7 ReviewPlan questionnaire and guide; Main completes and saves that questionnaire. Missing paths or preparation belong to Main/system. Existing frozen executions retain their named recovery contract. See `docs/control/agent-protocol.md#s9`.\n")
-	fmt.Fprintf(b, "9. If `s7 status` reports `round N of M` with N >= M, finish draining the current round but do not open another one. The actual completion outlet supplies the original budget application. Record only the actual human choice, increased maximum when applicable and reason, then save that exact application. An empty choice grants nothing. `increase_budget` raises `max_full_review_rounds` and resumes the pending successor; `return_to_governance` follows GTR-006 to planning. The original Writer supplies decision metadata and scoped human_decision evidence. `runtime s7-budget-decision --file <decision.json> --actor <user>` remains an explicit legacy/recovery interface, not another normal submission.\n")
+	fmt.Fprintf(b, "5. Main reads the native return and original receipt. S6 uses the supplied `runtime task-integrate --assignment-id <id> --root <main-root>`; S9 Main integrates actual contributions and runs necessary checks, then saves its original Impact judgment. No particular integration command, Git commit, Final or proof qualifies S9 answer or Impact reception. Do not re-wake a completed Worker for Main integration. No develop fallback or automatic Main checkout.\n")
+	fmt.Fprintf(b, "6. In new native S6, Main runs `s6 prepare --root <authority-root> --task <TASK> --role <Builder-role>` and passes its exact brief into Claude Code native Agent with worktree isolation (`worktree.baseRef: head`). No preselected platform IDs, Team, workspace prepare/launch, generic begin or activation. Builder saves its professional plan before implementation, continues with real TASK self-checks, commits products, saves Result and returns its exact brief and absolute Result reference. SubagentStart supplies short engineering context; SubagentStop invokes the original Result consumer. Ordinary save hooks do not receive native S6 delivery. Main explicitly runs `runtime task-integrate --assignment-id <id>` for the actual merge, required Main checks, ACK and cleanup. Rework uses `s6 prepare --revise-assignment <id> --revision-intent-key <stable-key>` through the original revision Writer. The exact TR-003 batch and TR-006 gate remain. Never launch the same responsibility twice. See `docs/examples/s6-builder/README.md` and `docs/control/agent-protocol.md#s6`.\n")
+	fmt.Fprintf(b, "7. In S7, Main fills and saves the exact supplied original ReviewPlan and actually dispatches each registered responsibility with its exact view/answer. Each Reviewer saves its own original professional answer once. PreToolUse observes it; successful PostToolUse and Stop/SubagentStop provide fallback through the same consumer. The consumer checks parsing, necessary fields, readiness and the direct conclusion once and saves once. No returned reference, re-save, done flag, Git/evidence/hash proof or parallel coverage calculation qualifies reception. Necessary responsibilities complete without a Finding continue TR-009 and prepare S10; any accepted Finding hands received observations and unfinished work to S8 through TR-008, without a new CleanRound/ObservationBatch proof or another Main Pre. Already dispatched S7 responsibilities remain receivable after S8 begins; late Findings go to Main without automatically changing approval. Preserve accepted facts and follow the named original continuation for unfinished preparation. Main owns professional coverage; every Reviewer owns its assigned actual checks.\n\n")
+	fmt.Fprintf(b, "The supplied ReviewPlan includes its `coverage_inventory` and `e2e_assets`; inspect their current content and answer the professional questions without recreating machine fields. Record actual observations and cite useful sources in the original answer. Follow the specific feedback for unfinished work and recovery.\n")
+	fmt.Fprintf(b, "S7 preparation supplies current scenario material and exact original plan questions. Main chooses actual browser/API/command/state coverage, reusable assets and any needed isolated verification workspace; script matches and field counts do not prove coverage. Reviewers cite actual observations and readable source locations without recapture or hash admission requirements. S8 Main reads accepted Findings or the actual human report, registers actual questions and dispatches Investigators. Each Investigator saves its original result for Pre/successful Post/Stop reception. new_hypotheses is only a suggestion; Main judges cause, unknowns and route, and actual approval remains with the real approver and accurate Contract. Unsupported new-question source preparation stays a named Main/system gap, without invented aliases or protocols.\n\n")
+	fmt.Fprintf(b, "8. Main follows the approved RepairContract and records actual professional division. Carry each original prepared brief into native Agent with worktree isolation. Current native S9 responsibility selection accepts its registered absolute control-root path, complete control-root-relative path, or ./ plus that relative path; this does not locate materials under Worker cwd. Main supplies readable absolute control-root material paths and carries actual task restrictions into every delegated task. No basename, arbitrary ../, other root or role guessing is allowed; original responsibility selection, actual integration/checks, other stages and frozen paths remain. Reception does not revalidate Git, evidence or historical hashes. Private outputs stay in the actual worktree. Each Builder saves its private PlanReport before implementation, continues repair/self-checks, then saves its private Result at the exact original path in the actual worktree. Applicable PreToolUse listens for ready original Plan/Result answers, with successful PostToolUse and Stop/SubagentStop fallback through the original consumers; there is no separate plan acceptance wait. Ordinary tools remain available. Report actual results and unfinished work to Main; reception requires no extra submission, re-save or returned reference. An accepted contribution can prepare the original ChangeImpact question. Main owns actual integration, necessary checks and professional Impact judgment and arranges independent Targeted verification per the approved Contract. Impact and Targeted preparation can occur earlier; the framework does not require proof of prior Main completion. Impact reception does not certify that actual integration or checks occurred and requires no new Final, commit or preservation proof. Empty changes and empty dispositions are legitimate even when indistinguishable from the default template; they may be received early through the original natural events. Reception does not prove actual integration, checks, all Builders completed or independent verification. Main may naturally update the same original Impact as further contributions arrive; no new completion signal, re-save or Final prerequisite is required. Optional explanations do not become admission fields. The verifier saves its exact original Targeted answer for applicable PreToolUse reception, with successful PostToolUse and Stop/SubagentStop fallback through its original independent consumer, without a Builder PlanReport or product writes. A final message or returned reference is not a reception prerequisite. First incomplete native returns give Main the actual unfinished work and exact gap without claiming completion. An absent judgment normally stays draft; the original empty Impact exception remains receivable as stated above. A comprehensible blocked or unfinished conclusion is received as stated and handed to Main. After accepted passing conclusions and the applicable responsibilities, the original outlet attempts Handoff and prepares the fresh S7 seed; actual work remains the respective professional responsibility, with no completion proof, extra Handoff report, next-Hook wait or duplicate delivery. Targeted reception requires only a comprehensible overall conclusion and necessary association; missing nonessential observation or evidence fields do not reject it. A fail without classification remains an unknown cause, never an inferred same cause. If Targeted was accepted but Handoff or S7 preparation failed, preserve the accepted result and follow the specific system continuation supplied by the actual feedback; do not repeat the independent work or add Final/Changeset proof. The completed outlet supplies the original S7 ReviewPlan questionnaire and guide; Main completes and saves that questionnaire. Missing paths or preparation belong to Main/system. See `docs/control/agent-protocol.md#s9`.\n")
+	fmt.Fprint(b, "For S7/S8/S9, an accepted blocked or unfinished handoff does not end the original responsibility. Its author can naturally continue actual unfinished work without another Main approval, submit or resume proof. Receive a new comprehensible conclusion as a new handoff while retaining prior accepted facts. Do not replay unchanged content or treat arbitrary private-file changes as a new responsibility. Accepted completed work and unfinished successor preparation remain separate; continue only the named missing part without re-saving an old answer, re-reading evidence or rechecking Git/hash history.\n\n")
+	fmt.Fprintf(b, "9. Continue the original S7/S8/S9 responsibility and professional findings without a default iteration budget or count-based human gate. Follow actual user constraints and existing real decisions through their original consumers; no review-count budget or decision application is required.\n")
 	fmt.Fprintf(b, "10. Main fills the actual acceptance or release-audit Manifest at the supplied exact path and saves once. Explain requirement dispositions, applicable observations, counterevidence, unknowns and actual risks. Eight audit themes are relevance prompts, not a row quota or mandatory new work. The original consumer derives its envelope and metrics; do not run a second validate/render/evidence submission. Unknowns and blockers remain unfinished, while explicit outcomes may be recorded without authorizing advance. S10 does not repair product code; changed products return through investigation/repair and fresh complete S7. Actual human choice remains in S11.\n")
-	fmt.Fprintf(b, "11. Some authority transactions carry runtime-issued ids that are not TRs and therefore do not appear in the Contents index above: `S8-REPAIR-CONTRACT-APPROVAL` (runtime investigation contract approve — the S8→S9 authority; PTR-BUG-08 is its legacy-catalog alias), plus the entity/record CAS ids (REVIEW-RESULT, REVIEW-PLAN-STALE, S7-BUDGET-DECISION, AGENT-LIFECYCLE, BUG-LIFECYCLE, EVIDENCE-RECORD). They are driven by their runtime verbs, never by `runtime transition`.\n")
+	fmt.Fprintf(b, "11. Some authority transactions carry runtime-issued ids that are not TRs and therefore do not appear in the Contents index above: `S8-REPAIR-CONTRACT-APPROVAL` (runtime investigation contract approve — the S8→S9 authority), plus the entity/record CAS ids (REVIEW-RESULT, AGENT-LIFECYCLE, BUG-LIFECYCLE, EVIDENCE-RECORD). They are driven by their runtime verbs, never by `runtime transition`.\n")
 	fmt.Fprintf(b, "12. A native Worker returns its actual artifacts or honest blocker and ends its own execution. Main continues its remaining duties; an unknown human decision or external wait is explicit, not a reason to invent more Worker work.\n\n")
 	fmt.Fprintf(b, "The persisted `.claude/loop-state.json` `milestone` is a recovery cache, not a second state machine. "+
 		"`docs/control/loop-definition.json` and the Transition Engine remain the authority for legal lifecycle changes.\n\n")
@@ -131,18 +128,6 @@ func RenderTransition(def *LoopDefinition, id string) string {
 
 // internal helpers -------------------------------------------------------
 
-// legacyPTRBUG marks the deprecated legacy-compatibility transitions (RC-11
-// C-8). They stay in the loop definition for journal-replay compatibility,
-// but the Manual collapses them into a Legacy (PTR-BUG) section at the end so
-// the main Contents index only surfaces the paths an agent should consider.
-var legacyPTRBUG = map[string]bool{
-	"PTR-BUG-01": true,
-	"PTR-BUG-02": true,
-	"PTR-BUG-03": true,
-	"PTR-BUG-04": true,
-	"PTR-BUG-08": true,
-}
-
 func writeHeader(b *strings.Builder, opts ManualOptions) {
 	target := opts.TargetPath
 	if target == "" {
@@ -155,9 +140,6 @@ func writeHeader(b *strings.Builder, opts ManualOptions) {
 	fmt.Fprintf(b, "- **Path**: `%s`\n", target)
 	if opts.HarnessVersion != "" {
 		fmt.Fprintf(b, "- **Harness version**: %s\n", opts.HarnessVersion)
-	}
-	if opts.LoopDefinitionSHA256 != "" {
-		fmt.Fprintf(b, "- **Loop definition SHA-256**: `%s`\n", opts.LoopDefinitionSHA256)
 	}
 	fmt.Fprintf(b, "\n---\n\n")
 }
@@ -179,15 +161,7 @@ func writeTOC(b *strings.Builder, def *LoopDefinition) {
 		}
 		fmt.Fprintf(b, "\n_Phase: %s_\n\n", owner)
 		for _, t := range machine.Transitions {
-			if legacyPTRBUG[t.ID] {
-				// C-8: legacy compatibility transitions are collapsed into
-				// the Legacy (PTR-BUG) section at the end of the Manual.
-				continue
-			}
 			fmt.Fprintf(b, "- [`%s`](#%s) %s → %s — %s\n", t.ID, anchor(t.ID), t.From, t.To, oneLineDescription(t.Description))
-		}
-		if owner == "bug_resolution" {
-			fmt.Fprintf(b, "\nSee [Legacy (PTR-BUG)](#legacy-ptr-bug) at the end of this Manual for the legacy compatibility transitions (PTR-BUG-01..04, PTR-BUG-08).\n")
 		}
 	}
 	if len(def.GlobalTransitions) > 0 {
@@ -219,47 +193,9 @@ func writePhaseTransitions(b *strings.Builder, def *LoopDefinition) {
 		}
 		fmt.Fprintf(b, "## Phase transitions: %s\n\n", owner)
 		for _, t := range machine.Transitions {
-			if legacyPTRBUG[t.ID] {
-				// C-8: rendered in writeLegacyPTRBUGSection instead.
-				continue
-			}
 			writeTransition(b, t)
 		}
 	}
-}
-
-// writeLegacyPTRBUGSection appends the collapsed Legacy (PTR-BUG) section
-// (RC-11 C-8) after the global transitions. It re-renders the deprecated
-// legacy-compatibility transitions verbatim so anchors keep resolving, but
-// keeps them out of the main Contents index and phase-transition sections.
-func writeLegacyPTRBUGSection(b *strings.Builder, def *LoopDefinition) {
-	fmt.Fprintf(b, "\n## Legacy (PTR-BUG)\n\n")
-	fmt.Fprintf(b, "_These four transitions are legacy compatibility paths only. They exist so\n")
-	fmt.Fprintf(b, "pre-S9 journals and synthetic fixtures still replay; new code must use the\n")
-	fmt.Fprintf(b, "S8 InvestigationCase / S9 repair machinery above instead. See also the\n")
-	fmt.Fprintf(b, "authority-transaction note in the Contents preamble (S8-REPAIR-CONTRACT-APPROVAL\n")
-	fmt.Fprintf(b, "is the real S8→S9 authority; PTR-BUG-08 is its legacy-catalog alias)._ \n\n")
-	wrote := false
-	for _, owner := range sortedPhaseOwners(def) {
-		for _, t := range def.PhaseMachines[owner].Transitions {
-			if legacyPTRBUG[t.ID] {
-				writeTransition(b, t)
-				wrote = true
-			}
-		}
-	}
-	if !wrote {
-		fmt.Fprintf(b, "_No legacy transitions declared._\n\n")
-	}
-}
-
-func sortedPhaseOwners(def *LoopDefinition) []string {
-	owners := make([]string, 0, len(def.PhaseMachines))
-	for owner := range def.PhaseMachines {
-		owners = append(owners, owner)
-	}
-	sort.Strings(owners)
-	return owners
 }
 
 func writeGlobalTransitions(b *strings.Builder, def *LoopDefinition) {
@@ -307,9 +243,9 @@ func writeEvidenceBindings(b *strings.Builder, t TransitionSpec) {
 	if t.ID == "TR-020" {
 		fmt.Fprint(b, "Low-level diagnostic evidence slots only; not the normal amendment entry. Follow [Approved requirement amendment](#approved-requirement-amendment); the original receiver binds these facts, not the author.\n\n")
 	} else if t.ID == "TR-009" {
-		fmt.Fprint(b, "Diagnostic evidence slots for the original machine CleanRound. The final accepted ReviewResult invokes Gate/TR-009 and prepares S10 in the same completion event; authors do not copy these bindings.\n\n")
+		fmt.Fprint(b, "These legacy diagnostic slots do not define new answer proof. The original outlet uses necessary responsibility completion and accepted no-Finding conclusions to invoke TR-009 and prepare S10; authors do not copy old proof bindings.\n\n")
 	} else if t.ID == "TR-008" {
-		fmt.Fprint(b, "Diagnostic evidence slots for the original sealed batch. The next Main PreToolUse invokes the original transition; authors do not copy these bindings or submit another Result.\n\n")
+		fmt.Fprint(b, "These legacy diagnostic slots do not define new answer proof. An accepted Finding hands the received observations and unfinished work to S8 through the original outlet; no Batch proof, next Main Pre or repeated Result is required.\n\n")
 	} else {
 		fmt.Fprintf(b, "Evidence bindings (copy into `runtime transition`):\n\n")
 	}
@@ -326,7 +262,7 @@ func writeEvidenceBindings(b *strings.Builder, t TransitionSpec) {
 	} else if t.ID == "TR-009" {
 		fmt.Fprint(b, "\nReception, transition and material preparation are separate facts. After resolving a named original Gate failure, resume with `loop-harness runtime review-continue --root <root>`; after entering S10, restore missing current materials with `loop-harness runtime audit-prepare --root <root>`. Existing reports and accepted Reviewer answers are preserved; material recovery does not repeat TR-009.\n\n")
 	} else if t.ID == "TR-008" {
-		fmt.Fprint(b, "\nIf the handoff is incomplete, Main inspects the original sealed batch and `loop-harness explain TR-008` feedback. Preserve accepted Reviewer answers. After the transition, fill and save the supplied S8 intake; its original consumer creates the Case.\n\n")
+		fmt.Fprint(b, "\nIf the handoff is incomplete, Main inspects the received original Findings, unfinished responsibilities and `loop-harness explain TR-008` feedback. Preserve accepted Reviewer answers. After the transition, fill and save the supplied S8 intake; its original consumer creates the Case.\n\n")
 	} else {
 		fmt.Fprintf(b, "\nIf a binding is missing, retry with the command above; run `loop-harness explain %s` to inspect current candidates.\n\n", t.ID)
 	}
@@ -343,7 +279,7 @@ func writeS10ArtifactGuidance(b *strings.Builder, transitionID string) {
 		fmt.Fprintf(b, "  --id <id> --kind acceptance \\\n")
 		fmt.Fprintf(b, "  --path <envelope.json> --produced-by <agent> --responsibility <role>\n")
 		fmt.Fprintf(b, "```\n\n")
-		fmt.Fprintf(b, "The original consumer supplies `audit_manifest_path` and `audit_manifest_sha256`. Use the current professional Manifest to explain actual coverage and counterevidence; a path or row count is not proof of product behavior. Resolve unknowns and blocking findings and identify the owner/disposition of remaining risks. `s10 status` is optional read-only progress; do not call `runtime transition` manually.\n\n")
+		fmt.Fprintf(b, "The original consumer supplies the actual `audit_manifest_path`. Use the current professional Manifest to explain actual coverage and counterevidence; a path or row count is not proof of product behavior. Resolve unknowns and blocking findings and identify the owner/disposition of remaining risks. `s10 status` is optional read-only progress; do not call `runtime transition` manually.\n\n")
 	case "TR-017":
 		fmt.Fprintf(b, "Normal Main save validates the current release-audit Manifest and records its evidence. The commands below are explicit unpacketized/recovery examples:\n\n")
 		fmt.Fprintf(b, "```text\n")

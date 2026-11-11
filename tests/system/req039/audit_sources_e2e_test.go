@@ -2,13 +2,12 @@ package req039_test
 
 import (
 	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -32,8 +31,7 @@ func TestAuditStageSourcesUseOriginalConsumerBoundaryE2E(t *testing.T) {
 
 	architecturePath := "docs/architecture/ARCHITECTURE-039-audit.md"
 	architecture := []byte("# ARCHITECTURE-039-audit\n\n> Status: locked\n> Version: v1.0.0\n")
-	architectureSHA := sha256HexAudit(architecture)
-	writeAuditEvidence(t, root, state, architecturePath, architectureSHA)
+	writeAuditEvidence(t, root, state, architecturePath)
 
 	// The child branch has a real committed formal document. It remains
 	// outside the bound development branch and therefore cannot satisfy the
@@ -45,10 +43,20 @@ func TestAuditStageSourcesUseOriginalConsumerBoundaryE2E(t *testing.T) {
 	runGitIn(t, executionRoot, "add", architecturePath)
 	runGitIn(t, executionRoot, "commit", "-qm", "child architecture")
 
-	// The Hook reads authoritative state from root while the payload reports
-	// the actual execution cwd. A child-branch commit is not an authority-tree
-	// commit.
-	_, qg := auditHook(t, root, executionRoot, "audit-child-commit")
+	// A child checkout with an unrelated actor cannot claim Main's design
+	// responsibility, even though it has a real committed architecture.
+	beforeChild := readSystemRuntimePair(t, root)
+	code, stdout, stderr := runHook(t, root, "PreToolUse", req039fixtures.ActorHookBody(
+		executionRoot, "PreToolUse", "audit-child-actor", "agent-audit", "Edit",
+		map[string]any{"file_path": filepath.Join(executionRoot, architecturePath)}))
+	if code != 0 || strings.TrimSpace(stdout) != "" {
+		t.Fatalf("unrelated child actor must remain silent without denying Edit: code=%d stdout=%s stderr=%s", code, stdout, stderr)
+	}
+	assertSystemRuntimePairUnchanged(t, beforeChild)
+
+	// Main consumes its authority checkout. A child-branch commit cannot
+	// satisfy the formal-document requirement in that checkout.
+	_, qg := auditMainHook(t, root, "audit-child-commit")
 	auditWantNotReady(t, qg, "child branch commit")
 	if got := fmt.Sprint(qg["missing"]); !strings.Contains(got, "document:design:locked") {
 		t.Fatalf("child branch must leave the formal document missing, got missing=%v", qg["missing"])
@@ -60,7 +68,7 @@ func TestAuditStageSourcesUseOriginalConsumerBoundaryE2E(t *testing.T) {
 	// Receiving S2 work does not require committing each professional save.
 	// Its exit registers the actual authority design for the next consumer.
 	writeAuditFile(t, root, architecturePath, string(architecture))
-	_, qg = auditHook(t, root, executionRoot, "audit-untracked")
+	_, qg = auditMainHook(t, root, "audit-untracked")
 	if status := stringValueAudit(qg["status"]); status != "satisfied" && status != "advanced" {
 		t.Fatalf("actual authority design must satisfy S2, got status=%q qg=%v", status, qg)
 	}
@@ -90,7 +98,7 @@ func TestAuditStageSourcesUseOriginalConsumerBoundaryE2E(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), wantError) || !strings.Contains(err.Error(), architecturePath) {
 				t.Fatalf("S3 source failure must identify %s and %q: %v", architecturePath, wantError, err)
 			}
-		} else if err != nil || len(inputs.Designs) != 1 || inputs.Designs[0].SHA256 != architectureSHA {
+		} else if err != nil || len(inputs.Designs) != 1 || inputs.Designs[0].Path != architecturePath || inputs.Designs[0].Version != "v1.0.0" {
 			t.Fatalf("S3 failed to freeze the actual committed design: %+v %v", inputs.Designs, err)
 		}
 		assertSystemRuntimePairUnchanged(t, before)
@@ -101,8 +109,78 @@ func TestAuditStageSourcesUseOriginalConsumerBoundaryE2E(t *testing.T) {
 	resolve("read S3 source through original file view")
 	runGitIn(t, root, "commit", "-qm", "authority architecture")
 	resolve("")
+
+	// The blueprint retires the hash-based real-time drift gate: the S3 reader
+	// binds the committed source tree and explicitly does not certify real-time
+	// drift integrity.
+	// blueprint/l4-mechanisms/L4-hook-acceptance-checklist.md:7 —
+	// 「…系统只确认答卷可读且具备分流所需内容，不证明代码、证据、实际执行、覆盖充分、来源防伪或实时漂移完整性。S0～S11 的全部自然 Hook、原消费者和后继均不计算、登记或校验散列…」
+	// blueprint/l4-mechanisms/L4-workflow-convergence.md:279 —
+	// 「…系统只使用已知的原责任、实际检查及结果和原策略，不计算、登记或比较散列、Git OID、整树内容或逐文件字节来补证；输入是否发生未记录的外部变化可能未知，不能报告为已验证不变。」
+	// So an uncommitted working-tree change must NOT be reported as an S3 source
+	// failure any more; the frozen input must stay the committed bytes.
 	writeAuditFile(t, root, architecturePath, string(architecture)+"\nUncommitted source change.\n")
-	resolve("S3 frozen input differs from original checkout SHA")
+	view, err := fileview.New(root, "refs/heads/test-development", []fileview.Rule{{Path: ".", Source: "git_tree"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dirtyInputs, err := runtime.ResolveContractInputs(root, final, view)
+	if err != nil {
+		t.Fatalf("an uncommitted working-tree change must not fail the S3 source reader: %v", err)
+	}
+	if len(dirtyInputs.Designs) != 1 || dirtyInputs.Designs[0].Path != architecturePath || dirtyInputs.Designs[0].Version != "v1.0.0" {
+		t.Fatalf("S3 must keep freezing the committed design while the worktree is dirty: %+v", dirtyInputs.Designs)
+	}
+	// Blueprint negative: the frozen S3 input record carries no content digest.
+	// The retired gate must not survive under another field name either
+	// (L4-workflow-convergence.md:138 「不得将同一用途改名为 fingerprint、checksum 或换用其他散列算法」).
+	assertNoRetiredDigestInJSON(t, "frozen S3 inputs", dirtyInputs)
+	// Source binding positive: the frozen design is the committed bytes, not the
+	// dirty working-tree bytes.
+	committedBytes, err := view.ReadFile(architecturePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	diskBytes, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(architecturePath)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(committedBytes, diskBytes) {
+		t.Fatalf("the frozen S3 design must come from the committed tree, not the dirty worktree")
+	}
+	// Source binding positive, decisive: the working-tree copy of the design
+	// is removed entirely. The reader must still freeze the committed design,
+	// which is only possible when it consumes the committed Git tree.
+	if err := os.Remove(filepath.Join(root, filepath.FromSlash(architecturePath))); err != nil {
+		t.Fatal(err)
+	}
+	removedInputs, err := runtime.ResolveContractInputs(root, final, view)
+	if err != nil {
+		t.Fatalf("S3 must read the committed design, not the working tree: %v", err)
+	}
+	if len(removedInputs.Designs) != 1 || removedInputs.Designs[0].Path != architecturePath || removedInputs.Designs[0].Version != "v1.0.0" {
+		t.Fatalf("S3 must keep freezing the committed design when the worktree copy is gone: %+v", removedInputs.Designs)
+	}
+	writeAuditFile(t, root, architecturePath, string(architecture)+"\nUncommitted source change.\n")
+	// The reader tracks the committed tree: a real committed change is followed.
+	writeAuditFile(t, root, architecturePath, string(architecture)+"\nCommitted source change.\n")
+	runGitIn(t, root, "add", architecturePath)
+	runGitIn(t, root, "commit", "-qm", "committed authority architecture")
+	committedInputs, err := runtime.ResolveContractInputs(root, final, view)
+	if err != nil {
+		t.Fatalf("S3 source reader must read the committed tree: %v", err)
+	}
+	if len(committedInputs.Designs) != 1 || committedInputs.Designs[0].Path != architecturePath || committedInputs.Designs[0].Version != "v1.0.0" {
+		t.Fatalf("S3 must freeze the newly committed design: %+v", committedInputs.Designs)
+	}
+	committedAfter, err := view.ReadFile(architecturePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(committedAfter, []byte("Committed source change.")) {
+		t.Fatalf("the S3 source view must expose the latest committed bytes: %q", committedAfter)
+	}
+	assertSystemRuntimePairUnchanged(t, before)
 	writeAuditFile(t, root, architecturePath, string(architecture))
 
 	// A dirty test can pass in the execution checkout while still being absent
@@ -120,13 +198,50 @@ func TestDirtyOnly(t *testing.T) {}
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("dirty execution test should run in execution root: %v\n%s", err, output)
 	}
-	view, err := fileview.New(root, "refs/heads/test-development", []fileview.Rule{{Path: ".", Source: "git_tree"}})
+	view, err = fileview.New(root, "refs/heads/test-development", []fileview.Rule{{Path: ".", Source: "git_tree"}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := view.ReadFile("dirty_test.go"); err == nil {
 		t.Fatal("a dirty execution test must not be readable from the authority commit tree")
 	}
+}
+
+// assertNoRetiredDigestInJSON is the blueprint negative for a frozen record:
+// no retired digest field may survive under any name. It walks the marshalled
+// JSON so a renamed digest cannot slip through a typed struct that simply
+// happens to lack the field today.
+// blueprint/l4-mechanisms/L4-workflow-convergence.md:138 —
+// 「不得将同一用途改名为 fingerprint、checksum 或换用其他散列算法」。
+func assertNoRetiredDigestInJSON(t *testing.T, context string, value any) {
+	t.Helper()
+	raw, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	var walk func(node any, path string)
+	walk = func(node any, path string) {
+		switch typed := node.(type) {
+		case map[string]any:
+			for key, child := range typed {
+				for _, field := range retiredDigestFields {
+					if strings.EqualFold(key, field) {
+						t.Fatalf("%s must not carry the retired content digest field %q at %s: %#v", context, field, path, child)
+					}
+				}
+				walk(child, path+"/"+key)
+			}
+		case []any:
+			for i, child := range typed {
+				walk(child, path+"/"+strconv.Itoa(i))
+			}
+		}
+	}
+	walk(decoded, context)
 }
 
 // auditSourceRoot copies the runtime authorities and initializes a real temp
@@ -140,7 +255,7 @@ func auditSourceRoot(t *testing.T) string {
 	return root
 }
 
-func writeAuditEvidence(t *testing.T, root string, state map[string]any, subjectPath, subjectSHA string) {
+func writeAuditEvidence(t *testing.T, root string, state map[string]any, subjectPath string) {
 	t.Helper()
 	envelope := map[string]any{
 		"schema_version":          "1.0.0",
@@ -152,7 +267,7 @@ func writeAuditEvidence(t *testing.T, root string, state map[string]any, subject
 		"producer_agent_id":       "architect-audit",
 		"producer_responsibility": "Architect",
 		"subject_refs": []any{map[string]any{
-			"path": subjectPath, "version": "v1.0.0", "sha256": subjectSHA,
+			"path": subjectPath, "version": "v1.0.0",
 		}},
 		"conclusion": "pass",
 		"created_at": "2026-09-18T00:00:00Z",
@@ -167,7 +282,6 @@ func writeAuditEvidence(t *testing.T, root string, state map[string]any, subject
 		"id":                  "ev-audit-design",
 		"kind":                "planning_design",
 		"path":                filepath.ToSlash(rel),
-		"sha256":              sha256HexAudit(data),
 		"status":              "valid",
 		"baseline_generation": 1,
 		"review_round":        1,
@@ -203,16 +317,15 @@ func writeAuditFile(t *testing.T, root, rel, content string) {
 	}
 }
 
-func auditHook(t *testing.T, root, executionRoot, session string) (string, map[string]any) {
+func auditMainHook(t *testing.T, root, session string) (string, map[string]any) {
 	t.Helper()
 	payload := map[string]any{
 		"session_id":      session,
 		"hook_event_name": "PreToolUse",
-		"agent_id":        "agent-audit",
-		"cwd":             executionRoot,
+		"cwd":             root,
 		"tool_name":       "Edit",
 		"tool_input": map[string]any{
-			"file_path": filepath.Join(executionRoot, "docs/architecture/ARCHITECTURE-039-audit.md"),
+			"file_path": filepath.Join(root, "docs/architecture/ARCHITECTURE-039-audit.md"),
 		},
 	}
 	body, err := json.Marshal(payload)
@@ -248,9 +361,4 @@ func stringValueAudit(value any) string {
 
 func gotEvidenceRefsAudit(qg map[string]any) string {
 	return fmt.Sprint(qg["evidence_refs"])
-}
-
-func sha256HexAudit(data []byte) string {
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:])
 }

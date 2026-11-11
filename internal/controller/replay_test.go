@@ -67,6 +67,50 @@ func TestRecoveryReplayUsesStagingPairAndAdvancesThroughPlanning(t *testing.T) {
 	}
 }
 
+// TestRecoveryReplayAdvancesTheCursorAndNeverRepeatsIt pins the replay's
+// progress and identity signal. The Runtime write count is not allowed to
+// stand in for either: an advanced step must move the lifecycle cursor, and
+// no cursor may appear twice in one recovery chain, so a replay can never
+// reach a second copy of a state it already produced.
+func TestRecoveryReplayAdvancesTheCursorAndNeverRepeatsIt(t *testing.T) {
+	root, state := replayFixture(t)
+	stagingDir := filepath.Join(root, ".claude", "recovery-staging")
+	if err := os.MkdirAll(stagingDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stagingStatePath := filepath.Join(stagingDir, "loop-state.json")
+	stagingJournalPath := filepath.Join(stagingDir, "loop-events.jsonl")
+	writeReplayPair(t, stagingStatePath, stagingJournalPath, state)
+
+	result, err := controller.RecoveryReplay(context.Background(), controller.RecoveryReplayRequest{
+		Root:        root,
+		StatePath:   stagingStatePath,
+		JournalPath: stagingJournalPath,
+		MaxSteps:    12,
+	})
+	if err != nil {
+		t.Fatalf("RecoveryReplay: %v", err)
+	}
+	seen := map[string]bool{}
+	advanced := 0
+	for _, trace := range result.Trace {
+		if trace.Status != controller.StatusAdvanced {
+			continue
+		}
+		advanced++
+		if trace.AfterCursor == trace.BeforeCursor {
+			t.Fatalf("advanced step %d reported progress without advancing the cursor: %q", trace.Step, trace.AfterCursor)
+		}
+		if seen[trace.AfterCursor] {
+			t.Fatalf("advanced step %d returned to the cursor %q it already produced", trace.Step, trace.AfterCursor)
+		}
+		seen[trace.AfterCursor] = true
+	}
+	if advanced == 0 {
+		t.Fatalf("replay produced no advanced step: trace=%#v", result.Trace)
+	}
+}
+
 func TestRecoveryReplayStopsAtFirstNotReady(t *testing.T) {
 	root, state := replayFixture(t)
 	// The planning gates fall back to disk-declared facts, so
@@ -336,13 +380,11 @@ func replayFixture(t *testing.T) (string, map[string]any) {
 	req039fixtures.SeedPlanningDesignComplete(t, root, state)
 	req039fixtures.WritePlanningContractPass(t, root, state)
 	req039fixtures.WritePlanningTaskPass(t, root, state)
-	reqData, err := os.ReadFile(filepath.Join(root, "docs/requirements/REQ-039-loop-control-plane.md"))
-	if err != nil {
+	if _, err := os.ReadFile(filepath.Join(root, "docs/requirements/REQ-039-loop-control-plane.md")); err != nil {
 		t.Fatal(err)
 	}
-	state["bound_req"].(map[string]any)["sha256"] = req039fixtures.Sha256Hex(reqData)
 	req039fixtures.CommitFixture(t, root)
-	state["bound_req"].(map[string]any)["workspace"] = map[string]any{"project_root": root, "dev_branch": "test-development", "release_upstream": "origin/release", "bound_commit": "fixture"}
+	state["bound_req"].(map[string]any)["workspace"] = map[string]any{"project_root": root, "dev_branch": "test-development", "release_upstream": "origin/release"}
 	writeReplayPair(t, filepath.Join(root, ".claude", "loop-state.json"), filepath.Join(root, ".claude", "loop-events.jsonl"), state)
 	return root, state
 }

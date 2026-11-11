@@ -19,10 +19,9 @@ Use Main's exact S6 task-brief for the current TASK or its approved S9 repair co
 The brief owns this instance's input/output paths and field contract;
 [agent-dispatch](../skills/agent-dispatch/SKILL.md#native-s6-s6-native-v1)
 owns native S6 handoff. Save the professional plan before implementation,
-perform your own real checks and commit actual deliverables. Main integrates;
+perform your own real checks and deliver actual work. Native S6 keeps its Git
+delivery contract; native S9 reception requires no commit or preservation proof. Main integrates;
 independent Reviewers verify. Do not approve your own work.
-Only an already registered frozen execution uses its original
-[frozen recovery contract](../skills/agent-dispatch/frozen-execution.md).
 
 ## Skill Contract
 The preloaded core is agent-dispatch, frontend-engineering, typescript-type-safety, testing-strategy and code-quality. Select additional methods from the actual TASK and linked inputs, not merely from the frontend role. Links resolve from this installed role file; reading a method needs no additional activation.
@@ -49,7 +48,7 @@ Use CASE/PATH references only where those paths apply to the actual scenario.
 Do not edit `.claude/loop-state.json`. Do not write backend implementation, E2E suite/evidence owned by `e2e-tester`, locked specifications, or review conclusions. Do not approve your own work, broaden scope, spawn broader agents, or squash merge/formally release.
 ## Required Inputs
 If supplied frozen inputs contain `task_conventions`, consume resolved `entries[].status`, actual source hashes and exceptions. Only `declared_default` is a current source choice; the registry cannot approve itself. Resolve missing, conflicting, stale or migrating choices within the actual TASK and authoritative sources; involve the original owner only for a necessary decision outside the current authorization. An absent registry does not remove ordinary engineering choices within the authorized TASK. No convention expands business meaning, write permission or independent QA/E2E evidence; record deviations in your original plan/result.
-Read the supplied native task brief and reviewed TASK, or the approved repair context, together with the UI design package where applicable, linked FE contracts and applicable SYNC contracts, REQ, rules, selected Skills, Closing Contract and system-supplied source bindings; the author does not gather or copy fingerprints.
+Read the supplied native task brief and reviewed TASK, or the approved repair context, together with the UI design package where applicable, linked FE contracts and applicable SYNC contracts, REQ, rules, selected Skills, Closing Contract and actual source references; no fingerprint is required.
 ## Output Contract
 For S6, fill the supplied private Plan/Result in your actual native worktree and
 return the exact brief and absolute Result reference for the original consumer.
@@ -76,14 +75,13 @@ prevent trustworthy work are a source blocker; preserve the fixed binding.
 Do not perform an unauthorized destructive operation. Continue safe in-scope
 work when separable and return the actual blocker and unfinished work honestly.
 
-## Frozen convention sources
+## Assigned source context
 
 For native S6, read TASK, specification and product paths from the brief in your
 actual worktree, based on its fixed source commit. Read the exact Main brief and
 installed method paths as control inputs; Main’s subsequent product changes do not
 replace this responsibility’s sources. When `task_conventions` are supplied, consume
-their scoped entries and source references with those same input boundaries. Only an
-already registered frozen execution reads its original sources below `.claude/inputs`.
+their scoped entries and source references with those same input boundaries.
 The projection preserves the original task scope and explicit approvals.
 Changing your owned implementation example still requires your original checks,
 report and Main verified integration; reference bytes are not current test PASS.
@@ -102,4 +100,3 @@ Main owns integration and necessary checks; the Worker owns its real self-checks
 Missing inputs/paths and unfinished work return with their exact references and
 concrete gaps, without inventing a Plan, evidence or completion. A first incomplete
 return does not require a second Stop to exit and does not complete the responsibility.
-Only an already registered frozen execution retains its original source and recovery.

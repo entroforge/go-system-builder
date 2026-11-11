@@ -54,8 +54,8 @@ func validatePlanAuthorization(root string, state map[string]any, owner, require
 			}
 			return nil
 		}
-		// Approval-mode and legacy agents retain their original readback hash
-		// chain. A one_shot dispatch cannot manufacture this working state.
+		// Approval-mode agents retain their original readback responsibility.
+		// A one_shot dispatch cannot manufacture this working state.
 		if a["dispatch_mode"] != nil && a["dispatch_mode"] != "" && a["dispatch_mode"] != "plan_approval_required" {
 			return fmt.Errorf("document submission requires a registered plan/activation chain")
 		}

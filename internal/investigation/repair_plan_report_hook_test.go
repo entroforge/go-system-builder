@@ -125,16 +125,23 @@ func TestS9RepairPlanReportOriginalHookCoverageReplayAndWriteBarrier(t *testing.
 	}
 	assertS9RuntimeBytesUnchanged(t, fixture, stateBeforeUnissued, journalBeforeUnissued, "unissued terminal PlanReport source")
 
-	// A changed answer at the same issued path conflicts with the accepted
-	// receipt and cannot rewrite the original report or receipt.
+	// A later authoring-file change cannot replace the accepted original.
+	original, found, err := runtime.VerifiedRepairPlanReportReceipt(fixture.root, currentS9State(t, fixture), first.ID, first.Binding.OwnerAgentID)
+	if err != nil || !found {
+		t.Fatalf("original Plan receipt: %+v %v", original, err)
+	}
 	changedAnswer := writeS9RepairPlanReportAnswer(t, fixture.root, first, "changed answer after original acceptance")
 	stateBeforeConflict := mustRead(t, fixture.statePath)
 	journalBeforeConflict := mustRead(t, fixture.journalPath)
 	conflict := submitS9OriginalReceipt(t, fixture, first, changedAnswer)
-	if conflict.Accepted {
-		t.Fatalf("changed S9 answer replaced an accepted report: %+v", conflict)
+	if !conflict.Accepted {
+		t.Fatalf("accepted original was not replayed: %+v", conflict)
 	}
 	assertS9RuntimeBytesUnchanged(t, fixture, stateBeforeConflict, journalBeforeConflict, "changed accepted S9 answer")
+	after, found, err := runtime.VerifiedRepairPlanReportReceipt(fixture.root, currentS9State(t, fixture), first.ID, first.Binding.OwnerAgentID)
+	if err != nil || !found || !bytes.Equal(after.SubmittedAnswer, original.SubmittedAnswer) {
+		t.Fatalf("original accepted answer changed: %+v %v", after, err)
+	}
 }
 
 func TestS9RepairPlanReportSavedFromReadingRunsOriginalPlanCheckpoint(t *testing.T) {
@@ -159,7 +166,28 @@ func TestS9RepairPlanReportSavedFromReadingRunsOriginalPlanCheckpoint(t *testing
 	packet := packets[0]
 	answerPath := writeS9RepairPlanReportAnswer(t, fixture.root, packet, "inspect the approved boundary and record the pre-fix check")
 	before := currentS9Snapshot(t, fixture)
-	receipt := runS9PostToolUse(t, fixture, "unrelated-hook-agent", filepath.Join(fixture.root, "unrelated-cwd"), answerPath)
+	stateBeforeUnknown, journalBeforeUnknown := mustRead(t, fixture.statePath), mustRead(t, fixture.journalPath)
+	unknownBody, err := json.Marshal(map[string]any{"hook_event_name": "PostToolUse", "tool_name": "Write", "tool_input": map[string]any{"file_path": filepath.Join(fixture.root, filepath.FromSlash(answerPath))}, "agent_id": "unrelated-hook-agent", "cwd": filepath.Join(fixture.root, "unrelated-cwd")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var unknownOut, unknownErr bytes.Buffer
+	if code := cli.Run([]string{"hook", "--root", fixture.root, "--event", "PostToolUse"}, bytes.NewReader(unknownBody), &unknownOut, &unknownErr); code != 0 || strings.Contains(unknownOut.String(), "S9 SUBMISSION RECEIPT") {
+		t.Fatalf("unknown event: code=%d out=%s err=%s", code, &unknownOut, &unknownErr)
+	}
+	if unknownOut.Len() > 0 {
+		var output struct {
+			Decision           string `json:"decision"`
+			HookSpecificOutput struct {
+				PermissionDecision string `json:"permissionDecision"`
+			} `json:"hookSpecificOutput"`
+		}
+		if err := json.Unmarshal(unknownOut.Bytes(), &output); err != nil || output.Decision == "block" || output.HookSpecificOutput.PermissionDecision == "deny" {
+			t.Fatalf("unrelated event emitted an invalid or blocking response: output=%s err=%v", &unknownOut, err)
+		}
+	}
+	assertS9RuntimeBytesUnchanged(t, fixture, stateBeforeUnknown, journalBeforeUnknown, "unrelated event cannot receive another responsibility")
+	receipt := runS9PostToolUse(t, fixture, packet.Binding.OwnerAgentID, fixture.root, answerPath)
 	if !receipt.Accepted || receipt.WorkComplete || receipt.PacketID != packet.ID {
 		t.Fatalf("original S9 consumer did not accept the reading-stage professional answer: %+v", receipt)
 	}
@@ -182,9 +210,9 @@ func TestS9RepairPlanReportSavedFromReadingRunsOriginalPlanCheckpoint(t *testing
 		t.Fatalf("original S9 professional receipt missing after direct recording: found=%t err=%v", found, err)
 	}
 	stateBeforeReplay, journalBeforeReplay := mustRead(t, fixture.statePath), mustRead(t, fixture.journalPath)
-	replay := runS9PostToolUse(t, fixture, "different-hook-agent", filepath.Join(fixture.root, "different-cwd"), answerPath)
+	replay := runS9PostToolUse(t, fixture, packet.Binding.OwnerAgentID, fixture.root, answerPath)
 	if !replay.Accepted || replay.PacketID != packet.ID {
-		t.Fatalf("exact saved S9 answer did not replay independently of Hook identity metadata: %+v", replay)
+		t.Fatalf("exact saved S9 answer did not replay for its registered owner: %+v", replay)
 	}
 	assertS9RuntimeBytesUnchanged(t, fixture, stateBeforeReplay, journalBeforeReplay, "exact S9 reading-stage questionnaire replay")
 }
@@ -202,13 +230,14 @@ func TestS9IssuedReportStaleStagingIsSafelyRebuiltAfterSiblingCommit(t *testing.
 	start := currentS9Snapshot(t, fixture)
 	startState, startJournal := mustRead(t, fixture.statePath), mustRead(t, fixture.journalPath)
 
-	stagePath := ".claude/review/repair/plan-reports/" + first.ReportID + ".json"
-	stageAbs := filepath.Join(fixture.root, filepath.FromSlash(stagePath))
 	// Materialize a real report through its original Writer, then retain only
 	// the immutable artifact to model an interrupted pre-CAS staging write.
-	if _, _, err := submitS9RecoveryTestPacket(fixture, start.Revision, first, firstAnswer, first.Binding.OwnerAgentID); err != nil {
+	_, stagedReport, err := submitS9RecoveryTestPacket(fixture, start.Revision, first, firstAnswer, first.Binding.OwnerAgentID)
+	if err != nil || stagedReport.Receipt == nil {
 		t.Fatalf("construct original staging artifact: %v", err)
 	}
+	stagePath := stagedReport.Receipt.ReportRef
+	stageAbs := filepath.Join(fixture.root, filepath.FromSlash(stagePath))
 	if err := os.WriteFile(fixture.statePath, startState, 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -220,8 +249,7 @@ func TestS9IssuedReportStaleStagingIsSafelyRebuiltAfterSiblingCommit(t *testing.
 	if readErr != nil {
 		t.Fatalf("exact unaccepted PlanReport staging artifact was not retained for retry: %v", readErr)
 	}
-	stagedSHA := workpacket.Digest(stagedBytes)
-	staged, err := repair.ValidatePlanReport(fixture.root, repair.ArtifactRef{Path: stagePath, SHA256: stagedSHA})
+	staged, err := repair.ValidatePlanReport(fixture.root, repair.ArtifactRef{Path: stagePath})
 	if err != nil || staged.Receipt == nil {
 		t.Fatalf("validate retained pre-CAS staged PlanReport: report=%+v err=%v", staged, err)
 	}
@@ -253,33 +281,27 @@ func TestS9IssuedReportStaleStagingIsSafelyRebuiltAfterSiblingCommit(t *testing.
 	if firstReceipt.AcceptedAfterRuntimeRevision != staged.Receipt.AcceptedAfterRuntimeRevision+1 || firstReceipt.AcceptedSequence != staged.Receipt.AcceptedSequence+1 {
 		t.Fatalf("retried receipt coordinates=%d/%d, stale staging predicted %d/%d; want exactly one sibling commit later", firstReceipt.AcceptedAfterRuntimeRevision, firstReceipt.AcceptedSequence, staged.Receipt.AcceptedAfterRuntimeRevision, staged.Receipt.AcceptedSequence)
 	}
-	finalReportBytes, err := os.ReadFile(stageAbs)
-	if err != nil {
-		t.Fatalf("read rebuilt first report artifact: %v", err)
+	if retained, err := os.ReadFile(stageAbs); err != nil || !bytes.Equal(retained, stagedBytes) {
+		t.Fatal("unregistered staged report was not preserved")
 	}
-	if workpacket.Digest(finalReportBytes) == stagedSHA {
-		t.Fatal("successful retry reused the stale pre-sibling report artifact instead of rebuilding its predicted CAS receipt")
-	}
-
 	state := firstAccepted.State
 	review, _ := state["review"].(map[string]any)
 	repairState, _ := review["repair"].(map[string]any)
 	refs, _ := repairState["plan_report_refs"].([]any)
-	indexed := map[string]string{}
+	indexed := map[string]bool{}
 	for _, raw := range refs {
 		row, _ := raw.(map[string]any)
-		path, _ := row["path"].(string)
-		sha, _ := row["sha256"].(string)
-		if path != "" {
-			indexed[path] = sha
+		if ref, _ := row["path"].(string); ref != "" {
+			indexed[ref] = true
 		}
 	}
-	firstPath := firstReceipt.ReportRef
-	secondPath := secondReceipt.ReportRef
-	secondReportBytes := mustRead(t, filepath.Join(fixture.root, filepath.FromSlash(secondPath)))
-	if len(indexed) != 2 || indexed[firstPath] != workpacket.Digest(finalReportBytes) || indexed[secondPath] != workpacket.Digest(secondReportBytes) {
-		t.Fatalf("retry did not preserve both exact sibling report refs: refs=%v firstSHA=%s secondSHA=%s", indexed, workpacket.Digest(finalReportBytes), workpacket.Digest(secondReportBytes))
+	firstPath, secondPath := firstReceipt.ReportRef, secondReceipt.ReportRef
+	if firstPath == stagePath || len(indexed) != 2 || !indexed[firstPath] || !indexed[secondPath] {
+		t.Fatalf("retry did not retain actual sibling references: %v", indexed)
 	}
+	_ = mustRead(t, filepath.Join(fixture.root, filepath.FromSlash(firstPath)))
+	_ = mustRead(t, filepath.Join(fixture.root, filepath.FromSlash(secondPath)))
+
 	if repairState["plan_report_ref"] != firstPath {
 		t.Fatalf("singular current report pointer=%v, want retried first report %s", repairState["plan_report_ref"], firstPath)
 	}
@@ -291,7 +313,8 @@ func TestS9IssuedReportStaleStagingIsSafelyRebuiltAfterSiblingCommit(t *testing.
 	// Exact replay, even with the old expected revision, is receipt-only and
 	// cannot add another PTR-BUG-10 event or mutate either report artifact.
 	committedState, committedJournal := mustRead(t, fixture.statePath), mustRead(t, fixture.journalPath)
-	committedFirst, committedSecond := mustRead(t, stageAbs), secondReportBytes
+	firstAbs := filepath.Join(fixture.root, filepath.FromSlash(firstPath))
+	committedFirst, committedSecond := mustRead(t, firstAbs), mustRead(t, filepath.Join(fixture.root, filepath.FromSlash(secondPath)))
 	if _, _, err := repair.SubmitIssuedRepairPlanReport(fixture.root, fixture.statePath, fixture.journalPath, repair.SubmitIssuedRepairPlanReportRequest{
 		ExpectedRevision: start.Revision,
 		PacketID:         first.ID,
@@ -311,7 +334,7 @@ func TestS9IssuedReportStaleStagingIsSafelyRebuiltAfterSiblingCommit(t *testing.
 		t.Fatalf("exact accepted S9 retry with stale expected revision: %v", err)
 	}
 	if !bytes.Equal(committedState, mustRead(t, fixture.statePath)) || !bytes.Equal(committedJournal, mustRead(t, fixture.journalPath)) ||
-		!bytes.Equal(committedFirst, mustRead(t, stageAbs)) || !bytes.Equal(committedSecond, mustRead(t, filepath.Join(fixture.root, filepath.FromSlash(secondPath)))) {
+		!bytes.Equal(committedFirst, mustRead(t, firstAbs)) || !bytes.Equal(committedSecond, mustRead(t, filepath.Join(fixture.root, filepath.FromSlash(secondPath)))) {
 		t.Fatal("exact accepted replay mutated Runtime, journal, or either sibling report artifact")
 	}
 }
@@ -384,11 +407,11 @@ func prepareS9RepairPlanReportHookFixtureWithActivity(t *testing.T, setup func(*
 	state["configuration"].(map[string]any)["optimization"] = map[string]any{"packet": true}
 	state["bound_req"].(map[string]any)["workspace"] = bindS8FixtureGitRoot(t, fixture.root)
 	writeInvestigationJSON(t, fixture.statePath, state)
-	writeObservationBatch(t, fixture, []string{"finding-1", "finding-2"}, 2)
+	setFixtureAcceptedFindings(t, fixture, []string{"finding-1", "finding-2"}, 2)
 	setContractLifecycle(t, fixture)
 
 	if _, err := investigation.Ingest(fixture.root, fixture.statePath, fixture.journalPath, investigation.IngestRequest{
-		ExpectedRevision: 0, GroupingRationale: "the two sealed Findings enter one bounded generation-two repair Case",
+		ExpectedRevision: -1, GroupingRationale: "the two sealed Findings enter one bounded generation-two repair Case",
 	}); err != nil {
 		t.Fatalf("original generation-two Ingest: %v", err)
 	}
@@ -404,10 +427,10 @@ func prepareS9RepairPlanReportHookFixtureWithActivity(t *testing.T, setup func(*
 		map[string]any{"id": "unit-api-regression", "description": "repair the sibling detection assertion", "assertion_ids": []string{"symptom-2", "gap-1"}, "scope": []string{"internal/api"}},
 	}
 	writeInvestigationJSON(t, contractPath, contract)
-	approvalHash, approvalEvidenceID, expectedRevision := registerContractApprovalEvidence(t, fixture, contractPath)
+	_, approvalEvidenceID, _ := registerContractApprovalEvidence(t, fixture, contractPath)
 	approved, err := investigation.ApproveContract(fixture.root, fixture.statePath, fixture.journalPath, investigation.ContractRequest{
-		ExpectedRevision: expectedRevision, CaseID: "investigation-case-observation-batch-r1", ContractPath: contractPath,
-		ApprovedBy: "main-session", ApprovalHash: approvalHash, ApprovalEvidenceID: approvalEvidenceID,
+		ExpectedRevision: -1, CaseID: "investigation-case-review-plan-r1", ContractPath: contractPath,
+		ApprovedBy: "main-session", ApprovalEvidenceID: approvalEvidenceID,
 	})
 	if err != nil {
 		t.Fatalf("original S8 ApproveContract writer: %v", err)
@@ -627,15 +650,15 @@ func assertS9ProductWriteObserved(t *testing.T, fixture *intakeFixture, owner s9
 	if err != nil {
 		t.Fatalf("read registered S9 questionnaire path: %v", err)
 	}
-	answerPath := ""
+	briefPath := ""
 	for _, packet := range packets {
 		if packet.Binding.OwnerAgentID == owner.agentID && packet.Binding.RepairAssignmentID == owner.assignmentID {
-			answerPath = filepath.Join(fixture.root, filepath.FromSlash(packet.AnswerPath))
+			briefPath = filepath.Join(fixture.root, filepath.FromSlash(packet.BriefPath))
 		}
 	}
 	context := envelope.HookSpecificOutput.AdditionalContext
-	if answerPath == "" || !strings.Contains(context, "questionnaire "+answerPath) || !strings.Contains(context, "The PlanReport is recorded. Continue the same native Builder") || strings.Contains(context, "runtime stage-answer issue") {
-		t.Fatalf("S9 reminder omitted the exact questionnaire path or original next duty: %s", context)
+	if briefPath == "" || !strings.Contains(context, "exact native brief "+briefPath) || !strings.Contains(context, "The PlanReport is recorded. Continue the same native Builder") || strings.Contains(context, "runtime stage-answer issue") {
+		t.Fatalf("S9 reminder omitted the original brief or next duty: %s", context)
 	}
 }
 

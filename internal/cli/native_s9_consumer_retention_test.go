@@ -14,7 +14,9 @@ import (
 	"github.com/entroforge/go-system-builder/internal/diagnosticstorage"
 	"github.com/entroforge/go-system-builder/internal/filelock"
 	"github.com/entroforge/go-system-builder/internal/policy"
+	"github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/submission"
+	"github.com/entroforge/go-system-builder/internal/workspace"
 )
 
 func TestNativeS9ConsumerCauseSurvivesPrerequisiteAndConcurrentPublication(t *testing.T) {
@@ -85,7 +87,13 @@ func TestNativeS9OriginalStopCauseReachesMainAfterSourceCleanup(t *testing.T) {
 	if len(answer.BeforeFixResults) != 6 {
 		t.Fatalf("original contract has %d assertions, want 6", len(answer.BeforeFixResults))
 	}
+	// L4-hook-acceptance-checklist.md:53/:59 and L3-S9-repair.md:489 removed the
+	// per-assertion coverage machine gate, so three of six assertions are no
+	// longer a rejection reason. The surviving necessary check is the direct
+	// structure of the author's own fields, so the professional rejection this
+	// test follows now comes from an unusable assertion ID.
 	answer.BeforeFixResults = answer.BeforeFixResults[:3]
+	answer.BeforeFixResults[0].AssertionID = ""
 	flat := nativeS9TestResultPath(t, root, plan)
 	path := filepath.Join(worker, flat)
 	if err := persistRepairLeadQuestionnaire(path, answer); err != nil {
@@ -96,8 +104,43 @@ func TestNativeS9OriginalStopCauseReachesMainAfterSourceCleanup(t *testing.T) {
 	if handled, code := nativeS9Hook(root, input, &bytes.Buffer{}, &diagnostic); !handled || code != 0 {
 		t.Fatalf("original Stop: %v %d %s", handled, code, &diagnostic)
 	}
-	if !strings.Contains(diagnostic.String(), "before_fix_results") || !strings.Contains(diagnostic.String(), "got 3 want 6") {
-		t.Fatalf("original consumer did not reject incomplete assertions: %s", &diagnostic)
+	if !strings.Contains(diagnostic.String(), "before_fix_results") || !strings.Contains(diagnostic.String(), "assertion_id") {
+		t.Fatalf("original consumer did not reject the unusable assertion: %s", &diagnostic)
+	}
+	// Keep the actual rejected responsibility and live source, but publish a
+	// later prerequisite failure through the original diagnostic producer.
+	snap := repairDispatchSnapshot(t, root)
+	a := newNativeS9AttemptCapture(t.Context(), root, snap, plan.ID, plan.Binding.OwnerAgentID, "Builder")
+	a.SetInput(path)
+	if err := a.Publish(t.Context(), errors.New("later source prerequisite unavailable")); err != nil {
+		t.Fatal(err)
+	}
+	handoff := s9HandoffForBinding(t.Context(), root, snap, plan.Binding)
+	if handoff.Plan.id != plan.ID || !handoff.PlanAccepted || handoff.ConsumerFailure == nil || handoff.Attempt == nil || handoff.Attempt.FailureKind == "author" {
+		t.Fatalf("lost original accepted Plan/rejected Result coordinates: %+v", handoff)
+	}
+	if handoff.ResultFact.kind == "candidate" || handoff.ResultFact.kind == "result" {
+		t.Fatal("professional rejection manufactured delivery")
+	}
+	if _, err := os.Stat(filepath.Join(root, ".claude/loop-state.json.commit-pending.json")); !os.IsNotExist(err) {
+		t.Fatalf("author correction is not a pending transaction: %v", err)
+	}
+	packets, err := runtime.CurrentRepairResultPacketsContext(t.Context(), root, snap.State, plan.Binding.OwnerAgentID)
+	if err != nil || len(packets) != 1 || packets[0].Binding.Sources.RepairAssignmentID != plan.Binding.RepairAssignmentID {
+		t.Fatalf("missing original Result responsibility: %+v %v", packets, err)
+	}
+	registry, err := workspace.Decode(snap.State)
+	if err != nil || registry == nil {
+		t.Fatalf("missing original execution: %v", err)
+	}
+	execution := registry.Executions[plan.Binding.ManifestAssignmentID]
+	if execution.DeliveryRef != "" {
+		t.Fatal("rejected Result acquired Candidate")
+	}
+
+	action := s9UnreceivedActionContext(t.Context(), root, handoff)
+	if !strings.Contains(action, "original author may correct") || !strings.Contains(action, path) || strings.Contains(action, "stage-answer consume --root") {
+		t.Fatalf("weak prerequisite erased original author direction: %s", action)
 	}
 	if err := os.RemoveAll(worker); err != nil {
 		t.Fatal(err)
@@ -109,12 +152,12 @@ func TestNativeS9OriginalStopCauseReachesMainAfterSourceCleanup(t *testing.T) {
 	if _, handled, err := consumeNativeS9Original(t.Context(), service, path); !handled || err == nil {
 		t.Fatalf("lost source retry: handled=%v err=%v", handled, err)
 	}
-	snap := repairDispatchSnapshot(t, root)
+	snap = repairDispatchSnapshot(t, root)
 	got, ok := nativeS9ReturnDiagnosticRecordContext(t.Context(), root, snap, plan.ID)
 	if !ok || got.ConsumerFailure == nil || !strings.Contains(got.ConsumerFailure.Message, "before_fix_results") {
 		t.Fatalf("weak retry erased original consumer rejection: %+v", got)
 	}
-	brief, _, _ := nativeS9Paths(plan)
+	brief := nativeS9BriefPath(plan)
 	texts := []string{
 		nativeExecutionMainOutput(t, root, filepath.Join(root, brief), map[string]any{"status": "completed"}),
 		currentQuestionnaireLifecycleContext(root, policy.Input{Event: "PreToolUse", AgentID: "Main", CWD: root}),
@@ -125,7 +168,7 @@ func TestNativeS9OriginalStopCauseReachesMainAfterSourceCleanup(t *testing.T) {
 	}
 	texts = append(texts, integrate.String())
 	for _, text := range texts {
-		for _, want := range []string{"before_fix_results", "got 3 want 6", plan.Binding.OwnerAgentID, "PlanReport receipt is accepted", "observed then", "unavailable"} {
+		for _, want := range []string{"before_fix_results", "assertion_id", plan.Binding.OwnerAgentID, "PlanReport receipt is accepted", "observed then", "unavailable"} {
 			if !strings.Contains(text, want) {
 				t.Errorf("Main outlet missing %q: %s", want, text)
 			}
@@ -136,42 +179,41 @@ func TestNativeS9OriginalStopCauseReachesMainAfterSourceCleanup(t *testing.T) {
 	}
 }
 
-func TestNativeS9RetainedProfessionalCauseDoesNotBecomeTechnicalReplay(t *testing.T) {
-	root := t.TempDir()
-	worker := t.TempDir()
-	if err := os.WriteFile(filepath.Join(worker, ".git"), []byte("gitdir: original"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	relative := filepath.Join(".claude", "submissions", "native-s9", "original-plan", "result.json")
-	input := filepath.Join(worker, relative)
-	if err := os.MkdirAll(filepath.Dir(input), 0700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(input, []byte("original professional input"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	handoff := s9HandoffProjection{Native: true, Plan: s9ListenerQuestionnaire{id: "original-plan"}, Diagnostic: "preserved count mismatch", Attempt: &nativeS9Attempt{InputRef: input, FailureKind: "unknown"}, ConsumerFailure: &nativeS9ConsumerFailure{Attempt: &nativeS9Attempt{InputRef: input, FailureKind: "author"}}}
-	got := s9UnreceivedActionContext(t.Context(), root, handoff)
-	if !strings.Contains(got, "original author may correct") || strings.Contains(got, s9OriginalConsumeCommand(root, input)) {
-		t.Fatalf("prerequisite attempt erased author direction: %s", got)
-	}
-}
-
 func TestNativeS9AvailableFlatInputDoesNotHideMissingGitSource(t *testing.T) {
-	root := t.TempDir()
-	worker := t.TempDir()
-	relative := filepath.Join(".claude", "submissions", "native-s9", "original-plan", "result.json")
-	input := filepath.Join(worker, relative)
-	if err := os.MkdirAll(filepath.Dir(input), 0700); err != nil {
+	root, worker, plan, _, _ := nativeS9WorkerFixture(t)
+	input := filepath.Join(worker, nativeS9TestResultPath(t, root, plan))
+	original, err := os.ReadFile(input)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(input, []byte("original input still exists"), 0600); err != nil {
+	snap := repairDispatchSnapshot(t, root)
+	a := newNativeS9AttemptCapture(t.Context(), root, snap, plan.ID, plan.Binding.OwnerAgentID, "Builder")
+	a.SetInput(input)
+	if err := a.Publish(t.Context(), errors.New("original source gap")); err != nil {
 		t.Fatal(err)
 	}
-	handoff := s9HandoffProjection{Native: true, Plan: s9ListenerQuestionnaire{id: "original-plan"}, Diagnostic: "original source gap", Attempt: &nativeS9Attempt{InputRef: input}}
+	handoff := s9HandoffForBinding(t.Context(), root, snap, plan.Binding)
+	if handoff.Plan.id != plan.ID || handoff.Attempt == nil || handoff.Attempt.InputRef != input {
+		t.Fatalf("missing original producer coordinates: %+v", handoff)
+	}
+	gitPath := filepath.Join(worker, ".git")
+	backup := filepath.Join(t.TempDir(), "original-git")
+	if err := os.Rename(gitPath, backup); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Rename(backup, gitPath); err != nil {
+			t.Error(err)
+		}
+	})
+	before := repairDispatchRuntimeBytes(t, root)
 	got := s9UnreceivedActionContext(t.Context(), root, handoff)
-	if !strings.Contains(got, "Git source is unavailable") || strings.Contains(got, s9OriginalConsumeCommand(root, input)) {
+	if !strings.Contains(got, "Git source is unavailable at "+worker) || strings.Contains(got, s9OriginalConsumeCommand(root, input)) {
 		t.Fatalf("offered recovery after required source disappeared: %s", got)
+	}
+	repairDispatchAssertUnchanged(t, root, before)
+	if raw, err := os.ReadFile(input); err != nil || !bytes.Equal(raw, original) {
+		t.Fatalf("original readable input changed: %q %v", raw, err)
 	}
 }
 

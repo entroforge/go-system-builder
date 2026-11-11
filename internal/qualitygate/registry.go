@@ -20,21 +20,21 @@ type GateSpec struct {
 }
 
 // EvidenceRequirement describes one qualified semantic record needed by a
-// gate. The evaluator validates the runtime/generation/round/hash envelope.
+// gate. The evaluator follows the current runtime, generation and Plan identity.
 type EvidenceRequirement struct {
-	Kind               string
-	Responsibilities   []string
-	Conclusions        []string
-	MinCount           int
-	CurrentReviewRound bool
-	RequestedEvent     string
+	Kind              string
+	Responsibilities  []string
+	Conclusions       []string
+	MinCount          int
+	CurrentReviewPlan bool
+	RequestedEvent    string
 	// ProducedByTransition marks evidence that is materialized by the
 	// candidate transition itself (for example pause_record). It is a
 	// postcondition, not a pre-transition gate input; treating it as a normal
 	// prerequisite creates an evaluator/transition deadlock.
 	ProducedByTransition bool
 	// RoutingVerdict marks gates that wait for one rare routing verdict among
-	// many ordinary results (S7 pause verdicts). A current-round envelope
+	// many ordinary results (S7 pause verdicts). A current-plan envelope
 	// whose conclusion is a different verdict is a normal state, not a
 	// naming error — mismatch never escalates to a conflict.
 	RoutingVerdict bool
@@ -62,9 +62,14 @@ func NewRegistry(catalog *transition.Catalog) (*Registry, error) {
 		if existing, ok := registry.gates[gateID]; ok {
 			return fmt.Errorf("quality gate %s is declared by both %s and %s", gateID, existing.TransitionID, transitionID)
 		}
-		requirements := cloneRequirements(semanticRequirements[gateID])
-		if len(requirements) == 0 {
-			return fmt.Errorf("quality gate %s has no semantic definition", gateID)
+		declared, defined := semanticRequirements[gateID]
+		requirements := cloneRequirements(declared)
+		// Empty evidence requirements are intentional for state-based gates.
+		// An unrelated unimplemented gate must not prevent evaluation of the
+		// current cursor; Evaluate reports it if it becomes a candidate.
+		version := ""
+		if defined && (len(requirements) > 0 || isReviewRoundGate(gateID)) {
+			version = "1.0.0"
 		}
 		catalog := evidence.DefaultCatalog()
 		for _, requirement := range requirements {
@@ -83,7 +88,7 @@ func NewRegistry(catalog *transition.Catalog) (*Registry, error) {
 			TransitionEvent:      spec.Event,
 			CursorState:          cursorState,
 			CursorPhase:          cursorPhase,
-			SemanticVersion:      "1.0.0",
+			SemanticVersion:      version,
 			EvidenceRequirements: cloneRequirements(requirements),
 		}
 		return nil
@@ -112,8 +117,15 @@ func ValidateEvidenceCatalog(root string) error {
 	if err != nil {
 		return fmt.Errorf("quality gate evidence catalog: load transitions: %w", err)
 	}
-	if _, err := NewRegistry(catalog); err != nil {
+	registry, err := NewRegistry(catalog)
+	if err != nil {
 		return fmt.Errorf("quality gate evidence catalog: %w", err)
+	}
+	for _, id := range registry.IDs() {
+		spec, _ := registry.Lookup(id)
+		if spec.SemanticVersion == "" {
+			return fmt.Errorf("quality gate evidence catalog: quality gate %s has no semantic definition", id)
+		}
 	}
 	return nil
 }
@@ -175,8 +187,8 @@ var semanticRequirements = map[string][]EvidenceRequirement{
 		requirement("planning_task_record", []string{"Task Planner", "Orchestrator"}, []string{"pass"}),
 	},
 	"GATE-DOCUMENT-PASS": {
-		currentRoundRequirement("document_review_record", []string{"DV-SPEC-CONSISTENCY"}, []string{"pass"}),
-		currentRoundRequirement("document_review_record", []string{"DV-TASK-EXECUTABILITY"}, []string{"pass"}),
+		currentPlanRequirement("document_review_record", []string{"DV-SPEC-CONSISTENCY"}, []string{"pass"}),
+		currentPlanRequirement("document_review_record", []string{"DV-TASK-EXECUTABILITY"}, []string{"pass"}),
 	},
 	"GATE-DOCUMENT-FIX-REQUIRED": {
 		requestedRequirement("document_review_record", []string{"DV-SPEC-CONSISTENCY", "DV-TASK-EXECUTABILITY"}, []string{"fix_required"}, "document_fix_required"),
@@ -192,27 +204,22 @@ var semanticRequirements = map[string][]EvidenceRequirement{
 	"GATE-EXECUTION-SPEC-CHANGE-REQUIRED": {
 		requestedRequirement("change_impact_record", []string{"Builder", "BUILD-WORK-PACKAGE"}, []string{"spec_change_required"}, "execution_spec_change_required"),
 	},
-	"GATE-VERIFY-BLOCKING-FINDING": {
-		// L3-S7 P0: TR-008 binds the sealed ObservationBatch (the exact
-		// Finding set), not a hand-carried finding envelope. The evaluator's
-		// applyObservationBatchGate recomputes the set against the runtime.
-		currentRoundRequirement("observation_batch_record", []string{"Orchestrator"}, []string{"sealed"}),
-	},
-	"GATE-VERIFY-CLEAN-ROUND-PASSED": {
-		currentRoundRequirement("clean_round_record", []string{"Clean Round Evaluator", "Orchestrator"}, []string{"pass"}),
-	},
+	// These exits consume accepted Findings and required responsibility
+	// progress directly; neither needs an additional evidence envelope.
+	"GATE-VERIFY-BLOCKING-FINDING":   {},
+	"GATE-VERIFY-CLEAN-ROUND-PASSED": {},
 	"GATE-VERIFY-REQ-CHANGE-REQUIRED": {
 		// L3-S7 P0: the verdict transaction already created the single
 		// authoritative pause checkpoint; the gate consumes the ReviewResult
 		// verdict alone (no dual pause carrier). RoutingVerdict: ordinary
 		// pass/finding results are a normal state, not a naming conflict.
-		currentRoundRoutingRequirement("review_result_record", []string{"Delivery Verifier", "QA", "E2E Browser"}, []string{"req_change_required"}),
+		currentPlanRoutingRequirement("review_result_record", []string{"Delivery Verifier", "QA", "E2E Browser"}, []string{"req_change_required"}),
 	},
 	"GATE-VERIFY-RELEASE-BLOCKED": {
-		currentRoundRoutingRequirement("review_result_record", []string{"Delivery Verifier", "QA", "E2E Browser"}, []string{"release_blocked"}),
+		currentPlanRoutingRequirement("review_result_record", []string{"Delivery Verifier", "QA", "E2E Browser"}, []string{"release_blocked"}),
 	},
 	"GATE-TARGETED-REVERIFICATION-COMPLETE": {
-		currentRoundRequirement("targeted_reverification_record", []string{"Original Finder"}, []string{"pass"}),
+		currentPlanRequirement("targeted_reverification_record", []string{"Original Finder"}, []string{"pass"}),
 		requirement("change_impact_record", []string{"Builder", "BUILD-WORK-PACKAGE"}, []string{"recorded"}),
 	},
 	"GATE-REPAIR-SPEC-CHANGE-REQUIRED": {
@@ -225,7 +232,6 @@ var semanticRequirements = map[string][]EvidenceRequirement{
 	},
 	"GATE-ACCEPTANCE-COMPLETE": {
 		requirement("acceptance_record", []string{"Acceptance", "Orchestrator"}, []string{"pass"}),
-		currentRoundRequirement("clean_round_record", []string{"Clean Round Evaluator", "Orchestrator"}, []string{"pass"}),
 	},
 	"GATE-ACCEPTANCE-REVIEW-REQUIRED": {
 		requestedRequirement("acceptance_record", []string{"Acceptance", "Orchestrator"}, []string{"review_required"}, "acceptance_review_required"),
@@ -238,7 +244,6 @@ var semanticRequirements = map[string][]EvidenceRequirement{
 	"GATE-RELEASE-AUDIT-APPROVED": {
 		requirement("release_audit_record", []string{"Release Auditor"}, []string{"approved", "approved_with_risk"}),
 		requirement("acceptance_record", []string{"Acceptance", "Orchestrator"}, []string{"pass"}),
-		currentRoundRequirement("clean_round_record", []string{"Clean Round Evaluator", "Orchestrator"}, []string{"pass"}),
 	},
 	"GATE-RELEASE-AUDIT-BLOCKED": {
 		requestedRequirement("release_audit_record", []string{"Release Auditor"}, []string{"blocked"}, "release_audit_blocked"),
@@ -255,30 +260,15 @@ var semanticRequirements = map[string][]EvidenceRequirement{
 		requestedRequirement("bug_batch_record", []string{"Orchestrator"}, []string{"req_change_required"}, "finding_req_change_required"),
 		requirement("pause_record", []string{"Orchestrator"}, []string{"recorded"}),
 	},
-	"GATE-BUG-DRAFTS-READY": {
-		// L3-S7: S8 starts from the sealed ObservationBatch (the exact
-		// Finding set), not a hand-carried finding envelope.
-		currentRoundRequirement("observation_batch_record", []string{"Orchestrator"}, []string{"sealed"}),
-		requirement("root_cause_record", []string{"Investigator", "Orchestrator"}, []string{"complete"}),
-	},
-	"GATE-CANONICAL-BUGS-ACCEPTED": {
-		requirement("bug_batch_record", []string{"Orchestrator"}, []string{"accepted"}),
-	},
-	"GATE-BUG-REPORTS-REJECTED": {
-		requirement("bug_batch_record", []string{"Orchestrator"}, []string{"rejected"}),
-	},
-	"GATE-REPAIR-BUILDERS-ACTIVATED": {
-		requirement("activation_record", []string{"Orchestrator"}, []string{"approved"}),
-	},
 	"GATE-REPAIR-BATCH-REPORTED": {
 		requirement("repair_record", []string{"Builder", "BUILD-WORK-PACKAGE"}, []string{"reported"}),
 		requirement("change_impact_record", []string{"Builder", "BUILD-WORK-PACKAGE"}, []string{"recorded"}),
 	},
 	"GATE-TARGETED-REVERIFICATION-PASS": {
-		currentRoundRequirement("targeted_reverification_record", []string{"Original Finder"}, []string{"pass"}),
+		currentPlanRequirement("targeted_reverification_record", []string{"Original Finder"}, []string{"pass"}),
 	},
 	"GATE-TARGETED-REVERIFICATION-FAIL": {
-		currentRoundRequirement("targeted_reverification_record", []string{"Original Finder"}, []string{"fail"}),
+		currentPlanRequirement("targeted_reverification_record", []string{"Original Finder"}, []string{"fail"}),
 	},
 }
 
@@ -291,9 +281,9 @@ func requirement(kind string, responsibilities, conclusions []string) EvidenceRe
 	}
 }
 
-func currentRoundRequirement(kind string, responsibilities, conclusions []string) EvidenceRequirement {
+func currentPlanRequirement(kind string, responsibilities, conclusions []string) EvidenceRequirement {
 	result := requirement(kind, responsibilities, conclusions)
-	result.CurrentReviewRound = true
+	result.CurrentReviewPlan = true
 	return result
 }
 
@@ -303,18 +293,18 @@ func requestedRequirement(kind string, responsibilities, conclusions []string, e
 	return result
 }
 
-// currentRoundRoutingRequirement builds a routing-verdict requirement: the
+// currentPlanRoutingRequirement builds a routing-verdict requirement: the
 // gate fires only when the rare verdict appears; ordinary results of the
 // same kind are silently skipped.
-func currentRoundRoutingRequirement(kind string, responsibilities, conclusions []string) EvidenceRequirement {
-	result := currentRoundRequirement(kind, responsibilities, conclusions)
+func currentPlanRoutingRequirement(kind string, responsibilities, conclusions []string) EvidenceRequirement {
+	result := currentPlanRequirement(kind, responsibilities, conclusions)
 	result.RoutingVerdict = true
 	return result
 }
 
-func currentRoundRequestedRequirement(kind string, responsibilities, conclusions []string, event string) EvidenceRequirement {
+func currentPlanRequestedRequirement(kind string, responsibilities, conclusions []string, event string) EvidenceRequirement {
 	result := requestedRequirement(kind, responsibilities, conclusions, event)
-	result.CurrentReviewRound = true
+	result.CurrentReviewPlan = true
 	return result
 }
 

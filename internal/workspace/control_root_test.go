@@ -12,7 +12,7 @@ import (
 func workerFixture(t *testing.T) (*ExecutionRegistry, Execution, map[string]any, context.Context) {
 	t.Helper()
 	b, ctx := repository(t)
-	state := map[string]any{"bound_req": map[string]any{"workspace": Binding{b.MainRoot, b.Branch, "main", b.BoundHead}.Map()}, "runtime_id": "loop-test", "revision": 0, "baseline": map[string]any{"generation": 1}}
+	state := map[string]any{"bound_req": map[string]any{"workspace": Binding{ProjectRoot: b.MainRoot, DevBranch: b.Branch, ReleaseUpstream: "main"}.Map()}, "runtime_id": "loop-test", "revision": 0, "baseline": map[string]any{"generation": 1}}
 	e, err := b.Plan(ctx, state, "assignment", "builder", []string{"input.md"}, nil, nil)
 	if err != nil {
 		t.Fatal(err)

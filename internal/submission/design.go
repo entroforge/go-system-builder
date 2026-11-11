@@ -1,11 +1,9 @@
 package submission
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -23,59 +21,56 @@ func (s *Service) IssueDesign(ctx context.Context) (workpacket.DesignPacket, err
 	if err != nil {
 		return workpacket.DesignPacket{}, err
 	}
-	p, err := runtime.CurrentDesignPacket(snap.State)
+	binding, err := runtime.CurrentDesignBinding(snap.State)
+	if err != nil {
+		return workpacket.DesignPacket{}, err
+	}
+	original, found, err := runtime.CurrentIssuedDesignPacket(snap.State)
+	if err != nil {
+		return original, err
+	}
+	if found {
+		// A registered answer may contain professional work; never recreate it.
+		// The saved packet can restore only a missing display view, not its history.
+		if _, accepted, err := runtime.FindSubmission(snap.State, original.ID); err != nil {
+			return original, err
+		} else if accepted {
+			return original, nil
+		}
+		view, err := json.MarshalIndent(original, "", "  ")
+		if err != nil {
+			return original, err
+		}
+		created, err := workpacket.PublishNewBounded(s.Root, original.ViewPath, append(view, '\n'), int64(len(view)+1))
+		if err != nil {
+			return original, err
+		}
+		if !created {
+			if err := workpacket.CheckPath(s.Root, original.ViewPath); err != nil {
+				return original, fmt.Errorf("original design view is unavailable: %w", err)
+			}
+		}
+		return original, nil
+	}
+	p, err := workpacket.BuildDesign(binding)
 	if err != nil {
 		return p, err
-	}
-	// Recovery uses the original issued template, even after a binary update.
-	entities, _ := snap.State["entities"].(map[string]any)
-	rows, _ := entities["work_packets"].([]any)
-	found := false
-	for _, raw := range rows {
-		row, _ := raw.(map[string]any)
-		if row["template_id"] != "s2-design-v1" {
-			continue
-		}
-		original, exists, readErr := runtime.FindDesignPacket(snap.State, text(row["packet_id"]))
-		if readErr != nil {
-			return p, readErr
-		}
-		if !exists || runtime.ValidateDesignPacket(s.Root, snap.State, original, nil) != nil {
-			continue
-		}
-		if found {
-			return p, fmt.Errorf("multiple design questionnaires belong to the current entry")
-		}
-		p, found = original, true
 	}
 	if err := ctx.Err(); err != nil {
 		return p, err
 	}
-	if _, err := runtime.RecordDesignPacket(s.Root, s.StatePath, s.JournalPath, p, s.Files, s.Validator); err != nil {
-		return p, err
-	}
-	view, _ := json.MarshalIndent(p, "", "  ")
-	view = append(view, '\n')
-	actual, err := workpacket.Publish(s.Root, p.ViewPath, view)
+	issued, err := runtime.RecordDesignPacket(ctx, s.Root, s.StatePath, s.JournalPath, p, s.Files, s.Validator)
 	if err != nil {
 		return p, err
 	}
-	if !bytes.Equal(actual, view) {
-		return p, fmt.Errorf("published design view differs from original issuance")
-	}
-	if _, accepted, err := runtime.FindSubmission(snap.State, p.ID); err != nil {
-		return p, err
-	} else if accepted {
-		if _, err := workpacket.ReadFile(s.Root, p.AnswerPath, 256<<10); err != nil {
-			return p, fmt.Errorf("accepted design answer is unavailable at %s: %w; restore its original authored bytes, not a blank draft", filepath.Join(s.Root, p.AnswerPath), err)
-		}
-		return p, nil
-	}
-	draft, _ := json.MarshalIndent(p.Draft, "", "  ")
-	if _, err := workpacket.Publish(s.Root, p.AnswerPath, append(draft, '\n')); err != nil {
+	actual, found, err := runtime.FindDesignPacket(issued.State, p.ID)
+	if err != nil {
 		return p, err
 	}
-	return p, nil
+	if !found {
+		return p, fmt.Errorf("S2 original issuance is not recorded")
+	}
+	return actual, nil
 }
 
 func (s *Service) DesignForPath(path string) (workpacket.DesignPacket, bool, error) {
@@ -116,8 +111,15 @@ func (s *Service) SaveDesign(ctx context.Context, path string) (Receipt, error) 
 	if err != nil || !issued {
 		return Receipt{}, fmt.Errorf("design path does not locate its registered responsibility: %v", err)
 	}
+	prior, accepted, err := runtime.FindSubmission(snap.State, p.ID)
+	if err != nil {
+		return Receipt{}, err
+	}
 	data, err := workpacket.ReadFile(s.Root, p.AnswerPath, 256<<10)
 	if err != nil {
+		if accepted {
+			return s.continueDesignOutlet(ctx, snap, p, prior)
+		}
 		return rejected(snap, p.ID, err), err
 	}
 	answer, issues := workpacket.ValidateDesignAnswer(p, data)
@@ -127,16 +129,21 @@ func (s *Service) SaveDesign(ctx context.Context, path string) (Receipt, error) 
 		r.FieldErrors = issues
 		return r, err
 	}
-	prior, accepted, err := runtime.FindSubmission(snap.State, p.ID)
-	if err != nil {
-		return Receipt{}, err
-	}
-	digest, err := workpacket.DesignAnswerDigest(answer)
-	if err != nil {
-		return Receipt{}, err
-	}
-	if accepted && prior.ContentHash != digest {
-		return rejected(snap, p.ID, runtime.ErrSubmissionConflict), runtime.ErrSubmissionConflict
+	if accepted {
+		recorded, err := readPlanningEvidence(s.Root, snap.State, prior.EvidenceID)
+		if err != nil {
+			return Receipt{}, err
+		}
+		var previous struct {
+			Conclusion string               `json:"conclusion"`
+			Subjects   []workpacket.Subject `json:"subject_refs"`
+		}
+		if err := json.Unmarshal(recorded, &previous); err != nil {
+			return Receipt{}, err
+		}
+		if answer.Conclusion == nil || answer.ArchitecturePath == nil || previous.Conclusion != *answer.Conclusion || len(previous.Subjects) < 2 || previous.Subjects[1].Path != *answer.ArchitecturePath {
+			return rejected(snap, p.ID, runtime.ErrSubmissionConflict), runtime.ErrSubmissionConflict
+		}
 	}
 	next := snap
 	if !accepted {
@@ -162,8 +169,8 @@ func (s *Service) SaveDesign(ctx context.Context, path string) (Receipt, error) 
 			r.NextAction = "Continue the current design answer at " + filepath.Join(s.Root, p.AnswerPath) + ": " + strings.Join(missing, "; ") + ". No design decision was recorded."
 			return r, nil
 		}
-		id := "ev-submission-" + workpacket.Digest([]byte("submission:"+p.ID))
-		envelopePath := ".claude/evidence/submissions/" + p.ID + "/" + digest + ".json"
+		id := "ev-submission-" + p.ID
+		envelopePath := ".claude/evidence/submissions/" + p.ID + "/answer.json"
 		envelope, err := workpacket.DesignEvidence(p, id, arch, answer, time.Now().UTC())
 		if err != nil {
 			return Receipt{}, err
@@ -172,13 +179,10 @@ func (s *Service) SaveDesign(ctx context.Context, path string) (Receipt, error) 
 		if err != nil {
 			return Receipt{}, err
 		}
-		if _, err := workpacket.Publish(s.Root, envelopePath, append(encoded, '\n')); err != nil {
-			return Receipt{}, err
-		}
 		if err := ctx.Err(); err != nil {
 			return rejected(snap, p.ID, err), err
 		}
-		next, err = runtime.RecordEvidence(s.Root, s.StatePath, s.JournalPath, runtime.EvidenceRequest{Context: ctx, ExpectedRevision: -1, ID: id, Kind: "planning_design", Path: envelopePath, ProducedBy: []string{"Main"}, ResponsibilityID: "Orchestrator", Validator: s.Validator, Submission: &runtime.SubmissionRequest{PacketID: p.ID, Owner: "Main", AnswerJSON: data}})
+		next, err = runtime.RecordEvidence(s.Root, s.StatePath, s.JournalPath, runtime.EvidenceRequest{Context: ctx, ExpectedRevision: -1, ID: id, Kind: "planning_design", Path: envelopePath, ProducedBy: []string{"Main"}, ResponsibilityID: "Orchestrator", Validator: s.Validator, Submission: &runtime.SubmissionRequest{PacketID: p.ID, Owner: "Main", AnswerJSON: data, EvidenceJSON: append(encoded, '\n')}})
 		if err != nil {
 			return rejected(snap, p.ID, err), err
 		}
@@ -190,11 +194,30 @@ func (s *Service) SaveDesign(ctx context.Context, path string) (Receipt, error) 
 	return s.continueDesignOutlet(ctx, next, p, prior)
 }
 
+// ContinueDesign resumes only the original accepted S2 followup. It does not
+// read or recreate the author's private answer or manufacture a new reception.
+func (s *Service) ContinueDesign(ctx context.Context, packetID string) (Receipt, error) {
+	s = s.WithContext(ctx)
+	snap, err := s.snapshot()
+	if err != nil {
+		return Receipt{}, err
+	}
+	p, found, err := runtime.FindDesignPacket(snap.State, packetID)
+	if err != nil || !found {
+		return Receipt{}, fmt.Errorf("original design responsibility is unavailable: %v", err)
+	}
+	record, accepted, err := runtime.FindSubmission(snap.State, p.ID)
+	if err != nil || !accepted {
+		return Receipt{}, fmt.Errorf("original design has no recorded reception: %v", err)
+	}
+	return s.continueDesignOutlet(ctx, snap, p, record)
+}
+
 // S2 reception and explicit recovery use the same disk design authority.
-// Only the downstream S3 preparation introduces its committed Git source.
+// The downstream S3 preparation uses its selected fileview source.
 func (s *Service) continueDesignOutlet(ctx context.Context, snap runtime.Snapshot, p workpacket.DesignPacket, prior runtime.SubmissionRecord) (Receipt, error) {
 	next := snap
-	if (prior.ControlStatus != "pending" && prior.ControlStatus != "no_transition") || runtime.ValidateDesignPacket(s.Root, next.State, p, nil) != nil {
+	if prior.ControlStatus != "pending" || runtime.ValidateDesignPacket(s.Root, next.State, p, nil) != nil {
 		return s.designReceipt(next, p)
 	}
 	result, controlErr := controller.RunControlCycle(ctx, controller.ControlRequest{Root: s.Root, CWD: s.Root, StatePath: s.StatePath, JournalPath: s.JournalPath, Event: "PostToolUse", ToolName: "Write", SubmissionFollowupID: prior.FollowupID})
@@ -219,7 +242,7 @@ func (s *Service) continueDesignOutlet(ctx context.Context, snap runtime.Snapsho
 		r.NextAction = "Design was recorded; the original stage outlet remains pending: " + detail + ". Restore the named material or use " + PlanningRecoveryCommand(s.Root, "recover") + " for this interrupted outlet; do not repeat the design report."
 	}
 	if len(result.QualityGate.Missing) > 0 || len(result.QualityGate.Conflicts) > 0 {
-		r.NextAction = "Design report was recorded. Complete the actual current design/material gaps before progressing: " + strings.Join(append(result.QualityGate.Missing, result.QualityGate.Conflicts...), "; ") + ". Keep the same answer and its recorded observations; save it to continue the original outlet when ready."
+		r.NextAction = "Design report was recorded. Complete the actual current design/material gaps before progressing: " + strings.Join(append(result.QualityGate.Missing, result.QualityGate.Conflicts...), "; ") + ". Keep the recorded observations; the original system followup continues when the actual gaps are resolved."
 	}
 	if r.WorkComplete {
 		RecordPlanningDiagnostic(s.Root, snap.State, "outlet", "")
@@ -244,7 +267,7 @@ func (s *Service) designReceipt(snap runtime.Snapshot, p workpacket.DesignPacket
 	r.Accepted = true
 	r.DomainRefs = []string{record.EvidenceID}
 	r.ResponsibilityStatus = "accepted"
-	r.WorkComplete = record.ControlStatus != "pending" && record.ControlStatus != "no_transition"
+	r.WorkComplete = record.ControlStatus != "pending"
 	r.NextAction = "Design report was recorded; follow the current stage's actual professional work. Acceptance is not independent certification of every design task."
 	for _, ev := range evidenceRows(snap.State) {
 		if ev["id"] == record.EvidenceID && ev["status"] == "invalid" {
@@ -254,45 +277,16 @@ func (s *Service) designReceipt(snap runtime.Snapshot, p workpacket.DesignPacket
 			return r, nil
 		}
 	}
-	if (record.ControlStatus == "pending" || record.ControlStatus == "no_transition") && runtime.ValidateDesignPacket(s.Root, snap.State, p, nil) != nil {
+	if record.ControlStatus == "pending" && runtime.ValidateDesignPacket(s.Root, snap.State, p, nil) != nil {
 		r.ResponsibilityStatus = "replaced"
 		r.NextAction = "This design reception remains recorded, but the current stage responsibility has changed. Follow its current questionnaire; do not replay the old stage outlet."
 		return r, nil
 	}
-	if record.ControlStatus == "pending" || record.ControlStatus == "no_transition" {
-		r.NextAction = "Design report was recorded; the original stage outlet is pending. Resolve the named material gaps; save the same answer when ready, or use " + PlanningRecoveryCommand(s.Root, "recover") + " for an interrupted outlet. Do not repeat the professional report."
+	if record.ControlStatus == "pending" {
+		r.NextAction = "Design report was recorded; the original stage outlet is pending. Resolve the named material gap; its original system followup continues without another answer."
 		r.NextAction += PlanningDiagnostic(s.Root, snap.State, "outlet")
 		r.WaitingOn = append(r.WaitingOn, Waiting{Reason: "system_followup", Owner: "Main", Ref: record.FollowupID})
-		if _, err := workpacket.ReadFile(s.Root, p.AnswerPath, 256<<10); err != nil {
-			r.NextAction += " The original accepted answer is unavailable at " + filepath.Join(s.Root, p.AnswerPath) + ": " + err.Error() + ". Restore its original authored bytes before saving it again; explicit recovery continues from recorded evidence. Do not replace it with a blank draft."
-		}
 	}
-	for _, ev := range evidenceRows(snap.State) {
-		if ev["id"] == record.EvidenceID {
-			materialPath := filepath.Join(s.Root, text(ev["path"]))
-			data, readErr := os.ReadFile(materialPath)
-			var material struct {
-				Subjects []workpacket.Subject `json:"subject_refs"`
-			}
-			if readErr == nil {
-				readErr = json.Unmarshal(data, &material)
-			}
-			if readErr != nil {
-				r.NextAction = "The accepted design material is unavailable at " + materialPath + ": " + readErr.Error() + ". Restore the recorded material; do not submit a replacement proof."
-				return r, nil
-			}
-			// Report missing actual reading material without re-certifying its
-			// historical bytes, subject count, version or producer.
-			for _, subject := range material.Subjects {
-				if _, err := workpacket.ReadFile(s.Root, subject.Path, 2<<20); err != nil {
-					r.NextAction = "Accepted design reading material is unavailable at " + filepath.Join(s.Root, subject.Path) + ": " + err.Error() + ". Main must restore that material; the original reception remains recorded."
-					break
-				}
-			}
-			return r, nil
-		}
-	}
-	r.NextAction = "The accepted design record has no material reference; Main must restore that recorded material without repeating the professional answer."
 	return r, nil
 }
 
@@ -423,7 +417,7 @@ func TaskPlanningDeliveryGuidance(root string, packet workpacket.TaskPlanningPac
 			}
 		}
 		if len(committed) > 0 {
-			sourceHint = fmt.Sprintf("\nS4 TASK outputs and the index can change in this entry. Before saving this answer, commit the completed Git-sourced TASK files in your current REQ delivery and its index to bound development branch %s (current named Git paths: %s). REQ/S3 and other upstream inputs stay frozen. The answer and Runtime use their supplied disk paths.", strings.TrimPrefix(view.Ref, "refs/heads/"), strings.Join(committed, ", "))
+			sourceHint = fmt.Sprintf("\nS4 TASK outputs and the index can change in this entry. The selected git_tree source reads bound development branch %s for the current REQ TASK files and index (current named Git paths: %s). Missing selected-source material is reported at its actual path. REQ/S3 and other upstream inputs stay frozen. The answer and Runtime use their supplied disk paths.", strings.TrimPrefix(view.Ref, "refs/heads/"), strings.Join(committed, ", "))
 		}
 	}
 	pathValues := ""
@@ -468,4 +462,16 @@ func taskPlanningDraftDeliveryPaths(packet workpacket.TaskPlanningPacket, data [
 		seen[path] = true
 	}
 	return paths, named
+}
+
+// readPlanningEvidence reads the original accepted professional record for an
+// actual new expression; it never verifies historical digest fields.
+func readPlanningEvidence(root string, state map[string]any, id string) ([]byte, error) {
+	for _, ev := range evidenceRows(state) {
+		if ev["id"] == id {
+			path := text(ev["path"])
+			return workpacket.ReadFile(root, path, 4<<20)
+		}
+	}
+	return nil, fmt.Errorf("original planning evidence %s is unavailable", id)
 }

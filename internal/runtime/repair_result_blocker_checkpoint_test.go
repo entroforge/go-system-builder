@@ -35,7 +35,7 @@ func TestRepairResultBlockerEvidenceIgnoresSiblingResolutionRow(t *testing.T) {
 	}
 }
 
-func TestRepairResultBlockerEvidenceDirectoryCatchesWrongKind(t *testing.T) {
+func TestRepairResultBlockerEvidenceIgnoresOtherKindsInSameDirectory(t *testing.T) {
 	f := newRepairResultRuntimeFixture(t)
 	p := f.packet
 	b := p.Binding.Sources
@@ -43,15 +43,15 @@ func TestRepairResultBlockerEvidenceDirectoryCatchesWrongKind(t *testing.T) {
 	row := blockerEvidenceRowFixture(p, path.Join(artifactDir, strings.Repeat("c", 64)+".json"), "repair_result_resolution")
 	state := map[string]any{"evidence": []any{row}}
 	rows, err := repairResultBlockerEvidenceRows(state, p)
-	if err != nil || len(rows) != 1 {
-		t.Fatalf("wrong-kind row under this packet's blocker-artifact directory must be surfaced for rejection: rows=%d err=%v", len(rows), err)
+	if err != nil || len(rows) != 0 {
+		t.Fatalf("unrelated kind was selected as a blocker: rows=%d err=%v", len(rows), err)
 	}
-	if err := verifyRepairResultBlockerEvidence(rows[0], p, row["id"].(string), row["sha256"].(string)); err == nil {
+	if err := verifyRepairResultBlockerEvidence(row, p, row["id"].(string)); err == nil {
 		t.Fatal("wrong evidence kind under exact blocker artifact directory was accepted")
 	}
 }
 
-func TestRepairResultBlockerEvidenceRequiresExactUniqueScope(t *testing.T) {
+func TestRepairResultBlockerEvidenceSelectsOriginalPacketWithoutExactScopeList(t *testing.T) {
 	f := newRepairResultRuntimeFixture(t)
 	p := f.packet
 	row := blockerEvidenceRowFixture(p, "artifact.json", "repair_result_blocker")
@@ -62,8 +62,9 @@ func TestRepairResultBlockerEvidenceRequiresExactUniqueScope(t *testing.T) {
 	}{
 		{"packet then assignment", []string{p.ID, p.Binding.Sources.RepairAssignmentID}, true},
 		{"assignment then packet", []string{p.Binding.Sources.RepairAssignmentID, p.ID}, true},
-		{"duplicate packet", []string{p.ID, p.ID}, false},
-		{"extra scope", []string{p.ID, p.Binding.Sources.RepairAssignmentID, "another-slot"}, false},
+		{"duplicate packet", []string{p.ID, p.ID}, true},
+		{"extra scope", []string{p.ID, p.Binding.Sources.RepairAssignmentID, "another-slot"}, true},
+		{"different packet", []string{"another-packet"}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			copy := make(map[string]any, len(row))
@@ -71,9 +72,14 @@ func TestRepairResultBlockerEvidenceRequiresExactUniqueScope(t *testing.T) {
 				copy[k] = v
 			}
 			copy["scope_refs"] = tc.refs
-			err := verifyRepairResultBlockerEvidence(copy, p, copy["id"].(string), copy["sha256"].(string))
-			if (err == nil) != tc.valid {
-				t.Fatalf("scope refs %v valid=%v, err=%v", tc.refs, tc.valid, err)
+			rows, err := repairResultBlockerEvidenceRows(map[string]any{"evidence": []any{copy}}, p)
+			if err != nil || (len(rows) == 1) != tc.valid {
+				t.Fatalf("scope refs %v selected=%v, err=%v", tc.refs, tc.valid, err)
+			}
+			if tc.valid {
+				if err := verifyRepairResultBlockerEvidence(rows[0], p, copy["id"].(string)); err != nil {
+					t.Fatal(err)
+				}
 			}
 		})
 	}
@@ -143,7 +149,6 @@ func blockerEvidenceRowFixture(p workpacket.RepairResultPacket, ref, kind string
 		"id": ref, "path": ref, "kind": kind, "sha256": strings.Repeat("d", 64),
 		"responsibility_id":   "BUILD-WORK-PACKAGE",
 		"baseline_generation": p.Binding.Sources.BaselineGeneration,
-		"review_round":        p.Binding.Sources.ReviewRound,
 		"produced_by":         []string{p.Binding.Sources.OwnerAgentID},
 		"scope_refs":          []string{p.ID, p.Binding.Sources.RepairAssignmentID},
 	}

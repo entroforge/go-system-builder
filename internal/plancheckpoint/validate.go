@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/entroforge/go-system-builder/internal/assignmentinputs"
 	"github.com/entroforge/go-system-builder/internal/assignmentrecord"
 	"github.com/entroforge/go-system-builder/internal/assignmentresult"
 )
@@ -97,11 +96,17 @@ func Validate(root string, snapshot runtimemeta.Snapshot, agentID, ref string) e
 // validateManifestPlanReportCheckpoint validates the generic L4 checkpoint
 // for Builder/Investigator workgroups that are not S7 ReviewPlan rows. Their
 // Assignment identity lives in the fingerprinted team manifest; the manifest
-// assignment is immutable for the lifetime of that dispatch, so its generic
-// checkpoint revision is deliberately 1. S9 keeps a separate domain
-// RepairAssignment (repair-assignment-*) and maps it to the platform-safe
-// manifest id (assignment-s9-*); this function validates the latter while the
-// S9 domain PlanReport validates the former.
+// assignment is registered at Assignment revision 1 and is immutable for the
+// lifetime of that dispatch, so the checkpoint must declare that coordinate.
+// S9 keeps a separate domain RepairAssignment (repair-assignment-*) and maps
+// it to the platform-safe manifest id (assignment-s9-*); this function
+// validates the latter while the S9 domain PlanReport validates the former.
+//
+// The declared assignment_revision is the Assignment's own stage coordinate,
+// the same axis as the ReviewPlan pointer revision checked above and the
+// canonical Assignment revision checked in validateCanonicalPlan. It is not a
+// checkpoint count and not a Runtime write count: declaring it binds the
+// checkpoint to the responsibility the dispatch was made for.
 func validateManifestPlanReportCheckpoint(root string, snapshot runtimemeta.Snapshot, message map[string]any, agentID string) error {
 	assignmentID := strValue(message["assignment_id"])
 	teamID := strValue(message["team_id"])
@@ -210,12 +215,8 @@ func validateManifestPlanReportCheckpoint(root string, snapshot runtimemeta.Snap
 }
 
 func validateCanonicalPlan(root string, record assignmentrecord.Record, message map[string]any) error {
-	sha, err := record.Digest()
-	if err != nil {
-		return err
-	}
-	if message["assignment_record_contract"] != record.Contract || message["assignment_record_sha256"] != sha || message["assignment_id"] != record.AssignmentID || intValue(message["assignment_revision"]) != record.Revision {
-		return fmt.Errorf("S6 PLAN does not bind the current Assignment identity, revision and digest")
+	if message["assignment_record_contract"] != record.Contract || message["assignment_id"] != record.AssignmentID || intValue(message["assignment_revision"]) != record.Revision {
+		return fmt.Errorf("S6 PLAN does not bind the current Assignment identity and revision")
 	}
 	if message["team_id"] != record.TeamID || message["task_id"] != record.Task.ID || message["agent_definition_ref"] != record.AgentDefinition.Ref {
 		return fmt.Errorf("S6 PLAN identity differs from its registered Assignment")
@@ -223,9 +224,7 @@ func validateCanonicalPlan(root string, record assignmentrecord.Record, message 
 	if _, exists := message["steps"]; exists {
 		return fmt.Errorf("S6 PLAN uses the closed thin professional answer schema")
 	}
-	if err := assignmentrecord.VerifySources(record, func(ref string) ([]byte, error) {
-		return assignmentinputs.Read(root, ref)
-	}); err != nil {
+	if err := assignmentrecord.ValidateRecord(record); err != nil {
 		return err
 	}
 	paths := stringsValue(message["planned_paths"])

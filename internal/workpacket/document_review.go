@@ -9,12 +9,11 @@ import (
 	"time"
 )
 
-// Subject preserves the existing S5 gate envelope shape. Document IDs remain
-// in the issued packet; the gate signs the exact path/version/content set.
+// Subject preserves the existing S5 envelope shape. Actual paths and versions
+// remain visible without authenticating or signing the document bytes.
 type Subject struct {
 	Path    string `json:"path"`
 	Version string `json:"version"`
-	SHA256  string `json:"sha256"`
 }
 
 type DocumentReviewEnvelope struct {
@@ -37,7 +36,7 @@ type DocumentReviewEnvelope struct {
 func DocumentReview(p Packet, id string, answer Answer, at time.Time) DocumentReviewEnvelope {
 	subjects := make([]Subject, len(p.Inputs))
 	for i, ref := range p.Inputs {
-		subjects[i] = Subject{Path: ref.Path, Version: ref.Version, SHA256: ref.SHA256}
+		subjects[i] = Subject{Path: ref.Path, Version: ref.Version}
 	}
 	sort.Slice(subjects, func(i, j int) bool { return subjects[i].Path < subjects[j].Path })
 	event := ""
@@ -60,7 +59,6 @@ func ValidateDocumentReview(p Packet, id string, answer Answer, data []byte) err
 		return fmt.Errorf("document review JSON: %w", err)
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
 	var envelope DocumentReviewEnvelope
 	if err := decoder.Decode(&envelope); err != nil {
 		return fmt.Errorf("document review envelope: %w", err)

@@ -91,14 +91,14 @@ func TestNativeS6CompactResultReceivesThroughOriginalConsumerAndReplays(t *testi
 
 // TestNativeS6CompactResultPassesTheOriginalIntegrationGate covers the step
 // the compact authoring path previously never reached. The receiver stores the
-// expanded Answer while the Worker keeps the compact professional file, so the
-// native delivery comparison must canonicalize both sides the same way. A
-// compact Result that is accepted must still integrate.
+// expanded Answer while the Worker keeps the compact professional file. A
+// compact Result that is accepted must still integrate and reach S7, even if
+// its private worktree must be preserved separately.
 func TestNativeS6CompactResultPassesTheOriginalIntegrationGate(t *testing.T) {
-	root, source, r := nativeDeliveryFixture(t)
+	root, source, r := nativeDeliveryFixtureWithMainBaseline(t)
 	nativeCommit(t, source)
 	nativeAnswer(t, source, r)
-	brief, _, result := assignmentrecord.NativePaths(r)
+	brief, plan, result := assignmentrecord.NativePaths(r)
 	path := filepath.Join(source, result)
 	full, err := os.ReadFile(path)
 	if err != nil {
@@ -125,11 +125,35 @@ func TestNativeS6CompactResultPassesTheOriginalIntegrationGate(t *testing.T) {
 		t.Fatalf("Main integration of a compact Result: %d %s %s", code, &integrateOut, &integrateErr)
 	}
 	cp, found, err := integration.DefaultCheckpointStore().Load(assignmentrecord.IntegrationCheckpointPath(root, r.Reference()))
-	if err != nil || !found || cp.State != integration.StateComplete {
-		t.Fatalf("compact Result did not complete the original Gate: %+v %v / %s %s", cp, err, &integrateOut, &integrateErr)
+	if err != nil || !found || cp.State != integration.StateCleanupPending || cp.CanonicalMainFacts == nil || cp.VerifiedAt == "" || len(cp.CheckReceipts) == 0 {
+		t.Fatalf("compact Result did not record verified integration and pending cleanup: %+v %v / %s %s", cp, err, &integrateOut, &integrateErr)
+	}
+	for _, name := range []string{plan, result} {
+		if _, err := os.Stat(filepath.Join(source, name)); err != nil {
+			t.Fatalf("private original %s was not preserved: %v", name, err)
+		}
+	}
+	for _, fact := range []string{source, ".claude/", "cleanup authorization", "cleanup_pending", "completion_ack recorded", "TR-006", "ReviewPlan questionnaire:"} {
+		if !strings.Contains(integrateOut.String(), fact) {
+			t.Fatalf("compact handoff omitted %q: %s %s", fact, &integrateOut, &integrateErr)
+		}
+	}
+	// The current generation owns the original TR-003 common Main baseline, so
+	// the integration exit reads the current batch and reports the original
+	// hand-off instead of a missing baseline or an uninferrable start.
+	for _, gap := range []string{"no original TR-003 common Main baseline", "historical start cannot be inferred"} {
+		if strings.Contains(integrateOut.String(), gap) {
+			t.Fatalf("compact integration reported a missing TR-003 baseline: %s %s", &integrateOut, &integrateErr)
+		}
+	}
+	if lifecycle := stageSnapshot(t, root).State["lifecycle"].(map[string]any)["state"]; lifecycle != "verification" {
+		t.Fatalf("compact delivery did not reach S7: %v", lifecycle)
+	}
+	if product, err := os.ReadFile(filepath.Join(root, "src/pkg/proof.txt")); err != nil || string(product) != "Actual implementation evidence.\n" {
+		t.Fatalf("Main did not receive actual product: %q %v", product, err)
 	}
 	receipt := stageCLI(t, "runtime", "task-receipt", "--root", root, "--assignment-id", r.AssignmentID, "--agent-id", r.OwnerAgentID)
-	if !strings.Contains(receipt, `"integrated":true`) {
+	if !strings.Contains(receipt, `"accepted":true`) || !strings.Contains(receipt, `"work_complete":true`) || !strings.Contains(receipt, `"integrated":true`) {
 		t.Fatalf("compact Result did not reach an integrated receipt: %s", receipt)
 	}
 }

@@ -1,8 +1,6 @@
 package cli
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -23,7 +21,6 @@ import (
 	"github.com/entroforge/go-system-builder/internal/schema"
 	"github.com/entroforge/go-system-builder/internal/semantic"
 	"github.com/entroforge/go-system-builder/internal/team"
-	"github.com/entroforge/go-system-builder/internal/workpacket"
 	"github.com/entroforge/go-system-builder/internal/workstate"
 )
 
@@ -39,7 +36,6 @@ type s6ManifestReference struct {
 	ID      string `json:"id"`
 	Path    string `json:"path"`
 	Version string `json:"version"`
-	SHA256  string `json:"sha256"`
 }
 
 type s6ManifestDisposition struct {
@@ -94,7 +90,6 @@ type s6ManifestDraft struct {
 	RuntimeID                  string                  `json:"runtime_id"`
 	REQID                      string                  `json:"req_id"`
 	BaselineGeneration         int                     `json:"baseline_generation"`
-	ReviewRound                any                     `json:"review_round"`
 	PlatformTeamID             string                  `json:"platform_team_id"`
 	WorkgroupID                string                  `json:"workgroup_id"`
 	WorkgroupKind              string                  `json:"workgroup_kind"`
@@ -111,6 +106,11 @@ type s6ManifestDraft struct {
 	AssignmentRecordContract   string                  `json:"assignment_record_contract"`
 }
 
+type s6SelectedSources struct {
+	Task  []byte
+	Board *dispatch.Board
+}
+
 func runS6PrepareCommand(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("s6 prepare", flag.ContinueOnError)
 	flags.SetOutput(stderr)
@@ -118,39 +118,23 @@ func runS6PrepareCommand(args []string, stdout, stderr io.Writer) int {
 	root := flags.String("root", ".", "authority repository root")
 	taskID := flags.String("task", "", "exact registered TASK ID")
 	role := flags.String("role", "", "Builder role: backend-builder, frontend-builder, or test-builder")
-	agentID := flags.String("agent-id", "", "legacy only: actual platform Agent ID selected by Main")
-	platformTeamID := flags.String("platform-team-id", "", "legacy only: actual platform Team ID selected by Main")
 	reviseAssignment := flags.String("revise-assignment", "", "prepare a fresh manifest draft for the current canonical S6 Assignment revision")
-	revisionIntentKey := flags.String("revision-intent-key", "", "Main-chosen stable key for the original Assignment revision Writer")
 	out := flags.String("out", "", "draft output path relative to the authority root")
 	var doneWhen s6StringList
 	flags.Var(&doneWhen, "done-when", "explicit Main override for Worker-owned closing predicates; repeat as needed")
 	if wantsHelp(args) {
 		flags.SetOutput(stdout)
 		flags.Usage()
-		fmt.Fprintln(stdout, "Default: register the reviewed TASK delivery and print its exact brief for Claude Code native Agent with worktree isolation. No platform IDs or framework launcher. Explicit legacy identity options retain the frozen workspace route.")
-		fmt.Fprintln(stdout, "For explicit frozen legacy workspace preparation only: `loop-harness runtime workspace bind --root <authority-root>` binds its original Main checkout.")
+		fmt.Fprintln(stdout, "Register the reviewed TASK and print its exact brief for Claude Code native Agent with worktree isolation. No platform IDs or framework launcher are required.")
 		return 0
 	}
 	if err := parseWorkspaceFlags(flags, args); err != nil {
 		return 2
 	}
-	nativeDelivery := *agentID == "" && *platformTeamID == ""
-	if nativeDelivery {
-		*agentID = "native-" + *taskID
-		*platformTeamID = "engineering-" + *taskID
-		if *revisionIntentKey != "" {
-			suffix := "-" + workpacket.Digest([]byte(*revisionIntentKey))[:12]
-			*agentID += suffix
-			*platformTeamID += suffix
-		}
-	}
-	if *taskID == "" || *role == "" || *agentID == "" || *platformTeamID == "" {
-		fmt.Fprintln(stderr, "s6 prepare requires --task and --role; legacy identity options must be supplied together")
-		return 2
-	}
-	if (*reviseAssignment == "") != (*revisionIntentKey == "") {
-		fmt.Fprintln(stderr, "s6 prepare revision requires both --revise-assignment and --revision-intent-key")
+	agentValue, teamValue := "native-"+*taskID, "engineering-"+*taskID
+	agentID, platformTeamID := &agentValue, &teamValue
+	if *taskID == "" || *role == "" {
+		fmt.Fprintln(stderr, "s6 prepare requires --task and --role")
 		return 2
 	}
 	if *role != "backend-builder" && *role != "frontend-builder" && *role != "test-builder" {
@@ -159,10 +143,6 @@ func runS6PrepareCommand(args []string, stdout, stderr io.Writer) int {
 	}
 	if err := identity.ValidateAgentID(*agentID); err != nil {
 		fmt.Fprintf(stderr, "s6 prepare: %v\n", err)
-		return 2
-	}
-	if strings.TrimSpace(*platformTeamID) != *platformTeamID || *platformTeamID == "" || strings.ContainsAny(*platformTeamID, " \t\r\n") || strings.Contains(*platformTeamID, "<") || strings.Contains(*platformTeamID, "TODO") || strings.Contains(*platformTeamID, "replace-with") {
-		fmt.Fprintln(stderr, "s6 prepare --platform-team-id must be the actual platform Team ID, not a placeholder")
 		return 2
 	}
 	for _, predicate := range doneWhen {
@@ -198,7 +178,7 @@ func runS6PrepareCommand(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "s6 prepare requires the current bound REQ")
 		return 1
 	}
-	if nativeDelivery {
+	if *reviseAssignment == "" {
 		if existing, found, err := assignmentrecord.ForOwner(snapshot.State, *agentID); err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
@@ -216,22 +196,14 @@ func runS6PrepareCommand(args []string, stdout, stderr io.Writer) int {
 				fmt.Fprintln(stderr, err)
 				return 1
 			}
-			coordinate, err := workpacket.ReadFile(rootAbs, fmt.Sprintf(".claude/assignments/native/%s/r%d/source.json", existing.AssignmentID, existing.Revision), 4096)
-			var binding struct {
-				Base string `json:"base_commit"`
-			}
-			if err != nil || json.Unmarshal(coordinate, &binding) != nil || binding.Base == "" {
-				fmt.Fprintln(stderr, "existing native TASK has no original source commit; Main must recover its original preparation, never recapture HEAD")
-				return 1
-			}
-			if err := prepareNativeS6Brief(rootAbs, snapshot.State, existing, binding.Base, stdout); err != nil {
+			if err := prepareNativeS6Brief(rootAbs, snapshot.State, existing, "", stdout); err != nil {
 				fmt.Fprintln(stderr, err)
 				return 1
 			}
 			return 0
 		}
 	}
-	if nativeDelivery && *reviseAssignment == "" {
+	if *reviseAssignment == "" {
 		if handled, code := resumeNativeS6Preparation(rootAbs, reqID, *taskID, *role, *agentID, *out, stdout, stderr); handled {
 			return code
 		}
@@ -247,7 +219,7 @@ func runS6PrepareCommand(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	if board.Legacy || board.Plan == nil {
-		fmt.Fprintln(stderr, "s6 prepare requires the current registered waves-v1 S4 dispatch plan; legacy workgroups remain on their existing route")
+		fmt.Fprintln(stderr, "s6 prepare requires the current registered S4 dispatch plan")
 		return 1
 	}
 	var selected *semantic.DispatchTask
@@ -269,8 +241,14 @@ func runS6PrepareCommand(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	if *reviseAssignment != "" {
+		taskBytes, err := files.ReadFile(filepath.Join(rootAbs, filepath.FromSlash(selected.Path)))
+		if err != nil {
+			fmt.Fprintf(stderr, "s6 prepare original TASK %s: %v\n", selected.Path, err)
+			return 1
+		}
 		return runS6PrepareRevision(s6PrepareRevisionInput{
-			Root: rootAbs, State: snapshot.State, StateRevision: snapshot.Revision, Files: files, IntentKey: *revisionIntentKey, NativeDelivery: nativeDelivery, BaseCommit: files.Commit,
+			Root: rootAbs, State: snapshot.State, StateRevision: snapshot.Revision, Files: files, BaseCommit: "",
+			Selected:     s6SelectedSources{Task: taskBytes, Board: &board},
 			AssignmentID: *reviseAssignment, TaskID: *taskID, Role: *role,
 			AgentID: *agentID, PlatformTeamID: *platformTeamID, Output: *out,
 			DoneWhen: append([]string(nil), doneWhen...), REQID: reqID,
@@ -283,7 +261,7 @@ func runS6PrepareCommand(args []string, stdout, stderr io.Writer) int {
 		}
 		fmt.Fprintf(stderr, "s6 prepare TASK %s is not ready: %s\n", *taskID, reason)
 		if strings.Contains(reason, "Builder owner identity unresolved") {
-			fmt.Fprintln(stderr, "This is an unresolved existing TASK/Assignment registry fact, not rejection of the new --agent-id. Main must restore the original ownership source; choosing another Agent ID will not repair it.")
+			fmt.Fprintln(stderr, "Main restores the current TASK/Assignment ownership source before dispatch.")
 		}
 		return 1
 	}
@@ -357,11 +335,11 @@ func runS6PrepareCommand(args []string, stdout, stderr io.Writer) int {
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	warnings := []string{"Non-authoritative draft only; the original register-workgroup Writer rechecks current Runtime, TASK, document fingerprints and registration gates."}
+	warnings := []string{"Non-authoritative draft only; the original register-workgroup Writer rechecks current Runtime, TASK, actual TASK and original registration."}
 	draft := s6ManifestDraft{
 		SchemaVersion: "1.0.0", ManifestID: manifestID, Version: "v1.0.0",
 		RuntimeID: runtimeID, REQID: reqID, BaselineGeneration: generation,
-		ReviewRound: nil, PlatformTeamID: *platformTeamID, WorkgroupID: workgroupID,
+		PlatformTeamID: *platformTeamID, WorkgroupID: workgroupID,
 		WorkgroupKind: "builder", Status: "planned", Documents: documents,
 		RiskTags: []any{}, ResponsibilityDispositions: []s6ManifestDisposition{{
 			ResponsibilityID: "BUILD-WORK-PACKAGE", Disposition: "assigned",
@@ -383,10 +361,7 @@ func runS6PrepareCommand(args []string, stdout, stderr io.Writer) int {
 		}}, SeparationEdges: []any{}, PlannedAgentCount: 1, MaxParallelAgents: 1,
 		QuantityRationale:        "One Builder owns the single selected TASK.",
 		Validation:               s6ManifestValidation{Result: "warn", MissingResponsibilities: []string{}, UnresolvedConflicts: []string{}, Warnings: warnings, ValidatedAt: now},
-		AssignmentRecordContract: "s6-v1.2",
-	}
-	if nativeDelivery {
-		draft.AssignmentRecordContract = assignmentrecord.NativeDeliveryContract
+		AssignmentRecordContract: assignmentrecord.NativeDeliveryContract,
 	}
 	manifestBytes, err := json.MarshalIndent(draft, "", "  ")
 	if err != nil {
@@ -401,12 +376,6 @@ func runS6PrepareCommand(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "s6 prepare manifest schema: %v\n", err)
 		return 1
 	}
-	if nativeDelivery {
-		if err := pinNativeS6Source(rootAbs, draft.Assignments[0].AssignmentID, 1, files.Commit); err != nil {
-			fmt.Fprintln(stderr, err)
-			return 1
-		}
-	}
 	manifestRef, err := s6WriteDraft(rootAbs, reqID, *taskID, *out, manifestBytes)
 	if err != nil {
 		fmt.Fprintf(stderr, "s6 prepare write draft: %v\n", err)
@@ -418,40 +387,7 @@ func runS6PrepareCommand(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	if nativeDelivery {
-		return registerNativeS6Delivery(rootAbs, manifestRef, *taskID, selected.Path, files.Commit, stdout, stderr)
-	}
-	fmt.Fprintf(stdout, "S6 manifest draft written (not registered): %s\n", manifestRef)
-	fmt.Fprintf(stdout, "TASK: %s (%s); dependencies already satisfied by the original dispatch: %s\n", *taskID, selected.Path, s6DisplayList(selected.Dependencies))
-	fmt.Fprintf(stdout, "Role: %s; platform Agent: %s; platform Team: %s\n", *role, *agentID, *platformTeamID)
-	fmt.Fprintf(stdout, "Generated assignment: %s; exact write scope: %s\n", assignmentID, s6DisplayList(selected.Writes))
-	if len(checks) > 0 {
-		fmt.Fprintf(stdout, "TASK checks projected to Main required_checks and Main CheckProfiles only: %s. The Builder must run them in its workspace and cite real outputs in the Result; Main reruns them during original integration. No PASS is recorded here.\n", s6DisplayList(checks))
-	} else {
-		fmt.Fprintln(stdout, "No executable TASK check entrance was projected. Non-command assertions were not turned into commands; Main must preserve their professional meaning in the Result evidence.")
-	}
-	if len(projectedDoneWhen) == 0 {
-		fmt.Fprintf(stdout, "Main question: the locked TASK %s has no reliably projectable Worker-owned Closing Contract predicate. Add a concrete `done_when` to this draft before registration; do not substitute a generic completion condition.\n", selected.Path)
-	}
-	for _, line := range taskContext.UnresolvedAssertions {
-		if !s6MachineOwnedAssertion(line) {
-			fmt.Fprintf(stdout, "TASK assertion kept non-executable and unchanged: %s\n", line)
-		}
-	}
-	register := fmt.Sprintf("loop-harness runtime register-workgroup --root %q --manifest %q --task-id %q --task %q", rootAbs, manifestRef, *taskID, selected.Path)
-	if len(projectedDoneWhen) == 0 {
-		fmt.Fprintf(stdout, "After answering the listed Main question, register through the original consumer: %s\n", register)
-	} else {
-		fmt.Fprintf(stdout, "Next: register through the original consumer: %s\n", register)
-	}
-	_, mainWorkspaceBound := snapshot.State["workspace"].(map[string]any)
-	if !mainWorkspaceBound {
-		fmt.Fprintf(stdout, "After registration, bind the Main workspace with the existing command: loop-harness runtime workspace bind --root %q\n", rootAbs)
-		fmt.Fprintf(stdout, "Then prepare the original bound workspace with: loop-harness runtime workspace prepare --root %q --assignment %q --agent %q\n", rootAbs, assignmentID, *agentID)
-	} else {
-		fmt.Fprintf(stdout, "After registration, prepare the original bound workspace with: loop-harness runtime workspace prepare --root %q --assignment %q --agent %q\n", rootAbs, assignmentID, *agentID)
-	}
-	return 0
+	return registerNativeS6Delivery(rootAbs, manifestRef, *taskID, selected.Path, "", stdout, stderr, s6SelectedSources{Task: taskBytes, Board: &board})
 }
 
 // Replaying a native preparation retains its original source commit. Check
@@ -473,22 +409,15 @@ func s6RequireOriginalTaskForReplay(state map[string]any, record assignmentrecor
 			continue
 		}
 		matches++
-		if doc["status"] != "locked" || doc["path"] != record.Task.Ref || doc["version"] != record.Task.Version || doc["sha256"] != record.Task.SHA256 {
+		if doc["status"] != "locked" || doc["path"] != record.Task.Ref || doc["version"] != record.Task.Version {
 			return fail("the current locked TASK identity/version/content differs from the original Record")
 		}
 	}
 	if matches != 1 {
 		return fail("the current locked batch does not uniquely contain this original TASK")
 	}
-	data, err := files.ReadFile(record.Task.Ref)
-	if err != nil {
-		return fmt.Errorf("Main must recover locked TASK %s source at %s before reusing its preparation: %w", record.Task.ID, record.Task.Ref, err)
-	}
-	if workpacket.Digest(data) != record.Task.SHA256 {
-		return fail("the current Main TASK bytes changed")
-	}
-	if err := files.Verify(); err != nil {
-		return fmt.Errorf("Main TASK source view changed during preparation recovery; preserve the original brief: %w", err)
+	if _, err := files.ReadFile(record.Task.Ref); err != nil {
+		return fmt.Errorf("Main must recover TASK %s source at %s: %w", record.Task.ID, record.Task.Ref, err)
 	}
 	return nil
 }
@@ -522,7 +451,7 @@ func s6ManifestDocuments(root string, files fileview.Reader, state map[string]an
 		if status != "locked" && status != "complete" && status != "registered" {
 			continue
 		}
-		ref := s6ManifestReference{ID: s6String(doc["id"]), Path: s6String(doc["path"]), Version: s6String(doc["version"]), SHA256: s6String(doc["sha256"])}
+		ref := s6ManifestReference{ID: s6String(doc["id"]), Path: s6String(doc["path"]), Version: s6String(doc["version"])}
 		if ref.ID == task.ID && ref.Path != task.Path {
 			return nil, fmt.Errorf("current-generation TASK %s Runtime path %s differs from dispatch path %s", task.ID, ref.Path, task.Path)
 		}
@@ -532,19 +461,15 @@ func s6ManifestDocuments(root string, files fileview.Reader, state map[string]an
 		if !neededPaths[ref.Path] && !neededIDs[ref.ID] {
 			continue
 		}
-		if ref.ID == "" || ref.Path == "" || ref.Version == "" || !s6ValidSHA256(ref.SHA256) {
-			return nil, fmt.Errorf("current-generation document %q lacks a complete locked identity/path/version/hash", ref.ID)
+		if ref.ID == "" || ref.Path == "" || ref.Version == "" {
+			return nil, fmt.Errorf("current-generation document %q lacks its identity/path/version", ref.ID)
 		}
 		if seenID[ref.ID] || seenPath[ref.Path] {
 			return nil, fmt.Errorf("current-generation document identity or path is duplicated: %s (%s)", ref.ID, ref.Path)
 		}
-		data, err := files.ReadFile(filepath.Join(root, filepath.FromSlash(ref.Path)))
+		_, err := files.ReadFile(filepath.Join(root, filepath.FromSlash(ref.Path)))
 		if err != nil {
 			return nil, fmt.Errorf("read exact bound source %s: %w", ref.Path, err)
-		}
-		actual := fmt.Sprintf("%x", sha256.Sum256(data))
-		if actual != ref.SHA256 {
-			return nil, fmt.Errorf("current-generation locked source differs from Runtime fingerprint: %s", ref.Path)
 		}
 		seenID[ref.ID], seenPath[ref.Path] = true, true
 		refs = append(refs, ref)
@@ -553,13 +478,13 @@ func s6ManifestDocuments(root string, files fileview.Reader, state map[string]an
 		seenPlan = seenPlan || ref.Path == planPath
 	}
 	if !seenREQ {
-		ref := s6ManifestReference{ID: reqID, Path: reqPath, Version: s6String(bound["version"]), SHA256: s6String(bound["sha256"])}
-		if ref.Path == "" || ref.Version == "" || !s6ValidSHA256(ref.SHA256) {
-			return nil, fmt.Errorf("bound REQ %s lacks an exact path/version/fingerprint", reqID)
+		ref := s6ManifestReference{ID: reqID, Path: reqPath, Version: s6String(bound["version"])}
+		if ref.Path == "" || ref.Version == "" {
+			return nil, fmt.Errorf("bound REQ %s lacks its path/version", reqID)
 		}
-		data, err := files.ReadFile(filepath.Join(root, filepath.FromSlash(ref.Path)))
-		if err != nil || fmt.Sprintf("%x", sha256.Sum256(data)) != ref.SHA256 {
-			return nil, fmt.Errorf("bound REQ source differs from its Runtime fingerprint: %s", ref.Path)
+		_, err := files.ReadFile(filepath.Join(root, filepath.FromSlash(ref.Path)))
+		if err != nil {
+			return nil, fmt.Errorf("bound REQ source is unavailable: %s", ref.Path)
 		}
 		refs = append(refs, ref)
 		seenID[ref.ID], seenPath[ref.Path] = true, true
@@ -610,10 +535,8 @@ func s6TaskCommands(context semantic.TaskContextSummary) []string {
 func s6MainCheckProfiles(taskID string, commands []string) []checkexec.Profile {
 	profiles := make([]checkexec.Profile, 0, len(commands))
 	for index, command := range commands {
-		identity := fmt.Sprintf("s6-main-task-check-v1\x00%s\x00%d\x00%s", taskID, index, command)
-		digest := fmt.Sprintf("%x", sha256.Sum256([]byte(identity)))
 		profiles = append(profiles, checkexec.Profile{
-			ID: "s6-main-task-" + digest[:20], Version: "v1", CheckIndex: index,
+			ID: fmt.Sprintf("s6-main-task-%s-check-%d", taskID, index), Version: "v1", CheckIndex: index,
 			Command: command, Location: "main", TimeoutSeconds: 300,
 			EnvironmentPolicy: "inherited", Environment: []checkexec.EnvFact{},
 			Dependencies: []checkexec.FileRef{}, Fixtures: []checkexec.FileRef{},
@@ -749,12 +672,4 @@ func s6DisplayList(values []string) string {
 func s6String(value any) string {
 	text, _ := value.(string)
 	return text
-}
-
-func s6ValidSHA256(value string) bool {
-	if len(value) != 64 {
-		return false
-	}
-	decoded, err := hex.DecodeString(value)
-	return err == nil && len(decoded) == sha256.Size && strings.ToLower(value) == value
 }

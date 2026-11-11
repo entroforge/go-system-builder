@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 
 	"github.com/entroforge/go-system-builder/internal/investigation"
@@ -46,7 +47,7 @@ func investigationLeadContractPaths(root string, state map[string]any) []string 
 	if err != nil {
 		return nil
 	}
-	return []string{filepath.Join(filepath.Dir(route), "contract-"+stringValue(pointer["sha256"])+".json")}
+	return []string{filepath.Join(filepath.Dir(route), fmt.Sprintf("contract-r%d.json", integerValue(document["revision"])))}
 }
 
 func stageInvestigationLeadContractContext(root string, request policy.Input, snapshot runtime.Snapshot) (context string) {
@@ -156,7 +157,7 @@ func investigationLeadContractProjectionBytes(root string, data []byte, document
 		return "", nil, err
 	}
 	finalBytes = append(finalBytes, '\n')
-	finalPath := filepath.Join(root, ".claude", "review", "investigation", "contracts", fmt.Sprintf("draft-%s-r%d-%s.json", caseID, integerValue(document["revision"]), workpacket.Digest(finalBytes)))
+	finalPath := s8ContractDraftPath(root, caseID, integerValue(document["revision"]), finalBytes)
 	return finalPath, finalBytes, nil
 }
 
@@ -217,8 +218,8 @@ func investigationLeadContractApproval(root string, state, document map[string]a
 		if row["status"] != "valid" || (kind != "human_decision" && kind != "repair_contract_review") || runtime.HumanDecisionEvidenceConsumed(row) {
 			continue
 		}
-		artifact, err := investigationLeadReadObject(root, stringValue(row["path"]), stringValue(row["sha256"]))
-		if err != nil || artifact["runtime_id"] != state["runtime_id"] || artifact["case_id"] != document["case_id"] || artifact["contract_id"] != contract["repair_contract_id"] || artifact["approval_hash"] != workpacket.Digest(draft) {
+		artifact, err := investigationLeadReadObject(root, stringValue(row["path"]))
+		if err != nil || artifact["runtime_id"] != state["runtime_id"] || artifact["case_id"] != document["case_id"] || artifact["contract_id"] != contract["repair_contract_id"] || !s8DecisionMatchesDraft(artifact, draft) {
 			continue
 		}
 		actor, delegation := stringValue(artifact["approved_by"]), ""
@@ -241,7 +242,12 @@ func investigationLeadContractApproval(root string, state, document map[string]a
 		if actor == "" || !s8ContractContains(row["produced_by"], actor) {
 			continue
 		}
-		return investigation.ContractRequest{ExpectedRevision: tolerantInt(state["revision"]), CaseID: stringValue(document["case_id"]), ContractPath: path, ApprovedBy: actor, ApprovalHash: workpacket.Digest(draft), ApprovalEvidenceID: stringValue(row["id"]), DelegationEvidenceID: delegation}, true
+		// -1 is the omission marker: this adapter did not assert a Runtime
+		// revision, so ApproveContract takes the current-value path. The
+		// original approval criteria stay the presented Contract, the active
+		// Case identity and the one-time decision evidence — not the revision
+		// the adapter happened to read (L4-revision-usage.md:79 and :191).
+		return investigation.ContractRequest{ExpectedRevision: -1, CaseID: stringValue(document["case_id"]), ContractPath: path, ApprovedBy: actor, ApprovalEvidenceID: stringValue(row["id"]), DelegationEvidenceID: delegation}, true
 	}
 	return investigation.ContractRequest{}, false
 }
@@ -279,7 +285,7 @@ func investigationLeadContractApprovedReplay(root, path string, state map[string
 	if pointer["status"] != "contract_approved" {
 		return false, 0
 	}
-	approved, err := investigationLeadReadObject(root, stringValue(pointer["repair_contract_ref"]), stringValue(pointer["repair_contract_sha256"]))
+	approved, err := investigationLeadReadObject(root, stringValue(pointer["repair_contract_ref"]))
 	if err != nil {
 		return feedback("S8 approved Contract recovery is required: " + err.Error())
 	}
@@ -291,17 +297,13 @@ func investigationLeadContractApprovedReplay(root, path string, state map[string
 	if err != nil {
 		return feedback("S8 original pre-approval Case recovery is required: " + err.Error())
 	}
-	_, batchSHA := investigationLeadBatchReference(state)
-	expected := filepath.Join(root, ".claude/submissions/s8", dispatchSlug(stringValue(state["runtime_id"])), fmt.Sprintf("g%d", integerValue(mapFieldCLI(state, "baseline")["generation"])), fmt.Sprintf("r%d", integerValue(mapFieldCLI(state, "review")["round"])), batchSHA, "contract-"+workpacket.Digest(caseBytes)+".json")
-	if !samePath(path, expected) {
-		return false, 0
-	}
+
 	var document map[string]any
 	if json.Unmarshal(caseBytes, &document) != nil {
 		return feedback("S8 original pre-approval Case is unreadable; Main must recover it.")
 	}
 	_, data, err := investigationLeadContractProjection(root, path, document)
-	if err != nil || workpacket.Digest(data) != stringValue(approved["approval_hash"]) {
+	if err != nil || !s8ApprovedContractMatchesDraft(approved, data) {
 		return feedback("S8 Contract answer conflicts with the already approved final draft; no approved content or authorization was changed.")
 	}
 	return feedback("S8 original Contract approval is already recorded at " + resolveRootPath(root, stringValue(pointer["repair_contract_ref"])) + ". Repeated save is read-only; continue with the original S9 handoff.")
@@ -309,4 +311,42 @@ func investigationLeadContractApprovedReplay(root, path string, state map[string
 
 func investigationLeadContractAuthoringGuidance() string {
 	return "Assertion IDs are positional within each original array, starting at 1: symptom_assertions -> symptom-1, symptom-2; root_invariant_assertions -> root-1, root-2; detection_gap_assertions -> gap-1, gap-2. Every assertion must be assigned to an actual repair unit. assertion_ids=[\"all\"] must stand alone and means that unit owns every assertion; never mix all with individual IDs. Optional depends_on is an array of other repair-unit IDs in this same Contract, with no cycles; optional resource_locks lists actual shared resources requiring coordination. Unit scope, prospective_scope and forbidden_scope are repository-relative file or directory paths; a directory includes descendants, glob patterns are not interpreted. Each unit write scope must stay inside prospective_scope and outside forbidden_scope. Put behavioral prohibitions in architecture_intent and stop/escalation conditions in stop_escalation_conditions; forbidden_scope contains paths, not prose."
+}
+
+// A draft is fixed once for presentation. New actual content receives another
+// available original path; replay of identical content reuses the prior path.
+func s8ContractDraftPath(root, caseID string, revision int, data []byte) string {
+	dir := s8OriginalSourceDir(root, caseID, revision, "contract-review")
+	for n := 1; ; n++ {
+		path := filepath.Join(dir, fmt.Sprintf("draft-%d.json", n))
+		existing, err := os.ReadFile(path)
+		if err != nil || bytes.Equal(existing, data) {
+			return path
+		}
+	}
+}
+
+func s8DecisionMatchesDraft(artifact map[string]any, draft []byte) bool {
+	var current any
+	if json.Unmarshal(draft, &current) != nil {
+		return false
+	}
+	return reflect.DeepEqual(artifact["contract_draft"], current)
+}
+
+func s8ApprovedContractMatchesDraft(approved map[string]any, draft []byte) bool {
+	var current map[string]any
+	if json.Unmarshal(draft, &current) != nil {
+		return false
+	}
+	copy := make(map[string]any, len(approved))
+	for k, v := range approved {
+		copy[k] = v
+	}
+	for _, k := range []string{"approved_by", "approved_at", "approver_id", "approval_evidence_id", "delegated_authority", "approval_hash"} {
+		delete(copy, k)
+	}
+	copy["status"] = "draft"
+	copy["revision"] = current["revision"]
+	return reflect.DeepEqual(copy, current)
 }

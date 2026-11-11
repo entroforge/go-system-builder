@@ -42,7 +42,10 @@ func TestS8InvestigationLeadDispositionAvailableBeforeAnyHypothesisResult(t *tes
 	}
 	writeRepairLeadJSON(t, paths[0], investigationLeadRouteAnswer{Route: "s9_repair", RouteReason: "fixture requests repair before causal closure"})
 	feedback := investigationLeadTestSave(t, root, paths[0])
-	if !strings.Contains(feedback, "original route validation") || !strings.Contains(feedback, "unexplained") || investigationLeadTestSnapshot(t, root).Revision != current.Revision {
+	// The original consumer owns the qualification. The current feedback
+	// names the missing professional field of the route answer instead of
+	// the removed machine wording, and it must not write Runtime.
+	if !strings.Contains(feedback, "original route validation") || !strings.Contains(feedback, "primary_root_cause") || investigationLeadTestSnapshot(t, root).Revision != current.Revision {
 		t.Fatalf("s9 qualification did not stay with the original consumer: %s", feedback)
 	}
 	writeRepairLeadJSON(t, paths[0], investigationLeadRouteAnswer{Route: "s2_spec_rework", RouteReason: "the specification contradicts the established source authority"})
@@ -148,7 +151,10 @@ func TestS8InvestigationLeadDispositionInconclusiveInvestigateMoreAndSpecExit(t 
 			current := investigationLeadTestSnapshot(t, root)
 			context := stageInvestigationLeadQuestionnaireContext(root, policy.Input{Event: "PreToolUse"}, current)
 			paths := investigationLeadDispositionPaths(root, current.State)
-			if len(paths) != 1 || !strings.Contains(context, "inconclusive remain") {
+			// An unresolved explanation is continued by appending the next
+			// discriminating question to the original hypotheses answer; no
+			// route registration is a prerequisite for that.
+			if len(paths) != 1 || !strings.Contains(context, "directly append") || !strings.Contains(context, "No investigate_more route registration is a prerequisite") {
 				t.Fatalf("received inconclusive was treated as unfinished work: %s", context)
 			}
 			writeRepairLeadJSON(t, paths[0], investigationLeadRouteAnswer{Route: route, RouteReason: "the original evidence requires this professional disposition"})
@@ -201,9 +207,20 @@ func TestS8InvestigationLeadDispositionExplainsOriginalCausalAnswerShape(t *test
 	root, _ := investigationLeadDispositionResults(t, "supported")
 	current := investigationLeadTestSnapshot(t, root)
 	context := stageInvestigationLeadQuestionnaireContext(root, policy.Input{Event: "PreToolUse"}, current)
-	for _, field := range []string{`"trigger"`, `"violated_invariant"`, `"faulty_mechanism"`, `"propagation"`, `"symptoms":[`, `"paths":[`, "test | contract | type | monitoring | process", "evidence_refs is a non-empty string array", "Original sealed S7 Finding references from the accepted Case/Batch source closure may be reused as-is", "new paths must be captured by the original S8 consumer", "do not calculate or assemble them", `path:<actual-source-path>#sha256=<actual-sha256>`, "not an exclusive route requirement", "no_competing_hypothesis", "Use no_competing_hypothesis only when no alternative mechanism was credible", "competing_hypothesis_assessment", "A second supported hypothesis is not a refutation", "Do not invent a refuted result"} {
+	// The route authoring guidance must still name the professional objects
+	// the original consumer reads. The removed machine forms (the sealed
+	// S7 Finding/Batch source closure, the sha256 evidence form and the
+	// per-hypothesis registration restriction) are no longer required, and
+	// the recommended free-object field names (L3-S8 §9.2) are not a
+	// mechanical required-field list.
+	for _, field := range []string{"primary_root_cause", "causal_model", "blast_radius", "detection_gap", "Explain important unknowns and credible alternatives honestly", "Suggested new_hypotheses remain suggestions", "No count of results", "proves causal closure", "Use actual source and file references without evidence recapture"} {
 		if !strings.Contains(context, field) {
 			t.Fatalf("route authoring guidance omitted original professional shape %q: %s", field, context)
+		}
+	}
+	for _, removed := range []string{"#sha256=", "ObservationBatch", "sealed S7 Finding"} {
+		if strings.Contains(context, removed) {
+			t.Fatalf("route authoring guidance still uses the removed machine form %q: %s", removed, context)
 		}
 	}
 	for _, hypothesisOnly := range []string{"For Hypothesis.evidence_refs only", "not evidence_refs values", "values are registered evidence IDs or real existing execution anchors"} {
@@ -231,7 +248,11 @@ func TestS8UnresolvedResultsAppendDirectlyWithoutRoutePrerequisite(t *testing.T)
 	root, questions := investigationLeadDispositionResults(t, "inconclusive")
 	current := investigationLeadTestSnapshot(t, root)
 	context := stageInvestigationLeadQuestionnaireContext(root, policy.Input{Event: "PreToolUse"}, current)
-	for _, value := range []string{questions, "directly append", "No investigate_more route registration is a prerequisite", "inclusion_reason", "excluded_surfaces", "missing_assertion", "detection_gap.explanation"} {
+	// The unresolved handoff must name the original hypotheses answer and
+	// state that no route registration is a prerequisite. The recommended
+	// free-object field names are not a mechanical required-field list
+	// (L3-S8 §9.2).
+	for _, value := range []string{questions, "directly append", "No investigate_more route registration is a prerequisite"} {
 		if !strings.Contains(context, value) {
 			t.Fatalf("unresolved handoff omitted %q: %s", value, context)
 		}
@@ -246,7 +267,7 @@ func TestS8UnresolvedResultsAppendDirectlyWithoutRoutePrerequisite(t *testing.T)
 	if err != nil || len(objectSliceAny(document["hypotheses"])) != 2 || stringValue(document["route"]) != "" {
 		t.Fatalf("direct append required route or lost original: %v %s", err, feedback)
 	}
-	// Exhaust the independent route budget through original route registration.
+	// Legacy budget configuration does not constrain continued investigation.
 	path := investigationLeadDispositionPaths(root, current.State)[0]
 	mapFieldCLI(mapFieldCLI(current.State, "configuration"), "repair")["max_investigation_reentries"] = 1
 	repairLeadWriteState(t, root, current.State)
@@ -254,13 +275,13 @@ func TestS8UnresolvedResultsAppendDirectlyWithoutRoutePrerequisite(t *testing.T)
 	investigationLeadTestSave(t, root, path)
 	current = investigationLeadTestSnapshot(t, root)
 	context = stageInvestigationLeadQuestionnaireContext(root, policy.Input{Event: "PreToolUse"}, current)
-	for _, value := range []string{questions, "Reentry limit reached", "do not register investigate_more again", "No investigate_more route registration is a prerequisite"} {
+	for _, value := range []string{questions, "may choose an earlier"} {
 		if !strings.Contains(context, value) {
 			t.Fatalf("exhausted handoff omitted %q: %s", value, context)
 		}
 	}
-	if strings.Contains(context, "may choose an earlier") {
-		t.Fatalf("exhausted hint requested redundant route: %s", context)
+	if strings.Contains(context, "budget") || strings.Contains(context, "Reentry limit reached") {
+		t.Fatalf("context still imposes a route budget: %s", context)
 	}
 	readRepairLeadJSON(t, questions, &rows)
 	rows = append(rows, investigationLeadTestQuestion("a necessary discriminator after route budget exhaustion"))
@@ -317,5 +338,53 @@ func TestS8InvestigationLeadDispositionCompetingAssessmentOriginalRouteAndReplay
 	}
 	if investigationLeadTestSnapshot(t, root).Revision != accepted.Revision {
 		t.Fatal("changed professional conclusion rewrote Runtime")
+	}
+}
+
+func TestS8OriginalRouteAnswerContinuesSameMaterialAndReplays(t *testing.T) {
+	root, _ := investigationLeadDispositionResults(t, "supported", "refuted")
+	current := investigationLeadTestSnapshot(t, root)
+	stageInvestigationLeadQuestionnaireContext(root, policy.Input{Event: "PreToolUse"}, current)
+	path := investigationLeadDispositionPaths(root, current.State)[0]
+	answer := investigationLeadRouteAnswer{Route: "investigate_more", RouteReason: "Main is still weighing the accepted observations"}
+	for _, reason := range []string{answer.RouteReason, "Main reconsiders the same observations"} {
+		answer.RouteReason = reason
+		writeRepairLeadJSON(t, path, answer)
+		feedback := investigationLeadTestSave(t, root, path)
+		current = investigationLeadTestSnapshot(t, root)
+		_, document, _, err := investigationLeadSource(root, current.State)
+		if err != nil || stringValue(document["route_reason"]) != reason {
+			t.Fatalf("original nonterminal answer rejected: %v %s", err, feedback)
+		}
+		if paths := investigationLeadDispositionPaths(root, current.State); len(paths) != 1 || paths[0] != path {
+			t.Fatalf("original answer moved: %#v", paths)
+		}
+		before, _ := os.ReadFile(filepath.Join(root, ".claude/loop-state.json"))
+		journal, _ := os.ReadFile(filepath.Join(root, ".claude/loop-events.jsonl"))
+		investigationLeadTestSave(t, root, path)
+		after, _ := os.ReadFile(filepath.Join(root, ".claude/loop-state.json"))
+		journalAfter, _ := os.ReadFile(filepath.Join(root, ".claude/loop-events.jsonl"))
+		if !bytes.Equal(before, after) || !bytes.Equal(journal, journalAfter) {
+			t.Fatal("unchanged nonterminal answer replay wrote facts")
+		}
+	}
+	answer = investigationLeadRouteAnswer{Route: "s9_repair", RouteReason: "the same material now supports the causal judgment", PrimaryRootCause: "the first boundary drops source authority", CausalModel: map[string]any{"trigger": "request", "violated_invariant": "source authority", "faulty_mechanism": "boundary discards authority", "propagation": "downstream reads a fallback", "symptoms": []any{"finding-1"}}, BlastRadius: map[string]any{"paths": []any{"internal/example"}}, DetectionGap: map[string]any{"gap_type": "test", "evidence_refs": []any{"evidence://gap"}}}
+	writeRepairLeadJSON(t, path, answer)
+	feedback := investigationLeadTestSave(t, root, path)
+	current = investigationLeadTestSnapshot(t, root)
+	_, document, _, err := investigationLeadSource(root, current.State)
+	if err != nil || stringValue(document["route"]) != "s9_repair" || !strings.Contains(feedback, "not approval") {
+		t.Fatalf("same-material judgment did not reach original consumer: %v %s", err, feedback)
+	}
+	acceptedRevision := current.Revision
+	investigationLeadTestSave(t, root, path)
+	if investigationLeadTestSnapshot(t, root).Revision != acceptedRevision {
+		t.Fatal("terminal replay wrote facts")
+	}
+	answer.Route = "investigate_more"
+	writeRepairLeadJSON(t, path, answer)
+	feedback = investigationLeadTestSave(t, root, path)
+	if !strings.Contains(feedback, "conflicts") || investigationLeadTestSnapshot(t, root).Revision != acceptedRevision {
+		t.Fatalf("terminal disposition overwritten: %s", feedback)
 	}
 }

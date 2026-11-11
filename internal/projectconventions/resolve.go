@@ -1,7 +1,6 @@
 package projectconventions
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -92,7 +91,6 @@ func (r *resolver) read(path string) ([]byte, error) {
 		return fail(fmt.Errorf("source exceeds 1 MiB analysis limit: %s", path))
 	}
 	s.Status = "readable"
-	s.SHA256 = digest(data)
 	r.sources[path] = s
 	r.memo[path] = s
 	r.cache[path] = data
@@ -143,7 +141,7 @@ func (r *resolver) prove(ref Reference, approved []Reference) ([]byte, error) {
 		}
 		matched := false
 		for _, a := range approved {
-			if a.ID == ref.ID && a.Path == ref.Path && a.Version == ref.Version && a.SHA256 == ref.SHA256 {
+			if a.ID == ref.ID && a.Path == ref.Path && a.Version == ref.Version {
 				matched = true
 			}
 		}
@@ -156,9 +154,6 @@ func (r *resolver) prove(ref Reference, approved []Reference) ([]byte, error) {
 	data, err := r.read(ref.Path)
 	if err != nil {
 		return nil, err
-	}
-	if !digestPattern.MatchString(ref.SHA256) || digest(data) != ref.SHA256 {
-		return nil, fmt.Errorf("source digest changed: %s", ref.Path)
 	}
 	if metadata(data, "status") != "locked" {
 		return nil, fmt.Errorf("source is not locked: %s", ref.Path)
@@ -257,7 +252,6 @@ func resolve(r *resolver, req Request) Projection {
 				out.Questions = append(out.Questions, "Explicit rule has no original rule_id: "+ref.Path)
 				continue
 			}
-			ref.SHA256 = digest(body)
 			entry := Entry{ID: "candidate-" + topic, Topic: topic, Scope: scope, Default: "", SourceRefs: []Reference{ref}, ExampleRefs: []Reference{}, Exceptions: []string{}, Status: "candidate"}
 			question := "Architect: confirm the exact applicable original rule choice and its exceptions for this TASK in the original professional material; this candidate does not establish a current default."
 			if _, err := r.prove(ref, req.ApprovedRefs); err != nil {
@@ -326,8 +320,8 @@ func resolve(r *resolver, req Request) Projection {
 							continue
 						}
 					}
-					body, err := r.read(ref.Path)
-					if err != nil || digest(body) != ref.SHA256 {
+					_, err := r.read(ref.Path)
+					if err != nil {
 						examplesValid = false
 						row.Questions = append(row.Questions, "Example unavailable or changed: "+ref.Path)
 					}
@@ -386,7 +380,7 @@ func (r *resolver) loadRegistry(data []byte) error {
 		r.registryChecked = true
 		r.registryErr = schema.NewEmbeddedValidator().ValidateBytes("project-conventions.schema.json", data)
 		if r.registryErr == nil {
-			r.registryErr = json.Unmarshal(data, &r.registry)
+			r.registryErr = decodeOriginalRegistry(data, &r.registry)
 		}
 	}
 	return r.registryErr

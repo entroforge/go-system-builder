@@ -11,7 +11,7 @@ func TestWorktreeScopeUsesTargetAndPreservesRootSafety(t *testing.T) {
 	engine := loadRepositoryPolicy(t)
 	input := policy.Input{Event: "PreToolUse", ToolName: "Edit", CWD: filepath.Join(root, ".worktrees", "worker"),
 		Runtime: policy.RuntimeContext{RuntimeID: "loop-test", ProjectRoot: root, CurrentState: "building", CurrentStage: "S6", CurrentBaselineGeneration: 1,
-			LockedArtifacts: []policy.LockedArtifact{{ID: "BE-001", Kind: "contract", Path: "docs/dev/contracts/BE-001.md", Version: "v1", SHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", LockedFromStage: "S6", BaselineGeneration: 1}}}}
+			LockedArtifacts: []policy.LockedArtifact{{ID: "BE-001", Kind: "contract", Path: "docs/dev/contracts/BE-001.md", Version: "v1", LockedFromStage: "S6", BaselineGeneration: 1}}}}
 	input.ToolInput = map[string]any{"file_path": "docs/dev/contracts/BE-001.md"}
 	if got, _ := engine.Evaluate(input); got.Decision == "deny" {
 		t.Fatalf("temporary file treated as root artifact: %#v", got)

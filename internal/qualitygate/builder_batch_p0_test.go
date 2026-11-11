@@ -1,7 +1,7 @@
 // builder_batch_p0_test.go pins the L3-S6 P0-1 semantics of
 // GATE-BUILDER-BATCH-READY: the completeness check evaluates the TR-003
 // exact execution batch (registered task documents), consumes the
-// completion content (checks / scope deviations), and verifies a durable
+// completion content (checks), and verifies a durable
 // integration checkpoint per TASK.
 package qualitygate_test
 
@@ -138,89 +138,18 @@ func (b *batchP0) evaluate(t *testing.T) qualitygate.Evaluation {
 	return result
 }
 
-// TestBuilderBatchReviewedEntityTaskCannotSlipCompleteness closes the
-// "reviewed TASK 可漏计" hole: a batch TASK whose entity row sits in
-// `reviewed` (the state register-workgroup creates) is inside the TR-003
-// registered batch and therefore must be proven like any other — the old
-// entities.tasks scan skipped it entirely.
-func TestBuilderBatchReviewedEntityTaskCannotSlipCompleteness(t *testing.T) {
+// An old completion/checkpoint pair cannot invent a current Assignment.
+// Current accepted Result, unfinished work and Main integration are covered by
+// TestCanonicalBuilderBatchProgressReusePreservesExactBatch and the real TR-006 integration tests.
+func TestLegacyBuilderBatchCannotReplaceCurrentResponsibilities(t *testing.T) {
 	b := newBatchP0Input(t)
-	b.addCompletion(t, "TASK-TEST-01", nil)
-	b.addCheckpoint(t, "TASK-TEST-01", "verified")
-	// TASK-TEST-02: no completion, no checkpoint, entity state `reviewed`.
-
+	for _, id := range []string{"TASK-TEST-01", "TASK-TEST-02"} {
+		b.addCompletion(t, id, nil)
+		b.addCheckpoint(t, id, "verified")
+	}
 	result := b.evaluate(t)
-	if result.Status != qualitygate.StatusNotReady {
-		t.Fatalf("status = %q, want not_ready (reviewed-state batch task must not slip)", result.Status)
-	}
-	if !contains(result.Missing, "evidence:completion_report:TASK-TEST-02") {
-		t.Fatalf("missing = %#v, want completion_report:TASK-TEST-02", result.Missing)
-	}
-	if !contains(result.Missing, "integration_checkpoint:TASK-TEST-02") {
-		t.Fatalf("missing = %#v, want integration_checkpoint:TASK-TEST-02", result.Missing)
-	}
-}
-
-// TestBuilderBatchSatisfiedWithoutTeamManifestEvidence proves the S7
-// prematurity fix end-to-end at the gate: the exact batch complete +
-// integrated satisfies the gate with no team_manifest evidence at all.
-func TestBuilderBatchSatisfiedWithoutTeamManifestEvidence(t *testing.T) {
-	b := newBatchP0Input(t)
-	b.addCompletion(t, "TASK-TEST-01", nil)
-	b.addCompletion(t, "TASK-TEST-02", nil)
-	b.addCheckpoint(t, "TASK-TEST-01", "verified")
-	b.addCheckpoint(t, "TASK-TEST-02", "complete")
-
-	result := b.evaluate(t)
-	if result.Status != qualitygate.StatusSatisfied {
-		t.Fatalf("status = %q, want satisfied (missing=%v)", result.Status, result.Missing)
-	}
-}
-
-// TestBuilderBatchConsumesCompletionContent: a completion envelope with a
-// failing check or an unapproved scope deviation no longer counts as done
-// even though the envelope exists and is qualified.
-func TestBuilderBatchConsumesCompletionContent(t *testing.T) {
-	b := newBatchP0Input(t)
-	b.addCompletion(t, "TASK-TEST-01", func(envelope map[string]any) {
-		envelope["checks"] = []any{
-			map[string]any{"name": "unit", "command": "go test ./...", "result": "fail"},
-			map[string]any{"name": "lint", "command": "go vet ./...", "result": "pass"},
-		}
-	})
-	b.addCompletion(t, "TASK-TEST-02", func(envelope map[string]any) {
-		envelope["scope_deviations"] = []any{"internal/unrelated/extra.go"}
-	})
-	b.addCheckpoint(t, "TASK-TEST-01", "verified")
-	b.addCheckpoint(t, "TASK-TEST-02", "verified")
-
-	result := b.evaluate(t)
-	if result.Status != qualitygate.StatusNotReady {
-		t.Fatalf("status = %q, want not_ready", result.Status)
-	}
-	if !contains(result.Missing, "checks:TASK-TEST-01:unit=fail") {
-		t.Fatalf("missing = %#v, want checks:TASK-TEST-01:unit=fail", result.Missing)
-	}
-	if !contains(result.Missing, "scope_deviations:TASK-TEST-02:internal/unrelated/extra.go") {
-		t.Fatalf("missing = %#v, want scope_deviations entry for TASK-TEST-02", result.Missing)
-	}
-}
-
-// TestBuilderBatchUnverifiedCheckpointBlocks: a merged-but-not-verified
-// checkpoint (or a preserved one) must not satisfy the batch.
-func TestBuilderBatchUnverifiedCheckpointBlocks(t *testing.T) {
-	b := newBatchP0Input(t)
-	b.addCompletion(t, "TASK-TEST-01", nil)
-	b.addCompletion(t, "TASK-TEST-02", nil)
-	b.addCheckpoint(t, "TASK-TEST-01", "verified")
-	b.addCheckpoint(t, "TASK-TEST-02", "merged")
-
-	result := b.evaluate(t)
-	if result.Status != qualitygate.StatusNotReady {
-		t.Fatalf("status = %q, want not_ready", result.Status)
-	}
-	if !contains(result.Missing, "integration_checkpoint:TASK-TEST-02") {
-		t.Fatalf("missing = %#v, want integration_checkpoint:TASK-TEST-02", result.Missing)
+	if result.Status != qualitygate.StatusNotReady || !contains(result.Missing, "builder_responsibility:TASK-TEST-01") || !contains(result.Missing, "builder_responsibility:TASK-TEST-02") {
+		t.Fatalf("old delivery invented current original responsibilities: %+v", result)
 	}
 }
 
@@ -242,39 +171,5 @@ func TestBuilderBatchEmptyRegisteredBatchNotReady(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("missing = %#v, want batch:execution_batch_empty", result.Missing)
-	}
-}
-
-// TestBuilderBatchNewerEnvelopeSupersedes pins the legend's claim "the
-// newer envelope supersedes the older one": a TASK whose first result
-// recorded a failing check goes green after a corrected resubmission
-// (evidence id -r2, appended later in the evidence array) — without
-// removing the failed history.
-func TestBuilderBatchNewerEnvelopeSupersedes(t *testing.T) {
-	b := newBatchP0Input(t)
-	// Failing first submission for TASK-TEST-01.
-	b.addCompletion(t, "TASK-TEST-01", func(envelope map[string]any) {
-		envelope["checks"] = []any{
-			map[string]any{"name": "unit", "command": "go test ./...", "result": "fail"},
-		}
-	})
-	// Corrected resubmission: same evidence base id + "-r2", registered
-	// later in the array (appendCompletionEvidence order).
-	b.addCompletion(t, "TASK-TEST-01", func(envelope map[string]any) {
-		envelope["evidence_id"] = "ev-completion-TASK-TEST-01-r2"
-		envelope["checks"] = []any{
-			map[string]any{"name": "unit", "command": "go test ./...", "result": "pass"},
-		}
-	})
-	b.addCompletion(t, "TASK-TEST-02", nil)
-	b.addCheckpoint(t, "TASK-TEST-01", "verified")
-	b.addCheckpoint(t, "TASK-TEST-02", "verified")
-
-	result := b.evaluate(t)
-	if result.Status != qualitygate.StatusSatisfied {
-		t.Fatalf("status = %q, want satisfied after corrected resubmission (missing=%v)", result.Status, result.Missing)
-	}
-	if !contains(result.EvidenceRefs, "ev-completion-TASK-TEST-01-r2") {
-		t.Fatalf("evidence refs = %v, want the superseding envelope qualified", result.EvidenceRefs)
 	}
 }

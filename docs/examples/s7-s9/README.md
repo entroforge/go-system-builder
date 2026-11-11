@@ -1,24 +1,22 @@
 # S8/S9 领域请求示例与显式命令参考
 
-当前原生工作先读[工作区指南](../../workspace-integration.md)。Main 使用原领域命令登记 Hypothesis、派发、路由及维护 Contract；S8 Investigator 和 S9 Builder/Targeted 通过准确问卷或 brief 工作，保存实际产物、返回准确引用，由 SubagentStop 接收。不额外交通用 PLAN_REPORT、SendMessage 激活或手工 execution begin。
+当前原生工作先读[工作区指南](../../workspace-integration.md)。Main 保存原专业问卷来登记 Hypothesis、安排实际派发、判断路由及维护 Contract；S8 Investigator 保存本人原卷，由 Pre／成功 Post／Stop 经同一原消费者接收；S9 Builder/Targeted 通过准确原问卷或 brief 工作，保存实际产物，由适用 PreToolUse 观察，成功 PostToolUse 和 Stop/SubagentStop 兜底，经原消费者接收，无需额外返回路径。不额外交通用 PLAN_REPORT、SendMessage 激活或手工 execution begin。
 
-本目录 JSON 是原 `--file` 领域接口的请求形状，供 Main 显式操作、诊断及已冻结兼容来源使用，不是让新子代理照抄整串命令的普通步骤。所有示例都是编写参考，不是已登记证据；路径、身份、ID、摘要和断言必须来自当前真实责任。
+本目录 JSON 是原 `--file` 领域接口的请求形状，供 Main 显式操作、诊断使用，不是让新子代理照抄整串命令的普通步骤。所有示例都是编写参考，不是已登记证据；路径、身份、ID 和专业断言须来自当前真实责任，不登记摘要。
 
 ## 请求和持久化产物的区别
 
 每个请求的字段跟随原 CLI 接口；Runtime 从它推导并持久化领域记录。后者才是 `repair-*.schema.json`、`review-evidence.schema.json` 等产物 Schema 描述的对象。因此请求的 `session_ref`、`occurred_at` 与持久化产物的 `session_id`、`reported_at` 等字段可能不同。不要拿产物 Schema 验证请求或另造一份记录；由原命令消费请求，校验并保存派生产物。
 
-示例占位 ID、路径和摘要不具备真实资格。调用者省略可选显式 revision/hash 断言时，Runtime/Case Writer 使用原当前指针；这不允许猜一个来源或刷新旧记录。
+示例占位 ID 和路径不代表真实责任。使用原当前责任与实际来源，不猜选来源，也不要求作者计算或登记摘要。
 
 ## 显式请求与消费者
 
-以下直接接口沿原权限和原来源使用。新原生 Builder/Investigator 的专业答卷由 Stop 调用同一消费者，不重复执行 submit。
+以下直接接口沿原权限和原来源使用。新原生 S9 Builder 的就绪专业答卷由适用 PreToolUse、成功 PostToolUse 或 Stop/SubagentStop 调用同一原消费者，不重复执行 submit；S8 Investigator 同样使用 Pre／成功 Post／Stop 接收本人原卷。
 
 | 请求文件 | 原消费者命令 |
 | --- | --- |
-| [repair-contract-draft.json](repair-contract-draft.json) | `loop-harness runtime investigation contract approve --case-id <case> --file repair-contract-draft.json --approved-by <actor> --approval-hash <sha256> --approval-evidence-id <evidence-id>` |
-| [repair-plan-report.json](repair-plan-report.json) | `loop-harness runtime repair plan-report submit --file repair-plan-report.json --actor <agent>` |
-| [repair-result.json](repair-result.json) | `loop-harness runtime repair result submit --file repair-result.json --actor <agent>` |
+| [repair-contract-draft.json](repair-contract-draft.json) | `loop-harness runtime investigation contract approve --case-id <case> --file repair-contract-draft.json --approved-by <actor> --approval-evidence-id <evidence-id>` |
 | [change-impact.json](change-impact.json) | `loop-harness runtime repair impact create --file change-impact.json`，再 `... impact commit --file <created-impact.json>` |
 | [targeted-reverification.json](targeted-reverification.json) | `loop-harness runtime repair targeted create --file targeted-reverification.json`，再 `... targeted commit --file <created-reverification.json>` |
 | [repair-handoff.json](repair-handoff.json) | `loop-harness runtime repair handoff create --file repair-handoff.json`，再 `... handoff commit --file <created-handoff.json>` |
@@ -27,7 +25,7 @@ Contract 的批准仍需要原真实人类决定及其证据，示例的 `main-s
 
 ## Main 的调查与原生交接
 
-Main 先登记可证伪假设和判别方法；假设登记使用原 flags，不要求新建 JSON：
+正常工作由 Main 填写原 hypothesis 问卷并保存，再真正派发。以下 flags 仅展示显式旧入口的假设登记形状，不是新的普通作者步骤：
 
 ```text
 loop-harness runtime investigation hypothesis register \
@@ -47,7 +45,7 @@ loop-harness runtime investigation dispatch \
   --agent-id agent-investigator-1
 ```
 
-原生 Investigator 在本人答卷写方法、实际观察、证据、判别与结论，返回准确路径，Stop 接收。只有明确诊断或已冻结非原生来源才使用以下直接结果命令；不能对已返回的原生答卷重复提交：
+原生 Investigator 在本人答卷写方法、实际观察、引用、判别与结论，保存一次，由 Pre／成功 Post／Stop 经原消费者接收，不要求返回路径或重存。new_hypotheses 只保存建议，由 Main 决定是否采用和实际派发，不自动增加责任或退出条件。只有明确诊断或已冻结非原生来源才使用以下直接结果命令；不能对已返回的原生答卷重复提交：
 
 ```text
 loop-harness runtime investigation hypothesis result \
@@ -74,14 +72,13 @@ loop-harness runtime investigation route \
   --detection-gap-file detection-gap.json
 ```
 
-只有原人类决定成立且证据匹配时，Main 才提交原 Contract 批准：
+原真实人类决定及其准确 Contract 对象必须关联；正常工作由原决定入口记录。以下命令只展示显式兼容／诊断的批准形状，不能要求作者另算摘要或注册批准：
 
 ```text
 loop-harness runtime investigation contract approve \
   --case-id investigation-case-... \
   --file repair-contract-draft.json \
   --approved-by <actual-approved-actor> \
-  --approval-hash <draft-sha256> \
   --approval-evidence-id <human-decision-id>
 ```
 
@@ -95,17 +92,21 @@ loop-harness runtime repair dispatch \
   --agent-definition agents/backend-builder.md
 ```
 
-命令 JSON 返回原生成路径与 next_action，原准备／问卷入口提供准确 native brief。Main 携带该 brief 通过 Claude Code Agent 真正派发，Builder 在实际 worktree 先保存 PlanReport，再修复、自检、提交实际变化并保存 Result，返回后由 Stop 接收。原红绿验证、Contract 约束、明确审批和独立性继续保留。直接 submit、`runtime repair execution begin` 只服务明确诊断或已冻结的旧执行，不是新 Builder 的附加步骤。
+命令 JSON 返回原生成路径与 next_action，原准备／问卷入口提供准确 native brief。Main 携带该 brief 通过 Claude Code Agent 真正派发，Builder 在实际 worktree 先保存 PlanReport，再修复、自检、提交实际变化并保存 Result；适用 PreToolUse 观察就绪原答卷，成功 PostToolUse 和 Stop/SubagentStop 兜底，经原消费者接收，无需额外提交、重存或返回路径。真实修复、自检、Main 集成与必要检查、Contract 约束、明确审批和独立性继续保留；接收不重证 Git／证据／历史摘要。无需另走旧式提交或启动入口。
 
 ## Main 接收与 fresh S7
 
-候选接收后，Main 用原集成和必需检查接收实际结果；随后沿原 Changeset、ChangeImpact、独立 TargetedReverification 与 Handoff 工作。ChangeImpact 每项决定的 `scope` 要覆盖实际变更产物；独立 verifier 使用当前准确 Targeted 答卷返回，由 Stop 接收，不能让 Builder 代签。显式 `targeted create/commit` 请求仅供它自己的原来源使用。
+原生 S9 的责任引用可用原登记路径在 Main 控制根下的绝对形式、完整控制根相对形式或 `./` 加完整相对形式；它不表示 brief 位于 Worker cwd。Main 应给每个子任务可读的绝对材料路径，并完整转达实际任务限制。其他根、basename、任意 `../` 和角色不能替代原责任；私人输出、来源核验和 frozen 合同保持原样。
+
+候选接收后，Main 用原集成和必需检查接收实际结果；随后沿原 Changeset、ChangeImpact、独立 TargetedReverification 与 Handoff 工作。ChangeImpact 每项决定的 `scope` 要覆盖实际变更产物；独立 verifier 保存当前准确原 Targeted 答卷，经适用 PreToolUse、成功 PostToolUse 或 Stop/SubagentStop 交原消费者接收，无需额外返回路径，不能让 Builder 代签。显式 `targeted create/commit` 请求仅供它自己的原来源使用。
 
 Handoff 以原已接收事实成立，commit 触发 TR-012 并保存 S7 seed；Main 查看 `loop-harness s7 status`、完善专业计划后再派发下一轮。PlanReport accepted、候选 accepted 和 Main 集成完成均不能代替 fresh S7 或发布授权。
 
-## 显式请求中的 Artifact 摘要
+## 原格式与接收事实
 
-原 commit 命令可能重写先前创建的产物（例如 `impact commit` 更新 status）；create 返回的 SHA 在 commit 后可能不再适用，Changeset 文件名也随其内容摘要变化。Main 显式编写低层 `repair-handoff.json` 请求时，要使用当前原路径和真实摘要，由原 validator 核对当前字节，不能抄某次 create 的旧输出。原生专业答卷的机器字段仍由原准备/接收器填写，不把此显式请求规则扩展成子代理手抄 SHA 的要求。
+显式旧请求保留自己的来源形状，已发行责任继续使用原位置，不要求改成新格式重新认证。S7～S9 原卷接收只检查当前答案的必要结构、就绪和结论并保存，不要求作者提供 Git、证据摘要或另交证明。真实批准仍绑定其准确对象，保存动作不等于批准。已收后原私人文件变更／丢失不撤销事实；后继准备失败沿原入口只续未完成部分。
+
+S8 新问题的来源形式若尚未被原准备器支持，应保留为具名准备缺口；本目录的显式示例不能绕过该限制，也不构造来源别名或新协议。
 
 ## 完整业务示例：撤回后保留期间合法修订
 
@@ -204,8 +205,7 @@ Handoff 以原已接收事实成立，commit 触发 TR-012 并保存 S7 seed；M
   "regression_surfaces": ["docs/design/prototypes/shareholder/cases.json#CASE-WITHDRAW-REOPEN", "docs/design/prototypes/certificate/cases.json#CASE-CERT-CURRENT"],
   "stop_escalation_conditions": ["locked 规则并未明确重开草稿与并发资料的合并语义", "真实原因不支持当前局部更新假设", "修复需要扩大批准范围或迁移生产资料", "关键消费者被 mock 或无法观察实际持久化版本"],
   "approved_by": null,
-  "approved_at": null,
-  "approval_hash": null
+  "approved_at": null
 }
 ```
 

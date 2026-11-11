@@ -48,11 +48,9 @@ func TestReadOnlySnapshotReportsPendingRolloverWithoutWriting(t *testing.T) {
 		"schema_version": "1.0.0",
 		"fresh_state":    fresh,
 		"record": map[string]any{
-			"archive_dir":            archiveDir,
-			"runtime_id":             "loop-test",
-			"revision":               7,
-			"archive_state_sha256":   sha256HexForTest(archiveState),
-			"archive_journal_sha256": sha256HexForTest(archiveJournal),
+			"archive_dir": archiveDir,
+			"runtime_id":  "loop-test",
+			"revision":    7,
 		},
 		"approval":    map[string]any{"approved_by": "release-owner", "evidence_id": "ev-approval"},
 		"occurred_at": time.Now().UTC().Format(time.RFC3339Nano),
@@ -101,7 +99,7 @@ func TestRemoveUnreferencedArtifactSkipsPendingOperation(t *testing.T) {
 	removed, err := runtime.NewWriter(statePath, journalPath, dir, integrityTestValidator{}).RemoveUnreferencedArtifact(runtime.ArtifactCleanupRequest{
 		ExpectedRevision: 1,
 		ArtifactPath:     artifactRel,
-		ArtifactSHA256:   sha256HexForTest(artifact),
+		ArtifactBytes:    artifact,
 	})
 	if err != nil {
 		t.Fatalf("RemoveUnreferencedArtifact: %v", err)
@@ -119,7 +117,7 @@ func TestRemoveUnreferencedArtifactSkipsPendingOperation(t *testing.T) {
 	removed, err = runtime.NewWriter(statePath, journalPath, dir, integrityTestValidator{}).RemoveUnreferencedArtifact(runtime.ArtifactCleanupRequest{
 		ExpectedRevision: 1,
 		ArtifactPath:     artifactRel,
-		ArtifactSHA256:   sha256HexForTest(artifact),
+		ArtifactBytes:    artifact,
 	})
 	if err != nil {
 		t.Fatalf("RemoveUnreferencedArtifact without pending operation: %v", err)
@@ -264,8 +262,6 @@ func TestWriterRejectsArchivedJournalSequenceGapBeforeRolloverReplacement(t *tes
 	if err := os.WriteFile(filepath.Join(archiveDir, "loop-events.jsonl"), gapJournal, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	record["archive_journal_sha256"] = sha256HexForTest(gapJournal)
-	marker["source_journal_sha256"] = sha256HexForTest(gapJournal)
 	writeJSONMapRuntimeTest(t, markerPath, marker)
 	if err := os.WriteFile(journalPath, gapJournal, 0o644); err != nil {
 		t.Fatal(err)
@@ -296,7 +292,6 @@ func TestCommitRecoveryRejectsMarkerCoherenceMismatch(t *testing.T) {
 				state := marker["state"].(map[string]any)
 				journal := state["journal"].(map[string]any)
 				journal["last_sequence"] = float64(journal["last_sequence"].(float64) + 1)
-				marker["state_sha256"] = sha256HexForTest(mustJSON(t, state))
 			},
 		},
 		{
@@ -304,7 +299,6 @@ func TestCommitRecoveryRejectsMarkerCoherenceMismatch(t *testing.T) {
 			mutate: func(marker map[string]any) {
 				event := marker["journal_event"].(map[string]any)
 				event["after_revision"] = float64(event["after_revision"].(float64) + 1)
-				marker["journal_event_sha256"] = sha256HexForTest(jsonLineForTest(event))
 			},
 		},
 		{
@@ -313,7 +307,6 @@ func TestCommitRecoveryRejectsMarkerCoherenceMismatch(t *testing.T) {
 				state := marker["state"].(map[string]any)
 				transition := state["last_transition"].(map[string]any)
 				transition["idempotency_key"] = "conflicting-idempotency-key"
-				marker["state_sha256"] = sha256HexForTest(mustJSON(t, state))
 			},
 		},
 	}
@@ -522,18 +515,6 @@ func TestRolloverRecoveryRejectsMarkerCrossBindingBeforeWrites(t *testing.T) {
 				record["revision"] = record["revision"].(float64) + 1
 			},
 		},
-		{
-			name: "archive state hash differs from source hash",
-			mutate: func(marker map[string]any) {
-				marker["record"].(map[string]any)["archive_state_sha256"] = strings.Repeat("0", 64)
-			},
-		},
-		{
-			name: "archive journal hash differs from source hash",
-			mutate: func(marker map[string]any) {
-				marker["record"].(map[string]any)["archive_journal_sha256"] = strings.Repeat("0", 64)
-			},
-		},
 	}
 
 	for _, tt := range tests {
@@ -598,8 +579,6 @@ func TestWriterRejectsArchivedJournalBeforeRevisionMismatch(t *testing.T) {
 	if err := os.WriteFile(journalPath, mutatedJournal, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	marker["source_journal_sha256"] = sha256HexForTest(mutatedJournal)
-	record["archive_journal_sha256"] = sha256HexForTest(mutatedJournal)
 	writeJSONMapRuntimeTest(t, markerPath, marker)
 	stateBefore := mustRead(t, statePath)
 	journalBefore := mustRead(t, journalPath)
@@ -813,80 +792,6 @@ func TestRecoverPendingOperationsCompletesValidCommitBeforeArtifactRecovery(t *t
 	}
 }
 
-func TestRefreshFingerprintsRejectsInconsistentStateJournalPair(t *testing.T) {
-	dir := t.TempDir()
-	statePath := filepath.Join(dir, "loop-state.json")
-	journalPath := filepath.Join(dir, "loop-events.jsonl")
-	documentPath := filepath.Join(dir, "document.md")
-	if err := os.WriteFile(documentPath, []byte("refresh candidate\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	writeState(t, statePath, 1)
-	state := readJSONMapRuntimeTest(t, statePath)
-	state["documents"] = []any{map[string]any{
-		"id": "DOC-INCONSISTENT", "kind": "task", "path": "document.md", "version": "v1",
-		"sha256": "stale", "status": "locked", "generation": 1,
-	}}
-	state["journal"].(map[string]any)["last_sequence"] = 1
-	state["journal"].(map[string]any)["last_event_id"] = "evt-missing-tail"
-	writeJSONMapRuntimeTest(t, statePath, state)
-	stateBefore := mustRead(t, statePath)
-
-	_, err := testWriter(statePath, journalPath).RefreshFingerprints(dir)
-	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "journal") {
-		t.Fatalf("RefreshFingerprints error = %v, want state/journal coherence rejection", err)
-	}
-	if got := mustRead(t, statePath); string(got) != string(stateBefore) {
-		t.Fatal("inconsistent state/journal pair was fingerprint-refreshed")
-	}
-}
-
-func TestPendingFingerprintRecoveryRejectsInconsistentStateJournalPair(t *testing.T) {
-	dir := t.TempDir()
-	statePath := filepath.Join(dir, "loop-state.json")
-	journalPath := filepath.Join(dir, "loop-events.jsonl")
-	documentPath := filepath.Join(dir, "document.md")
-	if err := os.WriteFile(documentPath, []byte("pending refresh\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	writeState(t, statePath, 1)
-	state := readJSONMapRuntimeTest(t, statePath)
-	state["documents"] = []any{map[string]any{
-		"id": "DOC-PENDING-INCONSISTENT", "kind": "task", "path": "document.md", "version": "v1",
-		"sha256": "stale", "status": "locked", "generation": 1,
-	}}
-	state["journal"].(map[string]any)["last_sequence"] = 1
-	state["journal"].(map[string]any)["last_event_id"] = "evt-missing-tail"
-	writeJSONMapRuntimeTest(t, statePath, state)
-	previousState := mustRead(t, statePath)
-	previousHash := sha256HexForTest(previousState)
-
-	pending := readJSONMapRuntimeTest(t, statePath)
-	pending["documents"].([]any)[0].(map[string]any)["sha256"] = sha256HexForTest([]byte("pending refresh\n"))
-	pendingBytes := mustJSON(t, pending)
-	marker := map[string]any{
-		"schema_version":        "1.0.0",
-		"previous_state_sha256": previousHash,
-		"previous_revision":     1,
-		"state_sha256":          sha256HexForTest(pendingBytes),
-		"state":                 pending,
-	}
-	markerPath := statePath + ".fingerprint-pending.json"
-	writeJSONMapRuntimeTest(t, markerPath, marker)
-	markerBefore := mustRead(t, markerPath)
-
-	_, err := runtime.NewWriter(statePath, journalPath, dir, integrityTestValidator{}).Snapshot()
-	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "journal") {
-		t.Fatalf("fingerprint recovery error = %v, want state/journal coherence rejection", err)
-	}
-	if got := mustRead(t, statePath); string(got) != string(previousState) {
-		t.Fatal("inconsistent state/journal pair changed during fingerprint recovery")
-	}
-	if got := mustRead(t, markerPath); string(got) != string(markerBefore) {
-		t.Fatal("fingerprint marker changed after coherence rejection")
-	}
-}
-
 func TestCommitAppendFailureLeavesRecoverableMarkerAndWriterFinishesPair(t *testing.T) {
 	dir := t.TempDir()
 	statePath := filepath.Join(dir, "loop-state.json")
@@ -933,17 +838,22 @@ func TestCommitAppendFailureLeavesRecoverableMarkerAndWriterFinishesPair(t *test
 		t.Fatal(err)
 	}
 	pendingState = append(pendingState, '\n')
-	if !bytes.Equal(stateBeforeRead, pendingState) || pending["state_sha256"] != sha256HexForTest(stateBeforeRead) {
-		t.Fatal("pending target hash/document differs from the actual committed state bytes")
+	if !bytes.Equal(stateBeforeRead, pendingState) {
+		t.Fatal("pending target differs from the actual committed state")
+	}
+	for _, name := range []string{"state_sha256", "previous_state_sha256", "journal_event_sha256"} {
+		if _, ok := pending[name]; ok {
+			t.Fatalf("pending records obsolete digest field %s", name)
+		}
+	}
+	if event, ok := pending["journal_event"].(map[string]any); !ok || event["event_id"] != "evt-append-failure" {
+		t.Fatalf("pending journal event = %#v", pending["journal_event"])
 	}
 	pendingEvent, err := json.Marshal(pending["journal_event"])
 	if err != nil {
 		t.Fatal(err)
 	}
 	pendingEvent = append(pendingEvent, '\n')
-	if pending["journal_event_sha256"] != sha256HexForTest(pendingEvent) {
-		t.Fatal("pending event hash omits or differs from the exact compact event plus LF")
-	}
 	if _, err := runtime.NewStore(statePath, journalPath).Snapshot(); err == nil || !strings.Contains(err.Error(), "pending") {
 		t.Fatalf("read-only Snapshot error = %v, want pending commit diagnostic", err)
 	}
@@ -1163,7 +1073,6 @@ func TestRetainLastTransitionRecoveryRequiresIdempotencyCoherence(t *testing.T) 
 			mutate: func(t *testing.T, marker map[string]any) {
 				event := marker["journal_event"].(map[string]any)
 				event["idempotency_key"] = "runtime:tampered-journal"
-				marker["journal_event_sha256"] = sha256HexForTest(jsonLineForTest(event))
 			},
 		},
 	}
@@ -1236,7 +1145,7 @@ func TestWriterRejectsRolloverMarkerWithoutSourceBinding(t *testing.T) {
 	writePendingRolloverMarker(t, statePath, dir, freshInactiveState(t))
 	markerPath := statePath + ".rollover-pending.json"
 	marker := readJSONMapRuntimeTest(t, markerPath)
-	for _, field := range []string{"source_state_sha256", "source_journal_sha256", "source_runtime_id", "source_revision"} {
+	for _, field := range []string{"source_runtime_id", "source_revision"} {
 		delete(marker, field)
 	}
 	writeJSONMapRuntimeTest(t, markerPath, marker)
@@ -1265,13 +1174,6 @@ func TestWriterRejectsRolloverSourceOrApprovalMismatch(t *testing.T) {
 		want   string
 		mutate func(map[string]any)
 	}{
-		{
-			name: "source hash",
-			want: "marker",
-			mutate: func(marker map[string]any) {
-				marker["source_state_sha256"] = strings.Repeat("0", 64)
-			},
-		},
 		{
 			name: "approval evidence",
 			want: "approval",
@@ -1384,35 +1286,6 @@ func TestWriterRejectsNoopCandidateValidator(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "validator") {
 		t.Fatalf("Update error = %v, want validator capability rejection", err)
-	}
-}
-
-func TestRefreshFingerprintsRejectsValidatorThatAcceptsInvalidCandidate(t *testing.T) {
-	dir := t.TempDir()
-	statePath := filepath.Join(dir, "loop-state.json")
-	journalPath := filepath.Join(dir, "loop-events.jsonl")
-	documentPath := filepath.Join(dir, "document.md")
-	if err := os.WriteFile(documentPath, []byte("updated document\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	writeState(t, statePath, 1)
-	state := readJSONMapRuntimeTest(t, statePath)
-	state["documents"] = []any{map[string]any{
-		"id": "DOC-REFRESH", "kind": "task", "path": "document.md", "version": "v1",
-		"sha256": strings.Repeat("1", 64), "status": "locked", "generation": 1,
-	}}
-	writeJSONMapRuntimeTest(t, statePath, state)
-	stateBefore := mustRead(t, statePath)
-
-	// This validator rejects only the constructor's empty probe. It accepts
-	// schema-valid but semantically invalid candidates and must not be trusted
-	// by a fingerprint refresh.
-	store := runtime.NewWriter(statePath, journalPath, dir, emptyOnlyValidator{})
-	if _, err := store.RefreshFingerprints(dir); err == nil || !strings.Contains(strings.ToLower(err.Error()), "validator") {
-		t.Fatalf("RefreshFingerprints error = %v, want validator rejection", err)
-	}
-	if got := mustRead(t, statePath); string(got) != string(stateBefore) {
-		t.Fatal("invalid candidate was persisted by RefreshFingerprints")
 	}
 }
 
@@ -1608,13 +1481,10 @@ func writePendingRolloverMarker(t *testing.T, statePath, dir string, fresh map[s
 		"fresh_state":    fresh,
 		"record": map[string]any{
 			"archive_dir": archiveDir, "runtime_id": sourceRuntimeID, "revision": sourceRevision,
-			"archive_state_sha256": sha256HexForTest(archiveState), "archive_journal_sha256": sha256HexForTest(archiveJournal),
 		},
-		"approval":              map[string]any{"approved_by": "release-owner", "evidence_id": "ev-approval"},
-		"source_state_sha256":   sha256HexForTest(sourceState),
-		"source_journal_sha256": sha256HexForTest(archiveJournal),
-		"source_runtime_id":     sourceRuntimeID,
-		"source_revision":       sourceRevision,
+		"approval":          map[string]any{"approved_by": "release-owner", "evidence_id": "ev-approval"},
+		"source_runtime_id": sourceRuntimeID,
+		"source_revision":   sourceRevision,
 	}
 	if err := os.WriteFile(statePath+".rollover-pending.json", mustJSON(t, marker), 0o644); err != nil {
 		t.Fatal(err)
@@ -1644,13 +1514,10 @@ func writePendingRolloverMarkerWithArchive(t *testing.T, statePath, dir string, 
 		"schema_version": "1.0.0", "fresh_state": fresh,
 		"record": map[string]any{
 			"archive_dir": archiveDir, "runtime_id": sourceRuntimeID, "revision": sourceRevision,
-			"archive_state_sha256": sha256HexForTest(archiveState), "archive_journal_sha256": sha256HexForTest(archiveJournal),
 		},
-		"approval":              map[string]any{"approved_by": "release-owner", "evidence_id": "ev-approval"},
-		"source_state_sha256":   sha256HexForTest(sourceState),
-		"source_journal_sha256": sha256HexForTest(archiveJournal),
-		"source_runtime_id":     sourceRuntimeID,
-		"source_revision":       sourceRevision,
+		"approval":          map[string]any{"approved_by": "release-owner", "evidence_id": "ev-approval"},
+		"source_runtime_id": sourceRuntimeID,
+		"source_revision":   sourceRevision,
 	})
 	return markerPath
 }

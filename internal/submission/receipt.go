@@ -155,7 +155,7 @@ func CompletedOwner(root, owner string) bool {
 			continue
 		}
 		packetID := text(row["packet_id"])
-		if skipKnownNonS5WorkPacket(snapshot.State, packetID) {
+		if skipNonS5WorkPacket(snapshot.State, packetID) {
 			continue
 		}
 		p, ok, err := runtime.FindWorkPacket(snapshot.State, packetID)
@@ -212,23 +212,15 @@ func receipt(root string, snapshot runtime.Snapshot, p workpacket.Packet, r runt
 		if ev["id"] != r.EvidenceID {
 			continue
 		}
-		data, err := workpacket.ReadFile(root, text(ev["path"]), 1<<20)
+		data, err := runtime.ReadRecordedEvidenceReport(root, text(ev["path"]))
 		if err != nil {
 			return result, err
 		}
-		if workpacket.Digest(data) != ev["sha256"] || ev["kind"] != "document_review" {
+		if ev["kind"] != "document_review" {
 			return result, fmt.Errorf("accepted domain evidence no longer matches its registered artifact")
 		}
 		if err := json.Unmarshal(data, &envelope); err != nil {
 			return result, err
-		}
-		answer := workpacket.Answer{Conclusion: &envelope.Conclusion, Findings: envelope.Findings}
-		if err := workpacket.ValidateDocumentReview(p, r.EvidenceID, answer, data); err != nil {
-			return result, err
-		}
-		hash, err := workpacket.AnswerDigest(answer)
-		if err != nil || hash != r.ContentHash {
-			return result, fmt.Errorf("accepted domain evidence differs from received answer")
 		}
 		result.DomainRefs = append(result.DomainRefs, r.EvidenceID)
 		result.Accepted = true
@@ -292,8 +284,8 @@ func receipt(root string, snapshot runtime.Snapshot, p workpacket.Packet, r runt
 					if ev["id"] != otherRecord.EvidenceID {
 						continue
 					}
-					data, err := workpacket.ReadFile(root, text(ev["path"]), 1<<20)
-					if err != nil || workpacket.Digest(data) != ev["sha256"] {
+					data, err := runtime.ReadRecordedEvidenceReport(root, text(ev["path"]))
+					if err != nil {
 						result.WaitingOn = append(result.WaitingOn, Waiting{Reason: "peer_evidence_unavailable", Owner: "Main", Ref: otherRecord.EvidenceID})
 						break
 					}
@@ -344,27 +336,7 @@ func (s *Service) Recover(ctx context.Context, owner string, limit int) ([]Recei
 			}
 		}
 		if row["control_status"] != "pending" {
-			// Compatibility for S2/S3/S4 answers received before not-ready gates
-			// retained their followup. Never revive a historical stage entry.
-			if row["control_status"] != "no_transition" {
-				continue
-			}
-			if _, found, err := runtime.FindContractPacket(snapshot.State, text(row["packet_id"])); err != nil {
-				return results, err
-			} else if !found {
-				if _, design, err := runtime.FindDesignPacket(snapshot.State, text(row["packet_id"])); err != nil {
-					return results, err
-				} else if !design {
-					if _, tasks, err := runtime.FindTaskPlanningPacket(snapshot.State, text(row["packet_id"])); err != nil {
-						return results, err
-					} else if !tasks {
-						continue
-					}
-				}
-			}
-			if _, err := runtime.SubmissionFollowup(snapshot.State, text(row["followup_event_id"])); err != nil {
-				continue
-			}
+			continue
 		}
 		if err := ctx.Err(); err != nil {
 			return results, err
@@ -446,7 +418,7 @@ func (s *Service) Recover(ctx context.Context, owner string, limit int) ([]Recei
 			}
 			continue
 		}
-		if skipKnownNonS5WorkPacket(snapshot.State, text(row["packet_id"])) {
+		if skipNonS5WorkPacket(snapshot.State, text(row["packet_id"])) {
 			continue
 		}
 		p, ok, err := runtime.FindWorkPacket(snapshot.State, text(row["packet_id"]))
@@ -470,7 +442,7 @@ func (s *Service) Recover(ctx context.Context, owner string, limit int) ([]Recei
 			return results, err
 		}
 		if result.Error == "" && result.QualityGate.TransitionCommitted && result.QualityGate.CandidateTransition == "TR-004" {
-			if design, err := runtime.CurrentDesignPacket(latest.State); err == nil {
+			if design, found, err := runtime.CurrentIssuedDesignPacket(latest.State); err == nil && found {
 				r.NextAction = "完成本轮实际设计后保存当前S2答卷：" + filepath.Join(s.Root, design.AnswerPath)
 			}
 		}

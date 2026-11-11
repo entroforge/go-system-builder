@@ -46,7 +46,7 @@ func TestMainStopRequiresCurrentExecutableReviewWork(t *testing.T) {
 				plan = nil
 			}
 			decision, blocked := mainStopDecisionForState(state, policy.Input{Event: "Stop"}, plan)
-			if blocked != (scenario == "ready") {
+			if blocked != (scenario == "ready" || scenario == "static-wait" || scenario == "old-round") {
 				t.Fatalf("blocked=%v: %#v", blocked, decision)
 			}
 		})

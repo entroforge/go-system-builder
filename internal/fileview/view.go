@@ -80,10 +80,12 @@ func NewContext(ctx context.Context, root, ref string, rules []Rule) (*View, err
 	v.ctx, v.Ref = ctx, ref
 	for _, rule := range v.rules {
 		if rule.Source == "git_tree" {
-			v.Commit, e = ResolveContext(ctx, v.Root, ref)
-			if e != nil {
-				return nil, e
+			if ref == "" || strings.HasPrefix(ref, "-") {
+				return nil, fmt.Errorf("explicit Git reference is required")
 			}
+			// Keep the actual selected branch as the source locator. The reader
+			// must not derive or compare a Git object ID as an admission proof.
+			v.Commit = ref
 			break
 		}
 	}
@@ -191,7 +193,7 @@ func (v *View) ReadFile(path string) ([]byte, error) {
 		return os.ReadFile(full)
 	}
 	// Reject symlinks/submodules instead of treating their pointer bytes as content.
-	out, e := immutableGit(v.context(), v.Root, "ls-tree", "-z", v.Commit, "--", p)
+	out, e := v.readGit("ls-tree", "-z", "--format=%(objectmode) %(objecttype)%x09%(path)", v.Commit, "--", p)
 	if e != nil {
 		return nil, e
 	}
@@ -200,10 +202,10 @@ func (v *View) ReadFile(path string) ([]byte, error) {
 		return nil, &os.PathError{Op: "read Git blob", Path: p, Err: os.ErrNotExist}
 	}
 	fields := strings.Fields(strings.SplitN(records[0], "\t", 2)[0])
-	if len(fields) != 3 || fields[1] != "blob" || fields[0] == "120000" {
+	if len(fields) != 2 || fields[1] != "blob" || fields[0] == "120000" {
 		return nil, fmt.Errorf("not a regular Git blob: %s", p)
 	}
-	return immutableGit(v.context(), v.Root, "cat-file", "blob", fields[2])
+	return v.readGit("show", v.Commit+":"+p)
 }
 func (v *View) ReadDir(path string) ([]os.DirEntry, error) {
 	if err := v.context().Err(); err != nil {
@@ -223,7 +225,7 @@ func (v *View) ReadDir(path string) ([]os.DirEntry, error) {
 	}
 	spec := v.Commit + ":"
 	if p != "." {
-		out, err := immutableGit(v.context(), v.Root, "ls-tree", "-z", v.Commit, "--", p)
+		out, err := v.readGit("ls-tree", "-z", "--name-only", v.Commit, "--", p)
 		if err != nil {
 			return nil, err
 		}
@@ -232,7 +234,7 @@ func (v *View) ReadDir(path string) ([]os.DirEntry, error) {
 		}
 		spec += p
 	}
-	out, e := immutableGit(v.context(), v.Root, "ls-tree", "-z", spec)
+	out, e := v.readGit("ls-tree", "-z", "--format=%(objectmode) %(objecttype)%x09%(path)", spec)
 	if e != nil {
 		return nil, e
 	}
@@ -246,7 +248,7 @@ func (v *View) ReadDir(path string) ([]os.DirEntry, error) {
 			return nil, fmt.Errorf("invalid Git tree")
 		}
 		fields := strings.Fields(parts[0])
-		if len(fields) != 3 {
+		if len(fields) != 2 {
 			return nil, fmt.Errorf("invalid Git tree entry")
 		}
 		mode := fs.FileMode(0644)
@@ -263,21 +265,21 @@ func (v *View) ReadDir(path string) ([]os.DirEntry, error) {
 	}
 	return entries, nil
 }
+
+// readGit caches only immutable Git object references. A branch remains a
+// live source locator and is read again when it moves within the request.
+func (v *View) readGit(args ...string) ([]byte, error) {
+	if pinnedCommit(v.Commit) {
+		return immutableGit(v.context(), v.Root, args...)
+	}
+	return gitContext(v.context(), v.Root, args...)
+}
+
 func (v *View) Verify() error {
 	if err := v.context().Err(); err != nil {
 		return err
 	}
 	defer metrics.Span(v.context(), "source/verify")()
-	if v.Commit == "" {
-		return nil
-	}
-	current, e := ResolveContext(v.context(), v.Root, v.Ref)
-	if e != nil {
-		return e
-	}
-	if current != v.Commit {
-		return fmt.Errorf("file source moved: %s was %s, now %s; reevaluate", v.Ref, v.Commit, current)
-	}
 	return nil
 }
 

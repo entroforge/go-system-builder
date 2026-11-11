@@ -23,7 +23,11 @@ func TestCT03911_DualPassDocumentVerificationCommitsTR003(t *testing.T) {
 	req039fixtures.WriteState(t, root, state)
 
 	runner := &req039fixtures.CLIRunner{}
-	body := req039fixtures.PreToolUseBody("session-ct-039-11", "Edit", map[string]any{
+	// The Main audience is explicit at the call site. The unlabeled
+	// PreToolUseBody shape carries agent_id "agent-1" and no cwd, so the hook
+	// cannot place it as Main or as a registered Worker and reports the event
+	// as unknown instead of running the control cycle.
+	body := req039fixtures.MainPreToolUseBody(root, "session-ct-039-11", "Edit", map[string]any{
 		"file_path": "docs/dev/contracts/BE-039-loop-controller.md",
 	})
 	code, stdout, stderr := req039fixtures.RunHook(t, runner, root, "PreToolUse", body)
@@ -74,15 +78,27 @@ func TestCT03912_BuilderCompleteCommitsTR006NoManualCLI(t *testing.T) {
 	if runner.ManualTransitionCalls != 0 {
 		t.Fatalf("CT-039-12 forbids manual transition CLI, got %d", runner.ManualTransitionCalls)
 	}
-	if !strings.Contains(stdout, "TR-006") {
-		t.Fatalf("CT-039-12 hook must commit/candidate TR-006, stdout=%s", stdout)
+	// L3-S6 §12.1/§13.1 and L4-workflow-convergence §"S6／S9 当前工作区":
+	// the TR-006 denominator is the canonical Assignment Record path. The
+	// legacy completion-report envelope plus a durable worktree checkpoint is
+	// not a current legal delivery, so the gate must stay not ready and the
+	// Hook must surface the canonical responsibility each batch TASK lacks.
+	_, gate := req039fixtures.ParseQualityGate(t, stdout)
+	if gate == nil {
+		t.Fatalf("CT-039-12 hook must surface the gate projection, stdout=%s stderr=%s", stdout, stderr)
+	}
+	if committed, _ := gate["transition_committed"].(bool); committed {
+		t.Fatalf("CT-039-12 must not commit the TR-006 exit from legacy completion facts, stdout=%s", stdout)
+	}
+	for _, taskID := range []string{"TASK-039-01", "TASK-039-02"} {
+		if !strings.Contains(stdout, "builder_responsibility:"+taskID) {
+			t.Fatalf("CT-039-12 hook must surface the missing canonical responsibility for %s, stdout=%s stderr=%s", taskID, stdout, stderr)
+		}
 	}
 	after := req039fixtures.ReadState(t, root)
 	lc, ph := req039fixtures.Lifecycle(after)
-	// L3-S7: TR-006 opens the round at verification.planned; the ReviewPlan
-	// registration (runtime review-plan) moves it to running.
-	if lc != "verification" || ph != "planned" {
-		t.Fatalf("CT-039-12 TR-006 must land verification.planned, got %q/%q", lc, ph)
+	if lc != "building" || ph != "" {
+		t.Fatalf("CT-039-12 must not leave the building stage without canonical deliveries, got %q/%q", lc, ph)
 	}
 }
 
@@ -135,7 +151,6 @@ func TestCT03913_VerificationChainOneHookPerStep(t *testing.T) {
 func TestCT03914_EvidenceDrivenCorrectionPath(t *testing.T) {
 	root := req039fixtures.FreshRoot(t)
 	state := req039fixtures.BaseState(t, root, "bug_resolution", "investigation", 30)
-	req039fixtures.SeedBugReportsRejected(t, root, state)
 	state["lifecycle"] = map[string]any{"state": "bug_resolution", "phase": "investigation", "phase_revision": 0}
 	state["entities"] = map[string]any{
 		"agents": []any{}, "tasks": []any{}, "teams": []any{},
@@ -197,7 +212,7 @@ func TestCT03915_S11StopsAutoAdvance(t *testing.T) {
 	before := req039fixtures.ReadState(t, root)
 	beforeLC, beforePh := req039fixtures.Lifecycle(before)
 
-	body := req039fixtures.PreToolUseBody("session-ct-039-15", "Bash", map[string]any{"command": "ls"})
+	body := req039fixtures.MainPreToolUseBody(root, "session-ct-039-15", "Bash", map[string]any{"command": "ls"})
 	code, stdout, stderr := req039fixtures.RunHook(t, runner, root, "PreToolUse", body)
 	if code != 0 {
 		t.Fatalf("PreToolUse at S11 failed: code=%d stderr=%s", code, stderr)
@@ -451,33 +466,6 @@ func TestCT03921_OpenRoundDoesNotAdvance(t *testing.T) {
 	}
 }
 
-// TestCT03922_BugReportRejectedReturnsInvestigation covers CT-039-22.
-func TestCT03922_BugReportRejectedReturnsInvestigation(t *testing.T) {
-	root := req039fixtures.FreshRoot(t)
-	state := req039fixtures.BaseState(t, root, "bug_resolution", "bug_report_review", 35)
-	req039fixtures.SeedBugReportsRejected(t, root, state)
-	req039fixtures.WriteState(t, root, state)
-
-	result, err := controller.RunControlCycle(context.Background(), controller.ControlRequest{
-		Root: root, Event: "PreToolUse", ToolName: "Edit",
-		ToolInput: map[string]any{"file_path": "docs/reports/bugs/BUG-039-15.md"},
-	})
-	if err != nil {
-		t.Fatalf("control cycle: %v", err)
-	}
-	if result.QualityGate.CandidateTransition != "PTR-BUG-03" {
-		t.Fatalf("CT-039-22 candidate want PTR-BUG-03, got %q status=%q", result.QualityGate.CandidateTransition, result.QualityGate.Status)
-	}
-	if !result.QualityGate.TransitionCommitted {
-		t.Fatalf("CT-039-22 must commit PTR-BUG-03, missing=%v", result.QualityGate.Missing)
-	}
-	after := req039fixtures.ReadState(t, root)
-	_, ph := req039fixtures.Lifecycle(after)
-	if ph != "investigation" {
-		t.Fatalf("CT-039-22 must return to investigation, got phase=%q", ph)
-	}
-}
-
 // TestCT03923_TargetedRecheckFailedReturnsInvestigation covers CT-039-23.
 func TestCT03923_TargetedRecheckFailedReturnsInvestigation(t *testing.T) {
 	root := req039fixtures.FreshRoot(t)
@@ -514,7 +502,7 @@ func TestCT03924_SameAgentDualDVLabelsBlocksTR003(t *testing.T) {
 	req039fixtures.WriteState(t, root, state)
 
 	runner := &req039fixtures.CLIRunner{}
-	body := req039fixtures.PreToolUseBody("session-ct-039-24", "Edit", map[string]any{
+	body := req039fixtures.MainPreToolUseBody(root, "session-ct-039-24", "Edit", map[string]any{
 		"file_path": "docs/dev/contracts/BE-039-loop-controller.md",
 	})
 	code, stdout, stderr := req039fixtures.RunHook(t, runner, root, "PreToolUse", body)

@@ -317,22 +317,19 @@ stateDiagram-v2
     }
     state verification {
         [*] --> planned
-        planned --> running: runtime review-plan
+        planned --> running: original ReviewPlan reception
         running --> cannot_clean: finding verdict
         cannot_clean --> discovery_draining
         running --> clean
         discovery_draining --> observation_sealed
         cannot_clean --> observation_sealed: P0 stop-the-line
         running --> observation_sealed
-        observation_sealed --> bug_resolution: TR-008 sealed batch
-        clean --> acceptance: TR-009 machine CleanRound
+        observation_sealed --> bug_resolution: TR-008 accepted Finding
+        clean --> acceptance: TR-009 necessary responsibilities complete, no Finding
     }
     state bug_resolution {
         [*] --> investigation
-        investigation --> bug_report_review: PTR-BUG-01
-        bug_report_review --> repair_readback: PTR-BUG-02
-        bug_report_review --> investigation: PTR-BUG-03 reject
-        repair_readback --> fixing: PTR-BUG-04
+        investigation --> repair_readback: approved RepairContract
         fixing --> targeted_reverification: PTR-BUG-05 invalidate evidence
         targeted_reverification --> ready_for_full_review: PTR-BUG-06
         targeted_reverification --> investigation: PTR-BUG-07 fail
@@ -345,14 +342,15 @@ the REQ is locked and before the development contract is locked**, because
 FE/BE/SYNC contracts link to the locked package. Skipping the gate when UI
 impact is `changed` is forbidden by INV-004.
 
-The verification machine is a ReviewPlan status projection (`docs/control/agent-protocol.md` #s7): `planned`
-waits for a registered ReviewPlan with an exactly-partitioned required Claim
-set; `running` consumes static DV/QA Claims first, then behavior E2E; a finding
-flips the round to `cannot_clean` but ordinary safe discovery continues
-(`discovery_draining`); only a P0 finding seals the ObservationBatch
-immediately. The exit transitions are machine-guarded: TR-008 consumes the
-sealed batch (exact Finding set), TR-009 recomputes the CleanRound over the
-exact Claim set.
+S7 follows the original ReviewPlan and accepted personal answers. Main owns
+complete-round coverage and professional division; each Reviewer executes only
+its assigned checks. The original consumer checks the current answer's necessary
+structure and conclusion once and saves it once. Necessary responsibilities
+complete without a Finding hand off to S10; an accepted Finding hands the received
+observations and unfinished work to S8. No new CleanRound or ObservationBatch
+proof qualifies either outlet. Already dispatched S7 responsibilities can first
+return after S8 begins; Main decides how late Findings affect current or later
+investigation without automatically changing approval.
 
 Targeted re-verification never creates a clean round. It only permits returning
 to `verification.planned`, where a complete review round — a fresh ReviewPlan
@@ -421,7 +419,7 @@ sequenceDiagram
     participant Consumer as Original professional consumer
     participant Writer as Runtime Writer
     participant Engine as Original transition engine
-    Author->>Consumer: Main save or native SubagentStop delivery
+    Author->>Consumer: Main save / Pre observation / successful Post / Stop fallback
     Consumer->>Writer: Validate and record current professional facts
     Writer-->>Consumer: Accepted receipt and original followup
     Consumer->>Engine: Continue that followup
@@ -447,6 +445,8 @@ necessary, preserving accepted facts and the actual source workspace.
 
 ## 9. Native Agent dispatch and delivery
 
+For current native S9 responsibility selection, the original registered reference may appear as the full absolute path under the Main control root, its complete control-root-relative path, or `./` followed by that complete relative path. These identify the same original responsibility; they do not locate the brief beneath the Worker cwd. Main supplies readable absolute control-root paths for the brief, questions and method materials, and carries the actual task constraints, including any simulation prohibition on product development or commits, into every delegated task. The Worker writes only its supplied private outputs in its actual worktree. Basenames, arbitrary `../`, another absolute root, role names and guessed neighboring paths do not select a responsibility; multiple different responsibilities remain ambiguous. Original responsibility selection, actual integration/checks and real approvals still apply. Answer reception does not revalidate Git, evidence or historical hashes. This S9 rule does not change other stages or frozen responsibility contracts.
+
 Main chooses the professional responsibility and passes its exact brief or
 view/answer references to Claude Code native Agent. Claude Code owns creation,
 foreground/background work, messages, wait and resume. Runtime records the
@@ -461,21 +461,21 @@ sequenceDiagram
     participant Receiver as Original domain consumer
     Main->>Agent: Exact responsibility, inputs and professional output paths
     Agent->>Agent: Read inputs, perform assigned work, save actual artifacts
-    Agent-->>Receiver: SubagentStop with exact returned references
+    Agent-->>Receiver: Stage-specific original reception event
     Receiver-->>Main: Original accepted facts or concrete missing work
     Main->>Main: Integrate contributions and complete remaining stage duties
 ```
 
 | Responsibility | Work and delivery |
 | --- | --- |
-| S5 / S7 / S8 independent work | Read the exact question and frozen subjects, perform the assigned review or investigation, save the private answer and return its reference. Native Stop invokes the original consumer. |
+| S5 independent review | Read the original question and sources, perform the review, save and return the answer through the original Stop contract. |
+| S7 / S8 independent work | Read the exact question and actual assigned sources, perform the review or investigation and save the personal original answer once. Pre, successful Post and Stop fallback use the same original consumer, without a returned-reference or evidence/hash proof prerequisite. |
 | S6 Builder | Main uses `s6 prepare --task <TASK> --role <role>`, then native Agent with worktree isolation. The Builder saves its professional plan before implementing, self-checks, commits actual products and returns the exact brief and absolute Result path. Main receives and integrates separately. |
-| S9 Builder | Read the approved repair inputs. Save the professional PlanReport before implementation in the actual native worktree, continue repair/self-checks, then return the brief and private Result. Stop imports those artifacts; Main integrates and runs necessary checks. |
-| S9 independent Targeted verifier | Verify the assigned Contract assertions against the actual post-repair tree without product writes. Save and return the exact Targeted answer for Stop reception. |
+| S9 Builder | Read the approved repair inputs. Save the professional PlanReport before implementation in the actual native worktree, continue repair/self-checks, then save the private Result at its exact original path. Applicable PreToolUse observes ready originals, with successful PostToolUse and Stop/SubagentStop fallback through the original consumers; Main integrates and runs necessary checks. |
+| S9 independent Targeted verifier | Verify the assigned Contract assertions against the actual post-repair tree without product writes. Save the exact original Targeted answer. Applicable PreToolUse observes it, with successful PostToolUse and Stop/SubagentStop fallback through the original independent consumer. No returned path is an extra prerequisite. |
 | Main planning, impact, acceptance and human decision | Main saves its own exact questionnaire through the existing Main consumer. It does not fill or receive a Worker's private answer on that person's behalf. |
 
-Start supplies short context; ordinary Worker tools and saves preserve work but
-do not activate or receive professional delivery. The returned artifacts carry
+Start supplies short context. S7/S8/S9 ready original answers use applicable PreToolUse reception, with successful PostToolUse and Stop/SubagentStop fallback. S5/S6 keep their original ordinary-tool reception contract; ordinary tools require no activation. The returned artifacts carry
 actual observations and honest blockers, not copied machine metadata. A missing
 path or source goes to Main with its concrete preparation problem.
 
@@ -486,9 +486,8 @@ stages. Main reads the original receiver/integration facts before continuing.
 
 An explicit `plan_approval_required` responsibility still waits for its original
 domain approval; ordinary `plan_checkpoint` work continues without a second
-approval. Existing registered frozen executions retain their exact inputs and
-[recovery contract](../../skills/agent-dispatch/frozen-execution.md). Their
-launcher, readback and activation machinery are not new native prerequisites.
+approval. Preserve accepted facts and continue unfinished work through its
+current responsibility and original consumer.
 Use the current [stage protocol](../control/agent-protocol.md) and
 [native dispatch method](../../skills/agent-dispatch/SKILL.md) for exact inputs
 and outputs; this guide defines no additional submission sequence.
@@ -546,9 +545,11 @@ locked REQ
 ```
 
 Bottom-up, every TASK or BUG manifest must link back through every applicable
-layer. Documents are tracked by `path + logical version + SHA-256 + baseline
-generation`. A transition that consumes a document recomputes its hash and
-rejects or pauses if it changed without a recorded change event.
+layer. Use the actual document path, logical version and existing responsibility
+to identify the materials. Review relevant changes and their professional impact
+through the original change workflow; do not calculate, register or compare
+document hashes as a transition prerequisite. Unavailable material or an unclear
+responsibility remains unknown rather than requiring a replacement fingerprint.
 
 Evidence validity:
 

@@ -30,8 +30,11 @@ func TestCleanInputsMetricsTemporaryKeepsProductAndStagedChanges(t *testing.T) {
 	if err := os.WriteFile(neighbor, []byte("user product"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := b.CleanInputs(ctx); err == nil || !strings.Contains(err.Error(), ".claude/product.go") {
-		t.Fatalf("product neighbor hidden: %v", err)
+	if err := b.CleanInputs(ctx); err != nil {
+		t.Fatalf("untracked neighbor blocked dispatch: %v", err)
+	}
+	if data, err := os.ReadFile(neighbor); err != nil || string(data) != "user product" {
+		t.Fatalf("untracked neighbor changed: %q %v", data, err)
 	}
 	if err := os.Remove(neighbor); err != nil {
 		t.Fatal(err)

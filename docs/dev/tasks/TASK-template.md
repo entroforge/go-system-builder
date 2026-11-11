@@ -22,9 +22,8 @@ TASK ID 使用数字段：例如 `TASK-009` 或 `TASK-009-01`，文件名与标�
 
 ## 2. Document Manifest
 
-Read order for the builder. Fingerprints, versions, and lock state live in
-runtime documents[] (.claude/loop-state.json) — this table never hand-copies
-them. Paths in this manifest resolve relative to this TASK file's directory,
+Read order for the builder. Use the actual referenced sources and relevant clauses;
+do not calculate, register or hand-copy machine fingerprints. Paths in this manifest resolve relative to this TASK file's directory,
 not the repository root.
 
 | Order | Kind | ID | Path | Clauses | Purpose | Mode |

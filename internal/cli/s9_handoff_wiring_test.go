@@ -19,43 +19,43 @@ import (
 	"github.com/entroforge/go-system-builder/internal/workspace"
 )
 
-// Reach the original Stop's real partial boundary: Plan and execution are
-// accepted, but the genuine Result consumer cannot capture a missing source.
+// Reach the original Stop's real partial boundary: the ready Plan and the
+// live execution are accepted, while the genuine Result consumer has no
+// saved original Result to capture.
 func s9HandoffMissingCandidate(t *testing.T) (string, string, workpacket.RepairPlanReportPacket, workspace.Execution, workpacket.RepairResultPacket) {
 	t.Helper()
-	root, worker, plan, input, answer := nativeS9WorkerFixture(t)
+	root, worker, plan, input, _ := nativeS9WorkerFixture(t)
 	ctx := t.Context()
 	service, err := submission.New(root)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var diagnostic bytes.Buffer
-	if err := importNativeS9PlanReport(ctx, root, worker, plan, service, &diagnostic); err != nil {
+	if err := receiveNativeS9ReadyPlan(ctx, root, worker, plan, service, &diagnostic, nil); err != nil {
 		t.Fatalf("import the original Plan: %v", err)
 	}
 	receipt, err := service.SaveRepairPlanReportFrom(ctx, plan.Binding.OwnerAgentID, filepath.Join(root, plan.AnswerPath), root, nil)
 	if err != nil || !receipt.Accepted {
 		t.Fatalf("original Plan was not received: %+v %v", receipt, err)
 	}
-	if err := recordNativeS9Source(ctx, root, worker, repairLeadGit(t, root, "rev-parse", "HEAD"), plan); err != nil {
+	if err := recordNativeS9OriginalLocation(ctx, root, plan, worker); err != nil {
 		t.Fatalf("register original native source: %v", err)
 	}
 	issued, err := service.IssueRepairResults(ctx, plan.Binding.OwnerAgentID)
 	if err != nil || len(issued) != 1 {
 		t.Fatalf("issue original Result before its saved-input attempt: %v %+v", err, issued)
 	}
-	// A previously issued Result preserves its saved typed input when the
-	// original consumer encounters the missing evidence; the first-issue path
-	// instead restores its untouched draft and remains a flat-input window.
-	answer.EvidenceRefs = append(answer.EvidenceRefs, ".claude/submissions/logs/missing-handoff.txt")
+	// The original Result is not saved yet, so the original Stop reaches the
+	// real partial boundary: the ready Plan and the live execution are
+	// accepted while the genuine Result consumer has nothing to capture.
 	result := nativeS9TestResultPath(t, root, plan)
-	if err := persistRepairLeadQuestionnaire(filepath.Join(worker, result), answer); err != nil {
+	if err := os.Remove(filepath.Join(worker, result)); err != nil {
 		t.Fatal(err)
 	}
 	input.Event = "SubagentStop"
 	diagnostic.Reset()
-	if _, code := nativeS9Hook(root, input, &bytes.Buffer{}, &diagnostic); code != 0 || !strings.Contains(diagnostic.String(), "S9 local evidence source gap") {
-		t.Fatalf("original Stop did not reach source gap: %d %s", code, &diagnostic)
+	if _, code := nativeS9Hook(root, input, &bytes.Buffer{}, &diagnostic); code != 0 || !strings.Contains(diagnostic.String(), "Result is not submitted or is unfinished") {
+		t.Fatalf("original Stop did not reach the pending Result boundary: %d %s", code, &diagnostic)
 	}
 	snap := repairDispatchSnapshot(t, root)
 	registry, err := workspace.Decode(snap.State)
@@ -70,10 +70,14 @@ func s9HandoffMissingCandidate(t *testing.T) (string, string, workpacket.RepairP
 	if err != nil || !found || packet.ID != issued[0].ID {
 		t.Fatalf("original issued Result: %t %v %+v", found, err, packet)
 	}
-	typed := filepath.Join(worker, packet.AnswerPath)
 	previous, found := nativeS9ReturnDiagnosticRecordContext(ctx, root, snap, plan.ID)
-	if !found || previous.Attempt == nil || previous.Attempt.Stage != "typed_result_consumer" || previous.Attempt.TypedInputRef != typed || len(previous.Files[typed]) != 64 {
-		t.Fatalf("original consumer did not preserve the saved typed boundary: %+v found=%v", previous, found)
+	if !found || previous.Attempt == nil || previous.Attempt.TypedInputRef != "" {
+		t.Fatalf("original consumer did not preserve the pending Result boundary: %+v found=%v", previous, found)
+	}
+	// The preserved attempt names the exact original Plan and Result paths, so
+	// Main can locate the actual responsibility. No digest is recorded for it.
+	if !strings.Contains(previous.Message, filepath.Join(worker, nativeS9TestPlanPath(t, root, plan))) || !strings.Contains(previous.Message, filepath.Join(worker, result)) {
+		t.Fatalf("original consumer did not name the exact Plan and Result paths: %s", previous.Message)
 	}
 	return root, worker, plan, e, packet
 }
@@ -82,7 +86,7 @@ func TestS9HandoffMissingCandidatePreservesPlanAcrossAllEntrances(t *testing.T) 
 	root, worker, plan, e, result := s9HandoffMissingCandidate(t)
 	snap := repairDispatchSnapshot(t, root)
 	before := repairDispatchRuntimeBytes(t, root)
-	brief, _, _ := nativeS9Paths(plan)
+	brief := nativeS9BriefPath(plan)
 	for _, subject := range []nativeReturnSubject{{kind: "s9-plan-report-v1", id: plan.ID}, {kind: "s9-repair-result-v1", id: result.ID}} {
 		summary, err := nativeReturnSummary(root, snap, subject)
 		if err != nil {
@@ -119,16 +123,12 @@ func TestS9HandoffMissingCandidatePreservesPlanAcrossAllEntrances(t *testing.T) 
 }
 
 func TestS9HandoffIncompleteBindingNeverOpensCandidate(t *testing.T) {
-	for _, side := range []string{"path", "sha"} {
+	for _, side := range []string{"path"} {
 		t.Run(side, func(t *testing.T) {
 			root, _, _, e, _ := s9HandoffMissingCandidate(t)
 			snap := repairDispatchSnapshot(t, root)
 			row := snap.State["workspace"].(map[string]any)["executions"].(map[string]any)[e.AssignmentID].(map[string]any)
-			if side == "path" {
-				row["delivery_ref"] = ".claude/nonexistent-original-candidate.json"
-			} else {
-				row["delivery_sha256"] = strings.Repeat("a", 64)
-			}
+			row["delivery_ref"] = ".claude/nonexistent-original-candidate.json"
 			raw, err := json.Marshal(snap.State)
 			if err != nil {
 				t.Fatal(err)
@@ -138,7 +138,7 @@ func TestS9HandoffIncompleteBindingNeverOpensCandidate(t *testing.T) {
 			}
 			before := repairDispatchRuntimeBytes(t, root)
 			var diagnostic bytes.Buffer
-			if code := runWorkspaceDelivery([]string{"integrate", "--root", root, "--assignment", e.AssignmentID, "--agent", e.AgentID}, &bytes.Buffer{}, &diagnostic); code == 0 || !strings.Contains(diagnostic.String(), "candidate binding is incomplete") || !strings.Contains(diagnostic.String(), "no legacy fallback") {
+			if code := runWorkspaceDelivery([]string{"integrate", "--root", root, "--assignment", e.AssignmentID, "--agent", e.AgentID}, &bytes.Buffer{}, &diagnostic); code == 0 || !strings.Contains(diagnostic.String(), "original candidate source") || !strings.Contains(diagnostic.String(), "is unavailable") {
 				t.Fatalf("half-bound source: %d %s", code, &diagnostic)
 			}
 			repairDispatchAssertUnchanged(t, root, before)
@@ -149,7 +149,7 @@ func TestS9HandoffIncompleteBindingNeverOpensCandidate(t *testing.T) {
 func TestS9HandoffTypedCandidateCannotLoseProvenanceOrSource(t *testing.T) {
 	root, _, e, packet, _ := s9NativeIntegrationCandidate(t)
 	snap := repairDispatchSnapshot(t, root)
-	candidate, err := repair.ReadWorkspaceCandidate(root, repair.ArtifactRef{Path: e.DeliveryRef, SHA256: e.DeliverySHA256})
+	candidate, err := repair.ReadWorkspaceCandidate(root, repair.ArtifactRef{Path: e.DeliveryRef})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -283,7 +283,6 @@ func TestS9HandoffDamagedTypedCandidateStopsBeforeMerge(t *testing.T) {
 	for _, damage := range []string{"missing provenance", "missing source", "invalid JSON"} {
 		t.Run(damage, func(t *testing.T) {
 			root, _, e, _, _ := s9NativeIntegrationCandidate(t)
-			snap := repairDispatchSnapshot(t, root)
 			path := filepath.Join(root, e.DeliveryRef)
 			raw, err := os.ReadFile(path)
 			if err != nil {
@@ -311,17 +310,7 @@ func TestS9HandoffDamagedTypedCandidateStopsBeforeMerge(t *testing.T) {
 				if err := os.WriteFile(path, raw, 0600); err != nil {
 					t.Fatal(err)
 				}
-				// Bypass only the byte mismatch to reach the independent typed source
-				// checks. This is deliberate corruption, never a fabricated acceptance.
-				row := mapFieldCLI(mapFieldCLI(snap.State, "workspace"), "executions")[e.AssignmentID].(map[string]any)
-				row["delivery_sha256"] = workpacket.Digest(raw)
-				state, err := json.Marshal(snap.State)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if err := os.WriteFile(filepath.Join(root, ".claude/loop-state.json"), state, 0600); err != nil {
-					t.Fatal(err)
-				}
+
 			}
 			before := repairDispatchRuntimeBytes(t, root)
 			head := repairLeadGit(t, root, "rev-parse", "HEAD")
@@ -518,7 +507,10 @@ func TestS9HandoffPublicMainProgressUsesOriginalReceptionFacts(t *testing.T) {
 					t.Fatalf("partial background return became integrate duty: %s", text)
 				}
 			case "accepted candidate":
-				if !strings.Contains(text, "Main next runs runtime workspace integrate") || !strings.Contains(text, "--check-command") {
+				// The original ChangeImpact is prepared as soon as Main takes
+				// over the candidate; no mandatory workspace integrate action
+				// precedes its reception.
+				if !strings.Contains(text, "change-impact.json") || strings.Contains(text, "Main next runs runtime workspace integrate") {
 					t.Fatalf("accepted background return lacks actual Main handoff: %s", text)
 				}
 			case "accepted Final":
@@ -526,7 +518,11 @@ func TestS9HandoffPublicMainProgressUsesOriginalReceptionFacts(t *testing.T) {
 					t.Fatalf("Final lost original close-out: %s", text)
 				}
 			}
-			repairDispatchAssertUnchanged(t, root, before)
+			// The empty original ChangeImpact may be received along this Pre
+			// event (L4-workflow-convergence.md:110), so the Runtime changes by
+			// exactly that one original Impact reception. Every other already
+			// received S9 fact must stay put.
+			repairDispatchAssertOnlyImpactReception(t, root, before, scenario != "no candidate")
 		})
 	}
 }
@@ -547,8 +543,28 @@ func TestS9HandoffAcceptedFinalCleanupUsesFrozenSessionProtection(t *testing.T) 
 	var out, diagnostic bytes.Buffer
 	_ = runWorkspaceDelivery([]string{"integrate", "--root", root, "--assignment", e.AssignmentID, "--agent", e.AgentID}, &out, &diagnostic)
 	checkpoint, found, err := integration.DefaultCheckpointStore().Load(workspaceExecutionCheckpointPath(root, e))
-	if err != nil || !found || checkpoint.State != integration.StateComplete {
+	if err != nil || !found {
 		t.Fatalf("old Plan blocked already accepted Final cleanup: %+v %v %s", checkpoint, err, &diagnostic)
+	}
+	// The missing old Plan is a later Main-material issue and must not hold
+	// the cleanup of an already accepted Final. The author's private answer
+	// material may still sit in the worktree, and a retained material keeps
+	// the cleanup pending without revoking the acceptance or the
+	// acknowledgement (L4-workflow-convergence.md:302).
+	if checkpoint.State != integration.StateComplete && checkpoint.State != integration.StateCleanupPending {
+		t.Fatalf("old Plan blocked already accepted Final cleanup: %+v %v %s", checkpoint, err, &diagnostic)
+	}
+	if checkpoint.State == integration.StateCleanupPending {
+		reason := checkpoint.FailureReason + " " + strings.Join(checkpoint.Blockers, " ")
+		if strings.Contains(reason, planPath) {
+			t.Fatalf("cleanup was held by the missing old Plan: %+v", checkpoint)
+		}
+		if checkpoint.WorktreePath == "" {
+			t.Fatalf("cleanup_pending did not report the retained worktree: %+v", checkpoint)
+		}
+		if _, statErr := os.Stat(checkpoint.WorktreePath); statErr != nil {
+			t.Fatalf("cleanup_pending did not retain the author's worktree: %v", statErr)
+		}
 	}
 	current, err := os.ReadFile(filepath.Join(root, ref.Path))
 	if err != nil || !bytes.Equal(original, current) {

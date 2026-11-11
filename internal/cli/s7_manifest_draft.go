@@ -15,7 +15,9 @@ import (
 	"strings"
 
 	"github.com/entroforge/go-system-builder/internal/review"
+	"github.com/entroforge/go-system-builder/internal/reviewmeta"
 	"github.com/entroforge/go-system-builder/internal/runtime"
+	"github.com/entroforge/go-system-builder/internal/workstate"
 )
 
 // runS7ManifestDraft generates the manifest draft. It performs no writes to
@@ -30,9 +32,9 @@ func runS7ManifestDraft(root, assignmentID, out string, stdout io.Writer) int {
 	}
 	if out != "" {
 		if _, statErr := os.Lstat(out); statErr == nil {
-			draft, readErr := readS7ExistingManifest(out, snapshot.State, assignmentID)
+			draft, readErr := readS7ExistingManifest(root, out, snapshot.State, assignmentID)
 			if readErr != nil {
-				fmt.Fprintf(stdout, "preserve existing manifest %s; restore its original source: %v\n", out, readErr)
+				fmt.Fprintf(stdout, "preserve existing manifest %s: %v. %s", out, readErr, s7ManifestPreparationHint(root, snapshot.State, assignmentID))
 				return 1
 			}
 			fmt.Fprintf(stdout, "preserved existing manifest %s; read and retain its professional edits.\n%s", out, s7ManifestRegistrationGuidance(root, out, draft))
@@ -88,7 +90,7 @@ func runS7ManifestDraft(root, assignmentID, out string, stdout io.Writer) int {
 	return 0
 }
 
-func readS7ExistingManifest(path string, state map[string]any, assignmentID string) (*review.ManifestDraft, error) {
+func readS7ExistingManifest(root, path string, state map[string]any, assignmentID string) (*review.ManifestDraft, error) {
 	info, err := os.Lstat(path)
 	if err != nil {
 		return nil, err
@@ -106,19 +108,71 @@ func readS7ExistingManifest(path string, state map[string]any, assignmentID stri
 	}
 	baseline, _ := state["baseline"].(map[string]any)
 	reviewState, _ := state["review"].(map[string]any)
-	if draft.RuntimeID != stringValue(state["runtime_id"]) || draft.BaselineGeneration != tolerantInt(baseline["generation"]) || draft.ReviewRound != tolerantInt(reviewState["round"]) {
-		return nil, fmt.Errorf("manifest does not belong to the current Runtime, generation and review round")
+	if draft.RuntimeID != stringValue(state["runtime_id"]) || draft.BaselineGeneration != tolerantInt(baseline["generation"]) {
+		return nil, fmt.Errorf("manifest does not belong to the current Runtime and generation")
+	}
+	identity := reviewmeta.FromReview(reviewState)
+	revision, known := review.ManifestPlanRevision(identity.PlanID, assignmentID, draft.ManifestID)
+	if !known {
+		return nil, fmt.Errorf("manifest has no known association with the current ReviewPlan and Assignment")
+	}
+	if ptr := review.PlanPointerFromState(state); ptr != nil && ptr.Revision > 1 {
+		unchanged, err := review.ManifestAssignmentUnchangedSince(root, state, assignmentID, revision)
+		if err != nil {
+			return nil, fmt.Errorf("cannot compare this original responsibility: %w", err)
+		}
+		if !unchanged {
+			return nil, fmt.Errorf("the saved manifest belongs to an earlier or unknown Plan responsibility")
+		}
 	}
 	count := 0
 	for _, row := range draft.Assignments {
 		if row.AssignmentID == assignmentID {
 			count++
+			assignments, _ := reviewState["assignments"].(map[string]any)
+			current, _ := assignments[assignmentID].(map[string]any)
+			if raw, known := current["claim_ids"]; known && raw != nil && !s7SameClaimSet(stringSliceAny(raw), row.ClaimIDs) {
+				return nil, fmt.Errorf("the current Assignment has changed its original Claim set")
+			}
+			if lens := stringValue(current["lens"]); lens != "" && review.LensToWorkgroupKind(lens) != draft.WorkgroupKind {
+				return nil, fmt.Errorf("the current Assignment has changed its original lens")
+			}
+			// An already registered owner retains its original packet and prompt;
+			// an amended planned responsibility needs its own dispatch owner.
+			entities, _ := state["entities"].(map[string]any)
+			agents, _ := entities["agents"].([]any)
+			for _, raw := range agents {
+				agent, _ := raw.(map[string]any)
+				if row.AgentID != "" && agent["id"] == row.AgentID && workstate.ReviewAssignmentActivity(current) == "planned" && stringValue(current["queued_agent_id"]) != row.AgentID {
+					return nil, fmt.Errorf("the saved Reviewer is already registered to an earlier responsibility")
+				}
+			}
 		}
 	}
 	if count != 1 {
 		return nil, fmt.Errorf("manifest must bind original Assignment %s exactly once", assignmentID)
 	}
 	return &draft, nil
+}
+
+func s7SameClaimSet(left, right []string) bool {
+	set := func(values []string) map[string]bool {
+		m := make(map[string]bool, len(values))
+		for _, value := range values {
+			m[value] = true
+		}
+		return m
+	}
+	a, b := set(left), set(right)
+	if len(a) != len(b) {
+		return false
+	}
+	for value := range a {
+		if !b[value] {
+			return false
+		}
+	}
+	return true
 }
 
 func s7ManifestRegistrationGuidance(root, out string, draft *review.ManifestDraft) string {

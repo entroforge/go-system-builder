@@ -12,14 +12,13 @@ import (
 // These are read-only coordinates from the original Runtime execution index.
 // They do not prepare a worktree, derive permissions or replace its Writer.
 type executionMetadata struct {
-	AssignmentRecord       *assignmentrecord.RecordReference `json:"assignment_record"`
-	AssignmentRecordSHA256 string                            `json:"assignment_record_sha256"`
-	AssignmentID           string                            `json:"assignment_id"`
-	RuntimeID              string                            `json:"runtime_id"`
-	BaselineGeneration     int                               `json:"baseline_generation"`
-	Generation             int                               `json:"execution_generation"`
-	AgentID                string                            `json:"agent_id"`
-	Status                 string                            `json:"status"`
+	AssignmentRecord   *assignmentrecord.RecordReference `json:"assignment_record"`
+	AssignmentID       string                            `json:"assignment_id"`
+	RuntimeID          string                            `json:"runtime_id"`
+	BaselineGeneration int                               `json:"baseline_generation"`
+	Generation         int                               `json:"execution_generation"`
+	AgentID            string                            `json:"agent_id"`
+	Status             string                            `json:"status"`
 }
 type executionRegistry struct {
 	Version    int                          `json:"binding_version"`

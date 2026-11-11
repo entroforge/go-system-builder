@@ -241,12 +241,21 @@ func currentTaskPlanningPacket(state map[string]any, binding workpacket.Planning
 	if len(candidateIDs) != 1 {
 		return workpacket.TaskPlanningPacket{}, false, slotSeen
 	}
-	packet, found, err := runtime.FindTaskPlanningPacket(state, candidateIDs[0])
-	if err != nil || !found {
+	// A packet ID must identify the one recorded responsibility. In
+	// particular, do not let FindTaskPlanningPacket select an older row with
+	// the same ID before the current row.
+	count := 0
+	for _, raw := range rows {
+		row, _ := raw.(map[string]any)
+		if row["packet_id"] == candidateIDs[0] {
+			count++
+		}
+	}
+	if count != 1 {
 		return workpacket.TaskPlanningPacket{}, false, true
 	}
-	expected, err := workpacket.BuildTaskPlanningWithTemplate(binding, packet.Inputs, packet.TemplateSHA)
-	if err != nil || !reflect.DeepEqual(expected, packet) {
+	packet, found, err := runtime.FindTaskPlanningPacket(state, candidateIDs[0])
+	if err != nil || !found || packet.Binding != binding {
 		return workpacket.TaskPlanningPacket{}, false, true
 	}
 	return packet, true, false

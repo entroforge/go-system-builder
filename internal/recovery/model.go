@@ -111,15 +111,13 @@ type REQBinding struct {
 	Path      string             `json:"path"`
 	Status    string             `json:"status"`
 	Version   string             `json:"version"`
-	SHA256    string             `json:"sha256"`
 }
 
-// InventoryInput is a content-addressed repository-relative recovery input.
+// InventoryInput describes an original repository-relative recovery input.
 type InventoryInput struct {
-	Path   string `json:"path"`
-	Kind   string `json:"kind"`
-	SHA256 string `json:"sha256"`
-	Size   int64  `json:"size"`
+	Path string `json:"path"`
+	Kind string `json:"kind"`
+	Size int64  `json:"size"`
 }
 
 // Inventory is the read-only result of inspecting a repository for recovery.
@@ -132,7 +130,7 @@ type Inventory struct {
 	Root          string           `json:"-"`
 }
 
-// Plan is the deterministic, conservative RR-A recovery proposal. It does
+// Plan is the conservative RR-A recovery proposal. It does
 // not mutate files and does not claim that any cursor replay has occurred.
 type Plan struct {
 	SchemaVersion string           `json:"schema_version"`
@@ -141,10 +139,4 @@ type Plan struct {
 	BaseMode      string           `json:"base_mode"`
 	TargetCursor  string           `json:"target_cursor"`
 	Confidence    string           `json:"confidence"`
-	PlanSHA256    string           `json:"plan_sha256"`
-}
-
-// Hash returns the content hash assigned to the plan.
-func (p Plan) Hash() string {
-	return p.PlanSHA256
 }

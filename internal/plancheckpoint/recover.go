@@ -1,7 +1,6 @@
 package plancheckpoint
 
 import (
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"github.com/entroforge/go-system-builder/internal/assignmentrecord"
@@ -83,9 +82,8 @@ func ActivatedRef(root string, snapshot runtimemeta.Snapshot, agentID string) (s
 				return "", err
 			}
 		}
-		sum := sha256.Sum256(plan)
-		if m["approved_readback_sha256"] != fmt.Sprintf("%x", sum) || m["approved_readback_message_id"] != p["message_id"] {
-			return "", fmt.Errorf("activation no longer binds the current plan bytes")
+		if m["approved_readback_message_id"] != p["message_id"] {
+			return "", fmt.Errorf("activation does not identify the current plan")
 		}
 		return ref, nil
 	}

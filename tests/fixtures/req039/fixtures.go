@@ -4,8 +4,6 @@ package req039fixtures
 
 import (
 	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -103,25 +101,21 @@ func FreshRoot(t *testing.T) string {
 	return root
 }
 
-// definitionRefs returns sha256 fingerprints for on-disk docs in root.
-func definitionRefs(t *testing.T, root string) (defSHA, policySHA string) {
+// requireControlSources retains the original readable control sources.
+func requireControlSources(t *testing.T, root string) {
 	t.Helper()
-	defBytes, err := os.ReadFile(filepath.Join(root, "docs", "control", "loop-definition.json"))
-	if err != nil {
-		t.Fatal(err)
+	for _, name := range []string{"loop-definition.json", "hook-policy.json"} {
+		if _, err := os.ReadFile(filepath.Join(root, "docs", "control", name)); err != nil {
+			t.Fatal(err)
+		}
 	}
-	polBytes, err := os.ReadFile(filepath.Join(root, "docs", "control", "hook-policy.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return Sha256Hex(defBytes), Sha256Hex(polBytes)
 }
 
 // WriteState persists loop-state.json under root/.claude/.
 func WriteState(t *testing.T, root string, state map[string]any) {
 	CommitFixture(t, root)
 	if bound, ok := state["bound_req"].(map[string]any); ok {
-		bound["workspace"] = map[string]any{"project_root": root, "dev_branch": "test-development", "release_upstream": "origin/release", "bound_commit": "fixture"}
+		bound["workspace"] = map[string]any{"project_root": root, "dev_branch": "test-development", "release_upstream": "origin/release"}
 	}
 	t.Helper()
 	path := filepath.Join(root, ".claude", "loop-state.json")
@@ -146,12 +140,6 @@ func ReadState(t *testing.T, root string) map[string]any {
 		t.Fatal(err)
 	}
 	return state
-}
-
-// Sha256Hex returns the lowercase hex digest of data.
-func Sha256Hex(data []byte) string {
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:])
 }
 
 // RuntimeIDFromState returns state.runtime_id or the CT fixture default.
@@ -195,7 +183,7 @@ func WriteEvidenceEnvelope(t *testing.T, root string, state map[string]any, id, 
 		t.Fatal(err)
 	}
 	rel := writeEvidenceFile(t, root, id+".json", data)
-	return evidenceIndexEntry(id, wireKind, rel, Sha256Hex(data), envelopeReviewRound(envelope), agent, responsibility, scope)
+	return evidenceIndexEntry(id, wireKind, rel, envelopeReviewRound(envelope), agent, responsibility, scope)
 }
 
 func envelopeReviewRound(envelope map[string]any) int {
@@ -211,10 +199,7 @@ func envelopeReviewRound(envelope map[string]any) int {
 // BaseState returns a schema-valid loop-state skeleton for Hook-driven tests.
 func BaseState(t *testing.T, root, lifecycleState, phase string, revision int) map[string]any {
 	t.Helper()
-	// req_baseline_unchanged is a real fingerprint guard (L3-S6 P0-4): the
-	// bound REQ file must exist with bytes matching the pinned sha. Write
-	// a stub REQ when the fixture root has none so every seeded state is
-	// fingerprint-consistent.
+	// Keep the original bound REQ readable for every seeded Runtime.
 	reqRel := "docs/requirements/REQ-039-loop-control-plane.md"
 	reqBytes, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(reqRel)))
 	if err != nil {
@@ -226,7 +211,7 @@ func BaseState(t *testing.T, root, lifecycleState, phase string, revision int) m
 			t.Fatal(err)
 		}
 	}
-	defSHA, policySHA := definitionRefs(t, root)
+	requireControlSources(t, root)
 	stage := stageFor(lifecycleState, phase)
 	return map[string]any{
 		"schema_version": "1.1.0",
@@ -234,7 +219,6 @@ func BaseState(t *testing.T, root, lifecycleState, phase string, revision int) m
 		"definition": map[string]any{
 			"path":    "docs/control/loop-definition.json",
 			"version": "1.1.0",
-			"sha256":  defSHA,
 		},
 		"revision": float64(revision),
 		"lifecycle": map[string]any{
@@ -277,7 +261,6 @@ func BaseState(t *testing.T, root, lifecycleState, phase string, revision int) m
 			"id":          "REQ-039",
 			"path":        reqRel,
 			"version":     "v2.0.0",
-			"sha256":      Sha256Hex(reqBytes),
 			"status":      "locked",
 			"approved_by": "user",
 			"approved_at": "2026-07-30T00:00:00Z",
@@ -306,7 +289,6 @@ func BaseState(t *testing.T, root, lifecycleState, phase string, revision int) m
 		"hook_control": map[string]any{
 			"policy_ref": map[string]any{
 				"path": "docs/control/hook-policy.json", "version": "v2.0.0",
-				"sha256": policySHA,
 			},
 			"mode": "enforce", "health": "healthy", "consecutive_failures": 0, "last_checked_at": nil,
 		},
@@ -412,8 +394,8 @@ type docSeed struct {
 	data                    []byte
 }
 
-// ensureS5DocumentBaseline returns the subject list the DV envelopes must
-// sign over. On the organic path (documents[] already registered by
+// ensureS5DocumentBaseline returns the actual document subjects for the
+// document verifier. On the organic path (documents[] already registered by
 // bind/PTR-PLAN-01/PTR-PLAN-02/TR-002) it derives subjects from the current
 // registrations and writes nothing — the organic chain owns the files. On a
 // compressed precondition (empty documents[]) it writes the four files with
@@ -430,14 +412,13 @@ func ensureS5DocumentBaseline(t *testing.T, root string, state map[string]any) [
 			}
 			path, _ := doc["path"].(string)
 			version, _ := doc["version"].(string)
-			sha, _ := doc["sha256"].(string)
-			if path == "" || sha == "" {
+			if path == "" {
 				continue
 			}
-			subjects = append(subjects, map[string]any{"path": path, "version": version, "sha256": sha})
+			subjects = append(subjects, map[string]any{"path": path, "version": version})
 		}
 		if len(subjects) == 0 {
-			t.Fatal("ensureS5DocumentBaseline: documents[] present but carries no path/sha entries")
+			t.Fatal("ensureS5DocumentBaseline: documents[] present but carries no document paths")
 		}
 		return subjects
 	}
@@ -457,10 +438,10 @@ func ensureS5DocumentBaseline(t *testing.T, root string, state map[string]any) [
 		}
 		documents = append(documents, map[string]any{
 			"id": d.id, "kind": d.kind, "path": d.path, "version": d.version,
-			"sha256": Sha256Hex(d.data), "status": "locked", "generation": 1,
+			"status": "locked", "generation": 1,
 		})
 		subjects = append(subjects, map[string]any{
-			"path": d.path, "version": d.version, "sha256": Sha256Hex(d.data),
+			"path": d.path, "version": d.version,
 		})
 	}
 	state["documents"] = documents
@@ -505,7 +486,7 @@ func SeedDocumentPassS5(t *testing.T, root string, state map[string]any, specAge
 		if err := os.WriteFile(filepath.Join(root, rel), data, 0o644); err != nil {
 			t.Fatal(err)
 		}
-		entries = append(entries, evidenceIndexEntry(id, "document_review", rel, Sha256Hex(data), round, agent, responsibility, []any{}))
+		entries = append(entries, evidenceIndexEntry(id, "document_review", rel, round, agent, responsibility, []any{}))
 	}
 	addReview("ev-dv-spec", "DV-SPEC-CONSISTENCY", specAgent)
 	addReview("ev-dv-task", "DV-TASK-EXECUTABILITY", taskAgent)
@@ -546,16 +527,16 @@ func SeedBuilderBatchReady(t *testing.T, root string, state map[string]any) {
 	documents := []any{
 		map[string]any{
 			"id": "TASK-039-01", "kind": "task", "path": "docs/dev/tasks/TASK-039-01-loop-definition.md",
-			"version": "v1.0.2", "sha256": Sha256Hex(taskOne), "status": "locked", "generation": 1,
+			"version": "v1.0.2", "status": "locked", "generation": 1,
 		},
 		map[string]any{
 			"id": "TASK-039-02", "kind": "task", "path": "docs/dev/tasks/TASK-039-02-controller-cycle.md",
-			"version": "v1.0.2", "sha256": Sha256Hex(taskTwo), "status": "locked", "generation": 1,
+			"version": "v1.0.2", "status": "locked", "generation": 1,
 		},
 	}
 	subjects := []any{
-		map[string]any{"path": "docs/dev/tasks/TASK-039-01-loop-definition.md", "version": "v1.0.2", "sha256": Sha256Hex(taskOne)},
-		map[string]any{"path": "docs/dev/tasks/TASK-039-02-controller-cycle.md", "version": "v1.0.2", "sha256": Sha256Hex(taskTwo)},
+		map[string]any{"path": "docs/dev/tasks/TASK-039-01-loop-definition.md", "version": "v1.0.2"},
+		map[string]any{"path": "docs/dev/tasks/TASK-039-02-controller-cycle.md", "version": "v1.0.2"},
 	}
 	var evidence []any
 	if err := os.MkdirAll(filepath.Join(root, "evidence"), 0o755); err != nil {
@@ -580,7 +561,7 @@ func SeedBuilderBatchReady(t *testing.T, root string, state map[string]any) {
 			t.Fatal(err)
 		}
 		rel := writeEvidenceFile(t, root, id+".json", data)
-		evidence = append(evidence, evidenceIndexEntry(id, wireKind, rel, Sha256Hex(data), round, "builder-1", responsibility, []any{}))
+		evidence = append(evidence, evidenceIndexEntry(id, wireKind, rel, round, "builder-1", responsibility, []any{}))
 	}
 	add("ev-completion-1", "agent_completion", "BUILD-WORK-PACKAGE", "completed", "TASK-039-01")
 	add("ev-completion-2", "agent_completion", "BUILD-WORK-PACKAGE", "completed", "TASK-039-02")
@@ -622,13 +603,13 @@ func SeedBuilderBatchReady(t *testing.T, root string, state map[string]any) {
 		"tasks": []any{
 			map[string]any{
 				"id": "TASK-039-01", "state": "review",
-				"path":   "docs/dev/tasks/TASK-039-01-loop-definition.md",
-				"sha256": Sha256Hex(taskOne), "owner_agent_ids": []any{"builder-1"},
+				"path":            "docs/dev/tasks/TASK-039-01-loop-definition.md",
+				"owner_agent_ids": []any{"builder-1"},
 			},
 			map[string]any{
 				"id": "TASK-039-02", "state": "review",
-				"path":   "docs/dev/tasks/TASK-039-02-controller-cycle.md",
-				"sha256": Sha256Hex(taskTwo), "owner_agent_ids": []any{"builder-1"},
+				"path":            "docs/dev/tasks/TASK-039-02-controller-cycle.md",
+				"owner_agent_ids": []any{"builder-1"},
 			},
 		},
 		"bugs": []any{}, "teams": []any{},
@@ -673,7 +654,7 @@ func SeedDocumentFixRequired(t *testing.T, root string, state map[string]any, sp
 		if err := os.WriteFile(filepath.Join(root, rel), data, 0o644); err != nil {
 			t.Fatal(err)
 		}
-		entries = append(entries, evidenceIndexEntry(id, "document_review", rel, Sha256Hex(data), round, agent, responsibility, []any{}))
+		entries = append(entries, evidenceIndexEntry(id, "document_review", rel, round, agent, responsibility, []any{}))
 	}
 	addReview("ev-dv-fix-spec", "DV-SPEC-CONSISTENCY", specAgent)
 	addReview("ev-dv-fix-task", "DV-TASK-EXECUTABILITY", taskAgent)
@@ -708,12 +689,12 @@ func SeedConflictingDeliveryEvents(t *testing.T, root string, state map[string]a
 		t.Fatal(err)
 	}
 	subject := map[string]any{
-		"path": taskPath, "version": "v1.0.2", "sha256": Sha256Hex(taskData),
+		"path": taskPath, "version": "v1.0.2",
 	}
 	state["documents"] = []any{
 		map[string]any{
 			"id": "TASK-039-01", "kind": "task", "path": taskPath, "version": "v1.0.2",
-			"sha256": Sha256Hex(taskData), "status": "locked", "generation": 1,
+			"status": "locked", "generation": 1,
 		},
 	}
 	var evidence []any
@@ -730,7 +711,7 @@ func SeedConflictingDeliveryEvents(t *testing.T, root string, state map[string]a
 			t.Fatal(err)
 		}
 		rel := writeEvidenceFile(t, root, id+".json", data)
-		evidence = append(evidence, evidenceIndexEntry(id, wireKind, rel, Sha256Hex(data), 1, "delivery-1", responsibility, []any{taskPath}))
+		evidence = append(evidence, evidenceIndexEntry(id, wireKind, rel, 1, "delivery-1", responsibility, []any{taskPath}))
 	}
 	add("ev-delivery-pass", "delivery_review", "Delivery Verifier", "pass", "delivery_pass")
 	add("ev-blocking", "bug", "Delivery Verifier", "blocking", "blocking_findings_reported")
@@ -738,7 +719,7 @@ func SeedConflictingDeliveryEvents(t *testing.T, root string, state map[string]a
 }
 
 // evidenceIndexEntry returns a schema-valid runtime evidence index record.
-func evidenceIndexEntry(id, wireKind, path, sha string, round int, producer, responsibility string, scope []any) map[string]any {
+func evidenceIndexEntry(id, wireKind, path string, round int, producer, responsibility string, scope []any) map[string]any {
 	if scope == nil {
 		scope = []any{}
 	}
@@ -749,7 +730,7 @@ func evidenceIndexEntry(id, wireKind, path, sha string, round int, producer, res
 		roundValue = round
 	}
 	return map[string]any{
-		"id": id, "kind": wireKind, "path": path, "sha256": sha,
+		"id": id, "kind": wireKind, "path": path,
 		"status": "valid", "baseline_generation": 1, "review_round": roundValue,
 		"produced_by": []any{producer}, "invalidated_by": nil,
 		"invalidation_rule": nil, "invalidation_reason": nil,
@@ -784,7 +765,7 @@ func SeedCleanRoundIncomplete(t *testing.T, root string, state map[string]any) {
 	data, _ := json.Marshal(envelope)
 	rel := writeEvidenceFile(t, root, "ev-clean-incomplete.json", data)
 	state["evidence"] = []any{
-		evidenceIndexEntry("ev-clean-incomplete", "clean_round", rel, Sha256Hex(data), 1, "orchestrator-1", "Orchestrator", []any{}),
+		evidenceIndexEntry("ev-clean-incomplete", "clean_round", rel, 1, "orchestrator-1", "Orchestrator", []any{}),
 	}
 }
 
@@ -802,7 +783,7 @@ func SeedBugReportsRejected(t *testing.T, root string, state map[string]any) {
 	state["lifecycle"] = map[string]any{"state": "bug_resolution", "phase": "bug_report_review", "phase_revision": 0}
 	state["review"] = map[string]any{"round": 1, "clean_round": nil}
 	state["evidence"] = []any{
-		evidenceIndexEntry("ev-bug-batch", "bug", rel, Sha256Hex(data), 1, "orchestrator-1", "Orchestrator", []any{}),
+		evidenceIndexEntry("ev-bug-batch", "bug", rel, 1, "orchestrator-1", "Orchestrator", []any{}),
 	}
 	state["milestone"].(map[string]any)["stage"] = "S8"
 	state["milestone"].(map[string]any)["lifecycle_state"] = "bug_resolution"
@@ -824,7 +805,7 @@ func SeedTargetedReverificationFail(t *testing.T, root string, state map[string]
 		"runtime_id": runtimeIDFromState(state), "baseline_generation": 1, "review_round": 1,
 		"producer_agent_id": "finder-1", "producer_responsibility": "Original Finder",
 		"subject_refs": []any{
-			map[string]any{"path": "docs/dev/tasks/TASK-039-01-loop-definition.md", "version": "v1.0.2", "sha256": Sha256Hex(taskData)},
+			map[string]any{"path": "docs/dev/tasks/TASK-039-01-loop-definition.md", "version": "v1.0.2"},
 		},
 		"conclusion": "fail", "created_at": "2026-07-30T00:00:00Z",
 	}
@@ -835,11 +816,11 @@ func SeedTargetedReverificationFail(t *testing.T, root string, state map[string]
 	state["documents"] = []any{
 		map[string]any{
 			"id": "TASK-039-01", "kind": "task", "path": "docs/dev/tasks/TASK-039-01-loop-definition.md",
-			"version": "v1.0.2", "sha256": Sha256Hex(taskData), "status": "locked", "generation": 1,
+			"version": "v1.0.2", "status": "locked", "generation": 1,
 		},
 	}
 	state["evidence"] = []any{
-		evidenceIndexEntry("ev-tgt-fail", "targeted_reverification", rel, Sha256Hex(data), 1, "finder-1", "Original Finder", []any{"docs/dev/tasks/TASK-039-01-loop-definition.md"}),
+		evidenceIndexEntry("ev-tgt-fail", "targeted_reverification", rel, 1, "finder-1", "Original Finder", []any{"docs/dev/tasks/TASK-039-01-loop-definition.md"}),
 	}
 	state["milestone"].(map[string]any)["stage"] = "S8"
 	state["milestone"].(map[string]any)["lifecycle_state"] = "bug_resolution"
@@ -880,11 +861,11 @@ func SeedG2Rework(t *testing.T, root string, state map[string]any) {
 	state["documents"] = []any{
 		map[string]any{
 			"id": "ARCH-039", "kind": "design", "path": g2Path, "version": "v2.0.3",
-			"sha256": Sha256Hex(g2Data), "status": "locked", "generation": 2,
+			"status": "locked", "generation": 2,
 		},
 		map[string]any{
 			"id": "ARCH-039-g1", "kind": "design", "path": g1Path, "version": "v2.0.2",
-			"sha256": Sha256Hex(g1Data), "status": "superseded", "generation": 1,
+			"status": "superseded", "generation": 1,
 		},
 	}
 }
@@ -914,7 +895,7 @@ func SeedPlanningDesignComplete(t *testing.T, root string, state map[string]any)
 		"runtime_id": runtimeIDFromState(state), "baseline_generation": 1, "review_round": 1,
 		"producer_agent_id": "architect-1", "producer_responsibility": "Architect",
 		"subject_refs": []any{
-			map[string]any{"path": "docs/architecture/ARCHITECTURE-039-loop-control-plane.md", "version": "v2.0.2", "sha256": Sha256Hex(archData)},
+			map[string]any{"path": "docs/architecture/ARCHITECTURE-039-loop-control-plane.md", "version": "v2.0.2"},
 		},
 		"conclusion": "pass", "created_at": "2026-07-30T00:00:00Z",
 	}
@@ -927,7 +908,7 @@ func SeedPlanningDesignComplete(t *testing.T, root string, state map[string]any)
 	// the gate's disk fallback (pre-commit) and PTR-PLAN-01's
 	// register_design_documents (at commit) carry the chain.
 	state["evidence"] = []any{
-		evidenceIndexEntry("ev-design", "planning_design", evPath, Sha256Hex(evData), 1, "architect-1", "Architect", []any{"docs/architecture/ARCHITECTURE-039-loop-control-plane.md"}),
+		evidenceIndexEntry("ev-design", "planning_design", evPath, 1, "architect-1", "Architect", []any{"docs/architecture/ARCHITECTURE-039-loop-control-plane.md"}),
 	}
 	state["lifecycle"] = map[string]any{"state": "planning", "phase": "design", "phase_revision": 0}
 	state["milestone"].(map[string]any)["stage"] = "S2"
@@ -960,14 +941,13 @@ func SeedAcceptanceReady(t *testing.T, root string, state map[string]any) {
 				t.Fatal(err)
 			}
 			envelope["audit_manifest_path"] = manifestPath
-			envelope["audit_manifest_sha256"] = Sha256Hex(manifestData)
 		}
 		data, err := json.Marshal(envelope)
 		if err != nil {
 			t.Fatal(err)
 		}
 		rel := writeEvidenceFile(t, root, id+".json", data)
-		return evidenceIndexEntry(id, wireKind, rel, Sha256Hex(data), 1, agent, responsibility, []any{})
+		return evidenceIndexEntry(id, wireKind, rel, 1, agent, responsibility, []any{})
 	}
 	teams := []struct {
 		id, platformID, kind, manifestRel string
@@ -1034,14 +1014,13 @@ func SeedReleaseAuditReady(t *testing.T, root string, state map[string]any) {
 				t.Fatal(err)
 			}
 			envelope["audit_manifest_path"] = manifestPath
-			envelope["audit_manifest_sha256"] = Sha256Hex(manifestData)
 		}
 		data, err := json.Marshal(envelope)
 		if err != nil {
 			t.Fatal(err)
 		}
 		rel := writeEvidenceFile(t, root, id+".json", data)
-		return evidenceIndexEntry(id, wireKind, rel, Sha256Hex(data), 1, agent, responsibility, []any{})
+		return evidenceIndexEntry(id, wireKind, rel, 1, agent, responsibility, []any{})
 	}
 	teams := []struct {
 		id, platformID, kind, manifestRel string

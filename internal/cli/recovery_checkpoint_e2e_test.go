@@ -15,6 +15,7 @@ import (
 
 	"github.com/entroforge/go-system-builder/internal/cli"
 	"github.com/entroforge/go-system-builder/internal/filelock"
+	"github.com/entroforge/go-system-builder/internal/packetbody"
 	"github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/semantic"
 	"github.com/entroforge/go-system-builder/internal/submission"
@@ -64,14 +65,14 @@ func damageStagePair(t *testing.T, root string) {
 func TestCheckpointRecoverPreservesNamedRevisionAndExactlyOnceRoute(t *testing.T) {
 	f := newStageAnswerFixture(t)
 	old, peer := f.packets[0], f.packets[1]
-	f.begin(t, old, nil)
-	f.begin(t, peer, nil)
-	first := saveStageHook(t, f.root, f.root, old.Binding.Owner, old.AnswerPath, completedDraft(old, "pass"))
+	f.startNative(t, old)
+	f.startNative(t, peer)
+	first := saveNativeStageStop(t, f.root, f.root, old.Binding.Owner, old.AnswerPath, completedDraft(old, "pass"))
 	var next workpacket.Packet
 	if err := json.Unmarshal([]byte(stageCLI(t, "runtime", "stage-answer", "revise", "--root", f.root, "--previous", first.SubmissionKey, "--reason", "Recheck the concrete missing dependency before advancing")), &next); err != nil {
 		t.Fatal(err)
 	}
-	if !saveStageHook(t, f.root, f.root, peer.Binding.Owner, peer.AnswerPath, completedDraft(peer, "pass")).WorkComplete {
+	if !saveNativeStageStop(t, f.root, f.root, peer.Binding.Owner, peer.AnswerPath, completedDraft(peer, "pass")).WorkComplete {
 		t.Fatal("peer was not received")
 	}
 	path, pair := latestStageCheckpoint(t, f.root)
@@ -93,9 +94,7 @@ func TestCheckpointRecoverPreservesNamedRevisionAndExactlyOnceRoute(t *testing.T
 	plan := checkpointPlan(t, f.root, path, pair.State)
 	stageCLI(t, "runtime", "recover", "apply", "--root", f.root, "--plan", plan, "--approved-by", "operator")
 	restored := stageSnapshot(t, f.root)
-	if !reflect.DeepEqual(restored.State, before.State) {
-		t.Fatal("complete recovery changed identity/activation/revision/indices")
-	}
+	assertRecoveryCheckpointFacts(t, f.root, pair, restored.State)
 	if _, err := os.Stat(segment); !errors.Is(err, os.ErrNotExist) {
 		t.Fatal("old journal segment survived full pair replacement")
 	}
@@ -113,13 +112,13 @@ func TestCheckpointRecoverPreservesNamedRevisionAndExactlyOnceRoute(t *testing.T
 	if s := stageSnapshot(t, f.root); s.State["lifecycle"].(map[string]any)["state"] != "document_verification" {
 		t.Fatal("pending revision was skipped")
 	}
-	r = saveStageHook(t, f.root, f.root, next.Binding.Owner, next.AnswerPath, completedDraft(next, "pass"))
+	r = saveNativeStageStop(t, f.root, f.root, next.Binding.Owner, next.AnswerPath, completedDraft(next, "pass"))
 	if !r.WorkComplete {
 		t.Fatalf("restored activation/source did not receive: %+v", r)
 	}
 	final := stageSnapshot(t, f.root)
 	if final.State["lifecycle"].(map[string]any)["state"] != "building" {
-		t.Fatal("restored review did not use original TR-003")
+		t.Fatalf("restored review did not use original TR-003: lifecycle=%v, receipt=%+v, last_transition=%v", final.State["lifecycle"], r, final.State["last_transition"])
 	}
 	transitionCount := 0
 	journal, err := checkpointJournalEvents(f.root)
@@ -139,9 +138,7 @@ func TestCheckpointRecoverPreservesNamedRevisionAndExactlyOnceRoute(t *testing.T
 	finalPlan := checkpointPlan(t, f.root, finalPath, finalPair.State)
 	stageCLI(t, "runtime", "recover", "apply", "--root", f.root, "--plan", finalPlan, "--approved-by", "operator")
 	again := stageSnapshot(t, f.root)
-	if !reflect.DeepEqual(again.State, final.State) {
-		t.Fatal("advanced followup lost original transition stamp")
-	}
+	assertRecoveryCheckpointFacts(t, f.root, finalPair, again.State)
 	s, err = submission.New(f.root)
 	if err != nil {
 		t.Fatal(err)
@@ -204,26 +201,89 @@ func TestCheckpointPublishFailureRetainsPendingAndRetriesOnce(t *testing.T) {
 	if found != 1 {
 		t.Fatalf("checkpoint recovery duplicated original event: %d", found)
 	}
-	dirs, err := os.ReadDir(filepath.Dir(index))
+	// The checkpoint store keeps a bounded latest-two window. After the
+	// refactor the index is that bound: it names the newest complete pair and
+	// the pair before it. Checkpoint directories are addressed by Runtime
+	// identity and revision, not by a content digest.
+	indexed, err := readCheckpointIndexManifests(t, index)
 	if err != nil {
 		t.Fatal(err)
 	}
-	n := 0
-	for _, entry := range dirs {
-		if entry.IsDir() {
-			n++
+	if indexed.SchemaVersion != "1.0.0" {
+		t.Fatalf("unexpected checkpoint index schema %q", indexed.SchemaVersion)
+	}
+	if len(indexed.Manifests) != 2 {
+		t.Fatalf("checkpoint index retained %d manifests; want bounded latest two", len(indexed.Manifests))
+	}
+	if indexed.Manifests[1] != path {
+		t.Fatalf("checkpoint index dropped the previous pair: %v", indexed.Manifests)
+	}
+	for _, manifest := range indexed.Manifests {
+		if !strings.HasPrefix(manifest, ".claude/runtime-checkpoints/cp/") || !strings.HasSuffix(manifest, "/manifest.json") {
+			t.Fatalf("checkpoint manifest %q is not addressed by Runtime identity", manifest)
+		}
+		dir := filepath.Dir(manifest)
+		for _, asset := range []string{"manifest.json", "state.json", "events.jsonl"} {
+			if _, err := os.Stat(filepath.Join(f.root, filepath.FromSlash(dir), asset)); err != nil {
+				t.Fatalf("indexed checkpoint %s is missing %s: %v", manifest, asset, err)
+			}
 		}
 	}
-	if n != 2 {
-		t.Fatalf("checkpoint retained %d directories; want bounded latest two", n)
+	// The removed content-addressed checkpoint layout must not come back.
+	entries, err := os.ReadDir(filepath.Dir(index))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() && isCheckpointContentDigest(entry.Name()) {
+			t.Fatalf("content-addressed checkpoint directory %q returned", entry.Name())
+		}
 	}
 }
 
+// readCheckpointIndexManifests reads the raw checkpoint index so the test
+// observes the bounded window the Writer published.
+func readCheckpointIndexManifests(t *testing.T, path string) (struct {
+	SchemaVersion string   `json:"schema_version"`
+	Manifests     []string `json:"manifests"`
+}, error) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return struct {
+			SchemaVersion string   `json:"schema_version"`
+			Manifests     []string `json:"manifests"`
+		}{}, err
+	}
+	var index struct {
+		SchemaVersion string   `json:"schema_version"`
+		Manifests     []string `json:"manifests"`
+	}
+	if err := json.Unmarshal(data, &index); err != nil {
+		return index, err
+	}
+	return index, nil
+}
+
+// isCheckpointContentDigest reports the removed content-addressed checkpoint
+// directory naming: a 64 character SHA-256 hex digest.
+func isCheckpointContentDigest(name string) bool {
+	if len(name) != 64 {
+		return false
+	}
+	for _, c := range name {
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+			return false
+		}
+	}
+	return true
+}
+
 func TestCheckpointRecoverRejectsLiveIndependentWorker(t *testing.T) {
-	f := newStageAnswerFixture(t)
+	f := newHistoricalStageAnswerFixture(t)
 	p := f.packets[0]
 	e := f.prepare(t, p)
-	f.begin(t, p, &e)
+	f.startFrozenReviewWorker(t, e)
 	if !saveStageHook(t, f.root, e.Path, p.Binding.Owner, workpacket.WorkerAnswerPath, completedDraft(p, "pass")).WorkComplete {
 		t.Fatal("Worker conclusion not received")
 	}
@@ -249,17 +309,15 @@ func TestCheckpointRecoverRejectsLiveIndependentWorker(t *testing.T) {
 		t.Fatal("lease rejection changed the active original")
 	}
 	stageCLI(t, "runtime", "recover", "apply", "--root", f.root, "--plan", plan, "--approved-by", "operator")
-	if !reflect.DeepEqual(stageSnapshot(t, f.root).State, pair.State) {
-		t.Fatal("independent source/activation changed")
-	}
+	assertRecoveryCheckpointFacts(t, f.root, pair, stageSnapshot(t, f.root).State)
 }
 
 func TestCheckpointRejectsOlderPairAndForgedReceptionFacts(t *testing.T) {
 	f := newStageAnswerFixture(t)
 	oldPath, _ := latestStageCheckpoint(t, f.root)
 	p := f.packets[0]
-	f.begin(t, p, nil)
-	first := saveStageHook(t, f.root, f.root, p.Binding.Owner, p.AnswerPath, completedDraft(p, "pass"))
+	f.startNative(t, p)
+	first := saveNativeStageStop(t, f.root, f.root, p.Binding.Owner, p.AnswerPath, completedDraft(p, "pass"))
 	stageCLI(t, "runtime", "stage-answer", "revise", "--root", f.root, "--previous", first.SubmissionKey, "--reason", "Recheck the frozen dependency")
 	_, pair := latestStageCheckpoint(t, f.root)
 	if _, err := runtime.ReadRuntimeCheckpoint(f.root, oldPath, semantic.RuntimeCandidateValidator{}); err == nil {
@@ -273,10 +331,40 @@ func TestCheckpointRejectsOlderPairAndForgedReceptionFacts(t *testing.T) {
 		{"missing-lineage", func(state map[string]any) {
 			state["entities"].(map[string]any)["work_packets"] = state["entities"].(map[string]any)["work_packets"].([]any)[:2]
 		}},
+		{"orphan-reception", func(state map[string]any) {
+			// The reception names a packet that the Runtime does not index: an
+			// orphan reception must not be accepted as a recorded fact.
+			entities := state["entities"].(map[string]any)
+			named := entities["submissions"].([]any)[0].(map[string]any)["packet_id"]
+			kept := []any{}
+			for _, raw := range entities["work_packets"].([]any) {
+				row, _ := raw.(map[string]any)
+				if row["packet_id"] == named {
+					continue
+				}
+				kept = append(kept, raw)
+			}
+			entities["work_packets"] = kept
+		}},
 		{"fake-transition", func(state map[string]any) {
 			r := state["entities"].(map[string]any)["submissions"].([]any)[0].(map[string]any)
 			r["control_status"] = "advanced"
 			r["transition_event_id"] = "evt-invented"
+		}},
+		{"unbound-revision", func(state map[string]any) {
+			// The revision packet claims a different previous reception than the
+			// one it revises: the recorded transaction pairing is broken.
+			entities := state["entities"].(map[string]any)
+			revision := entities["submissions"].([]any)[0].(map[string]any)["revision_packet_id"]
+			for _, raw := range entities["work_packets"].([]any) {
+				row, _ := raw.(map[string]any)
+				if row["packet_id"] != revision {
+					continue
+				}
+				binding, _ := row["binding"].(map[string]any)
+				binding["previous_submission_key"] = "submission:another-reception"
+				return
+			}
 		}},
 		{"duplicate-key", func(state map[string]any) {
 			e := state["entities"].(map[string]any)
@@ -333,8 +421,8 @@ func TestCheckpointSealedRecoveryResumesAfterPairReplacementAndSourceLoss(t *tes
 		t.Run(string(step), func(t *testing.T) {
 			f := newStageAnswerFixture(t)
 			p := f.packets[0]
-			f.begin(t, p, nil)
-			if !saveStageHook(t, f.root, f.root, p.Binding.Owner, p.AnswerPath, completedDraft(p, "pass")).WorkComplete {
+			f.startNative(t, p)
+			if !saveNativeStageStop(t, f.root, f.root, p.Binding.Owner, p.AnswerPath, completedDraft(p, "pass")).WorkComplete {
 				t.Fatal("domain reception failed")
 			}
 			path, pair := latestStageCheckpoint(t, f.root)
@@ -348,8 +436,16 @@ func TestCheckpointSealedRecoveryResumesAfterPairReplacementAndSourceLoss(t *tes
 			if err := json.Unmarshal(data, &plan); err != nil {
 				t.Fatal(err)
 			}
-			_, err = runtime.ApplyRecovery(runtime.RecoveryRequest{Root: f.root, StatePath: filepath.Join(f.root, ".claude/loop-state.json"), JournalPath: filepath.Join(f.root, ".claude/loop-events.jsonl"), PlanID: plan["plan_id"].(string), PlanSHA: plan["document_sha256"].(string), CandidateState: pair.StateBytes, CandidateJournal: pair.JournalBytes, Approver: "operator", OccurredAt: time.Now().UTC(), Validator: semantic.RuntimeCandidateValidator{}, ValidateRestore: func(state map[string]any, journal []byte) error {
-				return runtime.ValidateCheckpointRestore(f.root, runtime.CheckpointPair{State: state, JournalBytes: journal, Manifest: pair.Manifest})
+			candidateState, err := os.ReadFile(filepath.Join(f.root, filepath.FromSlash(plan["candidate_state_path"].(string))))
+			if err != nil {
+				t.Fatal(err)
+			}
+			candidateJournal, err := os.ReadFile(filepath.Join(f.root, filepath.FromSlash(plan["candidate_journal_path"].(string))))
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = runtime.ApplyRecovery(runtime.RecoveryRequest{Root: f.root, StatePath: filepath.Join(f.root, ".claude/loop-state.json"), JournalPath: filepath.Join(f.root, ".claude/loop-events.jsonl"), PlanID: plan["plan_id"].(string), CandidateState: candidateState, CandidateJournal: candidateJournal, Approver: "operator", OccurredAt: time.Now().UTC(), Validator: semantic.RuntimeCandidateValidator{}, ValidateRestore: func(state map[string]any, journal []byte) error {
+				return runtime.ValidateCheckpointRestore(f.root, pair)
 			}, FailureInjector: checkpointFailure{step}})
 			if !errors.Is(err, runtime.ErrRecoveryInjectedFailure) {
 				t.Fatalf("fault did not interrupt: %v", err)
@@ -362,9 +458,7 @@ func TestCheckpointSealedRecoveryResumesAfterPairReplacementAndSourceLoss(t *tes
 			}
 			// The validated sealed marker outranks vanished mutable plan/source files.
 			stageCLI(t, "runtime", "recover", "apply", "--root", f.root, "--plan", planPath, "--approved-by", "operator")
-			if !reflect.DeepEqual(stageSnapshot(t, f.root).State, pair.State) {
-				t.Fatal("marker retry changed accepted/control facts")
-			}
+			assertRecoveryCheckpointFacts(t, f.root, pair, stageSnapshot(t, f.root).State)
 			service, err := submission.New(f.root)
 			if err != nil {
 				t.Fatal(err)
@@ -379,7 +473,7 @@ func TestCheckpointSealedRecoveryResumesAfterPairReplacementAndSourceLoss(t *tes
 				t.Fatal(err)
 			}
 			_, latest := latestStageCheckpoint(t, f.root)
-			if latest.Manifest.Revision != pair.Manifest.Revision+1 {
+			if latest.Manifest.Revision != pair.Manifest.Revision+2 {
 				t.Fatal("next Writer lost journal continuity")
 			}
 		})
@@ -399,5 +493,66 @@ func TestCheckpointRecoveryHelpExposesRealFlagsWithoutRuntime(t *testing.T) {
 				t.Fatal("help mutated the workspace")
 			}
 		})
+	}
+}
+
+// Assert all original facts and professional bodies while allowing the Writer's
+// one completion event/revision and its independently owned body paths.
+func assertRecoveryCheckpointFacts(t *testing.T, root string, pair runtime.CheckpointPair, got map[string]any) {
+	t.Helper()
+	clone := func(source map[string]any) map[string]any {
+		data, err := json.Marshal(source)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var result map[string]any
+		if err := json.Unmarshal(data, &result); err != nil {
+			t.Fatal(err)
+		}
+		return result
+	}
+	original, actual := clone(pair.State), clone(got)
+	if actual["revision"] != original["revision"].(float64)+1 {
+		t.Fatal("recovery Writer completion revision missing")
+	}
+	originalRows, _ := original["entities"].(map[string]any)["work_packets"].([]any)
+	actualRows, _ := actual["entities"].(map[string]any)["work_packets"].([]any)
+	if len(originalRows) != len(actualRows) {
+		t.Fatal("original packet responsibilities changed")
+	}
+	for i := range originalRows {
+		oldRow := originalRows[i].(map[string]any)
+		newRow := actualRows[i].(map[string]any)
+		oldRef, external, err := packetbody.ReferenceFromIndex(oldRow)
+		if err != nil {
+			t.Fatal(err)
+		}
+		newRef, newExternal, err := packetbody.ReferenceFromIndex(newRow)
+		if err != nil || external != newExternal {
+			t.Fatalf("packet body reference changed kind: %v", err)
+		}
+		if !external {
+			continue
+		}
+		body, err := workpacket.ReadFile(root, newRef.Path, packetbody.Limit)
+		if err != nil || !bytes.Equal(body, pair.PacketBodies[oldRef.Path]) {
+			t.Fatalf("original professional body lost: %v", err)
+		}
+		oldRow["body_ref"] = "original body"
+		newRow["body_ref"] = "original body"
+	}
+	delete(original, "revision")
+	delete(actual, "revision")
+	delete(original, "journal")
+	delete(actual, "journal")
+	if !reflect.DeepEqual(original, actual) {
+		t.Fatal("recovery changed original identity, approval, responsibilities or results")
+	}
+	events, err := checkpointJournalEvents(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) == 0 || events[len(events)-1]["transition_id"] != "RECOVERY-APPLIED" {
+		t.Fatal("original Writer completion is missing")
 	}
 }

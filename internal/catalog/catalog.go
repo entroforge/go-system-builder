@@ -233,11 +233,11 @@ func ValidateAgents(root string) error {
 			}
 		}
 		// This is a definition/format check, not certification of professional
-		// work. Native return and frozen sources are shared responsibilities;
+		// work. Native return and actual source access are shared responsibilities;
 		// Builder plans are not duties of independent Reviewers.
 		required := []string{
 			"## Mission", "## Allowed Artifacts", "## Output Contract", "## Stop Conditions",
-			"SubagentStop", "frozen",
+			"SubagentStop",
 		}
 		if strings.HasSuffix(role, "-builder") {
 			required = append(required, "task-brief", "PlanReport", "RepairResult")

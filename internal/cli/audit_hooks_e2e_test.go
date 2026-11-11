@@ -2,7 +2,6 @@ package cli
 
 import (
 	"bytes"
-	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"os"
@@ -121,10 +120,17 @@ func TestAuditHooksE2EPlanRefUsesAuthorityRoot(t *testing.T) {
 	}
 	agents := recordedState["entities"].(map[string]any)["agents"].([]any)
 	recordedRef, _ := agents[0].(map[string]any)["plan_reported_ref"].(string)
-	digest := sha256.Sum256(mustReadAudit(t, workerPlan))
-	wantRef := filepath.ToSlash(filepath.Join(planHandoffDir, hex.EncodeToString(digest[:])+".json"))
-	if recordedRef != wantRef {
-		t.Fatalf("worker plan_ref was not normalized/imported: got=%q want=%q", recordedRef, wantRef)
+	// The retired digest-named plan import copy is gone. L4-workflow-convergence.md:447 —
+	// "以上链路不读取、计算、登记或比较计划、TASK、manifest、Assignment Record 的
+	// SHA／hash、摘要或 Git OID"; :291 — "删除摘要字段及旧字段兼容接线". The control
+	// root records the current opaque plan-handoff reference instead of importing a
+	// second copy under a content-digest name.
+	if recordedRef == "" || !strings.HasPrefix(filepath.ToSlash(recordedRef), filepath.ToSlash(planHandoffDir)+"/") {
+		t.Fatalf("worker plan_ref was not recorded as the current plan handoff: got=%q", recordedRef)
+	}
+	base := strings.TrimSuffix(filepath.Base(recordedRef), ".json")
+	if decoded, err := hex.DecodeString(base); err == nil && len(decoded) == 32 {
+		t.Fatalf("retired digest-named plan import reappeared: %q", recordedRef)
 	}
 	imported, err := os.ReadFile(filepath.Join(fixture.root, filepath.FromSlash(recordedRef)))
 	if err != nil {

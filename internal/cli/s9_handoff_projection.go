@@ -69,14 +69,14 @@ func s9HandoffForBinding(ctx context.Context, root string, snap runtime.Snapshot
 			p.ReadError = err
 			continue
 		}
-		if b != binding {
+		if !sameNativeS9PlanResponsibility(b, binding) {
 			continue
 		}
 		if p.Plan.id != "" {
 			p.ReadError = fmt.Errorf("multiple original PlanReport packets for this exact Result binding")
 			return p
 		}
-		p.Plan = s9ListenerQuestionnaire{id: stringValue(row["packet_id"]), view: stringValue(row["view_path"]), answer: stringValue(row["answer_path"]), binding: b}
+		p.Plan = s9ListenerQuestionnaire{id: stringValue(row["packet_id"]), brief: stringValue(row["brief_path"]), view: stringValue(row["view_path"]), answer: stringValue(row["answer_path"]), binding: b}
 	}
 	// Read Plan acceptance before later Result sources; a spent budget leaves
 	// its status unknown but never prevents pure Result index projection.
@@ -86,7 +86,7 @@ func s9HandoffForBinding(ctx context.Context, root string, snap runtime.Snapshot
 		p.ReadError = err
 		if ctx.Err() == nil {
 			if diagnostic, found := nativeS9ReturnDiagnosticRecordContext(ctx, root, snap, p.Plan.id); found {
-				brief, _, _ := nativeS9Paths(workpacket.RepairPlanReportPacket{ID: p.Plan.id, ViewPath: p.Plan.view})
+				brief := nativeS9BriefPath(workpacket.RepairPlanReportPacket{ID: p.Plan.id, BriefPath: p.Plan.brief, ViewPath: p.Plan.view})
 				a := diagnostic.Attempt
 				if a == nil || a.Kind == "Builder" && a.Owner == binding.OwnerAgentID && (a.ResponsibilityRef == p.Plan.id || a.ResponsibilityRef == filepath.Join(root, brief)) {
 					p.Diagnostic, p.Attempt, p.DiagnosticFiles, p.ConsumerFailure = diagnostic.historicalMessage(), a, diagnostic.Files, diagnostic.ConsumerFailure
@@ -121,7 +121,7 @@ func s9HandoffForBinding(ctx context.Context, root string, snap runtime.Snapshot
 		if locator := mapFieldCLI(row, "execution_locator"); len(locator) > 0 {
 			original = locator
 		}
-		result := s9ListenerQuestionnaire{id: stringValue(row["packet_id"]), view: stringValue(row["view_path"]), answer: stringValue(row["answer_path"]), binding: binding, result: &b, originalRoot: stringValue(original["worktree_path"]), executionAssignment: stringValue(original["assignment_id"])}
+		result := s9ListenerQuestionnaire{id: stringValue(row["packet_id"]), brief: stringValue(row["brief_path"]), view: stringValue(row["view_path"]), answer: stringValue(row["answer_path"]), binding: binding, result: &b, originalRoot: stringValue(original["worktree_path"]), executionAssignment: stringValue(original["assignment_id"])}
 		e := s9ObservedExecution(snap.State, result)
 		exact := len(e) > 0 && e["runtime_id"] == binding.RuntimeID && e["agent_id"] == binding.OwnerAgentID && tolerantInt(e["baseline_generation"]) == binding.BaselineGeneration && tolerantInt(e["execution_generation"]) == tolerantInt(original["execution_generation"]) && stringValue(e["rework_ref"]) == b.ReworkRef && stringValue(e["worktree_path"]) == result.originalRoot
 		if len(preferredResult) > 0 && preferredResult[0] != "" {
@@ -148,27 +148,54 @@ func s9HandoffForBinding(ctx context.Context, root string, snap runtime.Snapshot
 	return p
 }
 
+// executionCoordinates names the exact original responsibility this handoff is
+// about. The registered execution is the source of its assignment and owner;
+// the PlanReport binding is the fallback while no Result index exists yet.
+func (p s9HandoffProjection) executionCoordinates() (string, string) {
+	assignment, owner := p.Plan.binding.ManifestAssignmentID, p.Plan.binding.OwnerAgentID
+	if p.Result != nil {
+		if p.Result.executionAssignment != "" {
+			assignment = p.Result.executionAssignment
+		}
+		if p.Result.result != nil && p.Result.result.Sources.OwnerAgentID != "" {
+			owner = p.Result.result.Sources.OwnerAgentID
+		}
+	}
+	return assignment, owner
+}
+
 func (p s9HandoffProjection) summary(root string) string {
 	var parts []string
+	assignment, owner := p.executionCoordinates()
 	if p.Plan.id != "" {
-		packet := workpacket.RepairPlanReportPacket{ID: p.Plan.id, ViewPath: p.Plan.view, AnswerPath: p.Plan.answer}
-		brief, _, _ := nativeS9Paths(packet)
+		packet := workpacket.RepairPlanReportPacket{ID: p.Plan.id, BriefPath: p.Plan.brief, ViewPath: p.Plan.view, AnswerPath: p.Plan.answer}
+		brief := nativeS9BriefPath(packet)
 		if p.Native {
 			plan, result, err := nativeS9AuthorPaths(root, packet)
 			if err != nil {
-				parts = append(parts, fmt.Sprintf("Original S9 owner=%s assignment=%s; exact brief %s; %s.", p.Plan.binding.OwnerAgentID, p.Plan.binding.ManifestAssignmentID, filepath.Join(root, brief), s9NativeAuthorCoordinatesFailure(root, packet, err, true)))
+				parts = append(parts, fmt.Sprintf("Original S9 owner=%s assignment=%s packet=%s; exact brief %s; %s.", owner, assignment, p.Plan.id, filepath.Join(root, brief), s9NativeAuthorCoordinatesFailure(root, packet, err, true)))
 			} else {
-				parts = append(parts, fmt.Sprintf("Original S9 owner=%s assignment=%s; exact brief %s; private worktree-relative PlanReport %s and Result %s.", p.Plan.binding.OwnerAgentID, p.Plan.binding.ManifestAssignmentID, filepath.Join(root, brief), plan, result))
+				parts = append(parts, fmt.Sprintf("Original S9 owner=%s assignment=%s packet=%s; exact brief %s; private worktree-relative PlanReport %s and Result %s.", owner, assignment, p.Plan.id, filepath.Join(root, brief), plan, result))
 			}
 		} else {
-			parts = append(parts, fmt.Sprintf("Original S9 owner=%s assignment=%s; PlanReport question %s; PlanReport answer %s.", p.Plan.binding.OwnerAgentID, p.Plan.binding.ManifestAssignmentID, filepath.Join(root, p.Plan.view), filepath.Join(root, p.Plan.answer)))
+			parts = append(parts, fmt.Sprintf("Original S9 owner=%s assignment=%s packet=%s; PlanReport question %s; PlanReport answer %s.", owner, assignment, p.Plan.id, filepath.Join(root, p.Plan.view), filepath.Join(root, p.Plan.answer)))
 		}
 	}
 	if p.Result != nil {
-		parts = append(parts, "Original issued Result answer "+filepath.Join(p.Result.originalRoot, p.Result.answer)+".")
+		parts = append(parts, "Original issued Result packet "+p.Result.id+" answer "+filepath.Join(p.Result.originalRoot, p.Result.answer)+".")
 	}
 	if p.RegisteredRef != "" {
 		parts = append(parts, "Registered candidate reference: "+resolveRootPath(root, p.RegisteredRef)+"; this index alone does not establish acceptance or completion.")
+	}
+	if p.ResultFactKnown && p.ResultFactError == nil && !p.ResultFact.unknown && (p.ResultFact.kind == "candidate" || p.ResultFact.kind == "result") {
+		source := p.ResultFact.sourceRoot
+		if source == "" && p.Result != nil {
+			source = p.Result.originalRoot
+		}
+		if source == "" {
+			source = "unknown; inspect the original Result and actual native return"
+		}
+		parts = append(parts, "Original Result is received. Source worktree: "+source+"; contribution coordinates: inspect the original Result and actual native return if not already known; Main target: "+root+". Main performs the actual integration and necessary checks; reception does not establish either.")
 	}
 	if p.PlanAccepted {
 		parts = append(parts, "The PlanReport receipt is accepted. Preserve the accepted PlanReport; do not re-submit it.")
@@ -192,16 +219,12 @@ func (p s9HandoffProjection) summary(root string) string {
 	return strings.Join(parts, " ")
 }
 
-// Only Main receives the preparation source as a recovery responsibility. The
-// pin's own coordinates come from the issued packet, not the missing pin's
-// version or a guessed private Plan/Result path.
 func s9NativeAuthorCoordinatesFailure(root string, packet workpacket.RepairPlanReportPacket, err error, main bool) string {
-	message := fmt.Sprintf("frozen private author coordinates unavailable: %v", err)
+	message := fmt.Sprintf("current author location unavailable: %v", err)
 	if main {
-		_, pin, _ := nativeS9Paths(packet)
-		message += "; Main owns the original preparation source at " + resolveRootPath(root, pin) + " and restores or resolves it when needed for the original continuation; no private author path or version was inferred"
+		message += "; Main resolves the actual work location and continues the current responsibility"
 	} else {
-		message += "; Main owns the original preparation gap"
+		message += "; tell Main about the preparation gap"
 	}
 	return message
 }
@@ -211,7 +234,7 @@ func s9UnreceivedAction() string {
 }
 
 func s9CandidateAction(root, assignment, owner string) string {
-	return fmt.Sprintf("The Worker candidate is recorded. Main next runs runtime workspace integrate using this exact command: %s runtime workspace integrate --root %s --assignment %s --agent %s. Select necessary checks from the repair objective and actual changes using --check-command with an actual command; repeat that parameter for multiple checks. The original integration runs and records them. Without selected or existing checks, Main checks remain pending and no final PASS is recorded. Do not repeat this answer.", s7CaptureShellQuote(filepath.Join(root, ".claude/bin/loop-harness")), s7CaptureShellQuote(root), s7CaptureShellQuote(assignment), s7CaptureShellQuote(owner))
+	return "Original Candidate is received. Main takes the actual contribution, performs necessary integration and checks, then saves its original ChangeImpact. The original Impact can be prepared now; no Final, commit, proof or mandatory workspace integrate action precedes its reception. The framework does not certify Main's actual work."
 }
 
 func s9FinalAction() string {
@@ -257,7 +280,7 @@ func typedRepairResultPacketForAssignmentContext(ctx context.Context, root strin
 		s := b.Sources
 		relevant := s.RuntimeID == state["runtime_id"] && (s.ManifestAssignmentID == assignmentID || s.RepairAssignmentID == assignmentID)
 		historicalTyped = historicalTyped || relevant
-		if s.RuntimeID != state["runtime_id"] || s.BaselineGeneration != workspace.Generation(state) || s.ReviewRound != tolerantInt(mapFieldCLI(state, "review")["round"]) || s.SessionID != pointer["session_id"] || s.PlanRef != pointer["plan_ref"] || s.PlanSHA256 != pointer["plan_sha256"] || (s.ManifestAssignmentID != assignmentID && s.RepairAssignmentID != assignmentID) {
+		if s.RuntimeID != state["runtime_id"] || s.BaselineGeneration != workspace.Generation(state) || s.SessionID != pointer["session_id"] || s.PlanRef != pointer["plan_ref"] || (s.ManifestAssignmentID != assignmentID && s.RepairAssignmentID != assignmentID) {
 			continue
 		}
 		// A wrong owner is a typed source error, never absence of typed work.
@@ -268,7 +291,7 @@ func typedRepairResultPacketForAssignmentContext(ctx context.Context, root strin
 	}
 	if len(matches) == 0 {
 		if historicalTyped {
-			return workpacket.RepairResultPacket{}, true, fmt.Errorf("assignment %s has an original typed S9 responsibility outside the current generation/round/Plan; follow its named recovery or rework, no legacy fallback", assignmentID)
+			return workpacket.RepairResultPacket{}, true, fmt.Errorf("assignment %s has an original typed S9 responsibility outside the current generation/Plan; follow its named recovery or rework, no legacy fallback", assignmentID)
 		}
 		return workpacket.RepairResultPacket{}, false, nil
 	}
@@ -333,6 +356,9 @@ const (
 	s9CandidateUnknown    s9CandidateProgressState = "unknown"
 )
 
+// s9ObservedCandidateProgress reads the author's own recorded unit results. The
+// completion bit is never inferred from the verdict alone: only recorded units
+// that all passed are a finished professional result.
 func s9ObservedCandidateProgress(document map[string]any) (s9CandidateProgressState, string) {
 	answer := mapFieldCLI(mapFieldCLI(document, "provenance"), "submitted_answer")
 	if len(answer) == 0 {
@@ -343,15 +369,13 @@ func s9ObservedCandidateProgress(document map[string]any) (s9CandidateProgressSt
 	}
 	units := objectSliceAny(answer["unit_results"])
 	if len(units) == 0 {
-		return s9CandidateUnknown, "recorded repair unit completion information is unavailable"
+		return s9CandidateUnfinished, "recorded professional result has no unit result"
 	}
 	for _, unit := range units {
-		if unit["status"] != "pass" {
-			return s9CandidateUnfinished, fmt.Sprintf("repair unit %v: %v", unit["unit_id"], unit["status"])
+		status := stringValue(unit["status"])
+		if status != "pass" {
+			return s9CandidateUnfinished, fmt.Sprintf("recorded repair unit %s is %s", stringValue(unit["unit_id"]), status)
 		}
-	}
-	if result := mapFieldCLI(document, "proposal")["result"]; result != "pass" {
-		return s9CandidateUnfinished, fmt.Sprintf("recorded professional candidate result is %v", result)
 	}
 	return s9CandidateComplete, ""
 }
@@ -403,7 +427,7 @@ func s9ObservedHandoffAction(ctx context.Context, root string, snap runtime.Snap
 	case "blocker", "contract_conflict":
 		return "Original blocker is recorded; Main follows its original recovery decision or S8 Contract revision; no completion is inferred."
 	default:
-		if stringValue(execution["delivery_ref"]) != "" || stringValue(execution["delivery_sha256"]) != "" {
+		if stringValue(execution["delivery_ref"]) != "" {
 			return "Original candidate binding or provenance is incomplete; Main restores the exact registered source without legacy fallback or replacement candidate."
 		}
 		return s9UnreceivedActionContext(ctx, root, handoff)

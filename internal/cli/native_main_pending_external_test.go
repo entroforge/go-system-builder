@@ -11,58 +11,69 @@ import (
 )
 
 func TestNativeMainPendingContinuesActualReviewPlanSave(t *testing.T) {
-	root := worktreeProjectRoot(t)
-	path := review.PlanQuestionnairePath(root, stageSnapshot(t, root).State)
-	entryQuestionnaireHook(t, root, "PreToolUse", path)
-	authored := minimalReviewPlan(t, t.TempDir(), "review-plan-main-pending")
-	data, err := os.ReadFile(authored)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, data, 0600); err != nil {
-		t.Fatal(err)
-	}
-	// Complete authored bytes do not turn a Pre/SessionStart into delivery.
-	for _, event := range []string{"PreToolUse", "SessionStart", "PostToolUse"} {
-		marker := nativeStopFingerprintPending(t, root)
-		out := audienceHook(t, root, map[string]any{"hook_event_name": event, "cwd": root, "session_id": "main-pending", "tool_name": "Read"})
-		if strings.Contains(out, "Automatic original Writer recovery could not complete") {
-			t.Fatal(out)
-		}
-		if _, err := os.Stat(marker); !os.IsNotExist(err) {
-			t.Fatalf("pending not retired: %v", err)
-		}
-		if review.PlanPointerFromState(stageSnapshot(t, root).State) != nil {
-			t.Fatal("observation received complete unsaved plan")
-		}
-	}
-	// This successful save is the actual original delivery event.
-	marker := nativeStopFingerprintPending(t, root)
-	out := audienceHook(t, root, map[string]any{"hook_event_name": "PostToolUse", "cwd": root, "session_id": "main-pending", "tool_name": "Write", "tool_input": map[string]any{"file_path": path}, "tool_response": map[string]any{}})
-	if !strings.Contains(out, "review-plan: registered") {
-		t.Fatalf("same save was swallowed: %s", out)
-	}
-	if _, err := os.Stat(marker); !os.IsNotExist(err) {
-		t.Fatalf("pending not retired: %v", err)
-	}
-	if review.PlanPointerFromState(stageSnapshot(t, root).State) == nil {
-		t.Fatal("actual save not received")
-	}
-	if after, _ := os.ReadFile(path); !bytes.Equal(data, after) {
-		t.Fatal("recovery changed original answer")
-	}
-	// Recovered repeat save preserves the accepted plan and its revision.
-	before := stageSnapshot(t, root).Revision
-	nativeStopFingerprintPending(t, root)
-	out = audienceHook(t, root, map[string]any{"hook_event_name": "PostToolUse", "cwd": root, "session_id": "main-pending", "tool_name": "Write", "tool_input": map[string]any{"file_path": path}})
-	if !strings.Contains(out, "same ReviewPlan was already received") || stageSnapshot(t, root).Revision != before {
-		t.Fatalf("replay was not idempotent: %s", out)
+	for _, scenario := range []struct {
+		name          string
+		event         string
+		tool          string
+		shouldReceive bool
+	}{
+		{name: "pre-receives-ready-original", event: "PreToolUse", tool: "Bash", shouldReceive: true},
+		{name: "session-does-not-receive", event: "SessionStart"},
+		{name: "read-post-does-not-save", event: "PostToolUse", tool: "Read"},
+		{name: "write-post-receives", event: "PostToolUse", tool: "Write", shouldReceive: true},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			root := worktreeProjectRoot(t)
+			state := s7OpenedReviewPlan(t, root, "review-plan-main-pending")
+			path := review.PlanQuestionnairePath(root, state)
+			entryQuestionnaireHook(t, root, "PreToolUse", path)
+			authored := minimalReviewPlan(t, t.TempDir(), "review-plan-main-pending")
+			data, err := os.ReadFile(authored)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, data, 0600); err != nil {
+				t.Fatal(err)
+			}
+			marker := nativeStopCommitPending(t, root)
+			payload := map[string]any{"hook_event_name": scenario.event, "cwd": root, "session_id": "main-pending", "tool_name": scenario.tool}
+			if scenario.tool == "Write" {
+				payload["tool_input"] = map[string]any{"file_path": path}
+				payload["tool_response"] = map[string]any{}
+			}
+			out := audienceHook(t, root, payload)
+			if strings.Contains(out, "Automatic original Writer recovery could not complete") {
+				t.Fatal(out)
+			}
+			if _, err := os.Stat(marker); !os.IsNotExist(err) {
+				t.Fatalf("pending not retired: %v", err)
+			}
+			ptr := review.PlanPointerFromState(stageSnapshot(t, root).State)
+			if scenario.shouldReceive {
+				if ptr == nil || !strings.Contains(out, "review-plan: registered") {
+					t.Fatalf("original plan not received: %s", out)
+				}
+			} else if ptr != nil {
+				t.Fatalf("%s unexpectedly received plan: %s", scenario.name, out)
+			}
+			if after, _ := os.ReadFile(path); !bytes.Equal(data, after) {
+				t.Fatal("recovery changed original answer")
+			}
+			if scenario.tool == "Write" {
+				nativeStopCommitPending(t, root)
+				before := pendingRawRevision(t, root)
+				out = audienceHook(t, root, payload)
+				if strings.Contains(out, "review-plan: registered") || strings.Contains(out, "review-plan: revised") || stageSnapshot(t, root).Revision != before {
+					t.Fatalf("replay was not idempotent: %s", out)
+				}
+			}
+		})
 	}
 }
 
 func TestNativeMainPendingPublicExcludesFailedPostAndOtherAudiences(t *testing.T) {
 	root := worktreeProjectRoot(t)
-	marker := nativeStopFingerprintPending(t, root)
+	marker := nativeStopCommitPending(t, root)
 	original, err := os.ReadFile(marker)
 	if err != nil {
 		t.Fatal(err)

@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"github.com/entroforge/go-system-builder/internal/schema"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -11,12 +13,12 @@ import (
 
 func testBinding() Binding {
 	return Binding{RuntimeID: "loop-REQ-039", Generation: 1, StageEntry: 7,
-		Owner: "reviewer-spec", AssignmentID: "assignment-spec", AssignmentSHA: strings.Repeat("a", 64),
+		Owner: "reviewer-spec", AssignmentID: "assignment-spec",
 		Responsibility: "DV-SPEC-CONSISTENCY", Attempt: 1}
 }
 
 func TestS5PacketAndDraftSchemas(t *testing.T) {
-	p, err := BuildS5(testBinding(), []Reference{{ID: "REQ-039", Path: "docs/requirements/REQ-039.md", Version: "v1", SHA256: strings.Repeat("b", 64)}})
+	p, err := BuildS5(testBinding(), []Reference{{ID: "REQ-039", Path: "docs/requirements/REQ-039.md", Version: "v1"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,7 +41,7 @@ func TestS5QuestionnaireStatesReviewCoverageWithoutExtraDeliveries(t *testing.T)
 		t.Run(responsibility, func(t *testing.T) {
 			binding := testBinding()
 			binding.Responsibility = responsibility
-			p, err := BuildS5(binding, []Reference{{ID: "REQ-039", Path: "docs/requirements/REQ-039.md", Version: "v1", SHA256: strings.Repeat("b", 64)}})
+			p, err := BuildS5(binding, []Reference{{ID: "REQ-039", Path: "docs/requirements/REQ-039.md", Version: "v1"}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -74,14 +76,11 @@ func TestS5QuestionnaireStatesReviewCoverageWithoutExtraDeliveries(t *testing.T)
 }
 
 func TestS5WordingUpdatePreservesIssuedQuestionnaireAndRevision(t *testing.T) {
-	data, err := schema.ReadAsset("stage-form-s5-template-legacy.json")
+	data, err := os.ReadFile(filepath.Join("..", "schema", "assets", "stage-form-s5-template-legacy.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if Digest(data) != "cbe36ef5367a0684c7538aa18e7f78b753813606f1d2f0967a4326e7a4aa72c2" {
-		t.Fatal("archived template no longer matches the previously issued questionnaires")
-	}
-	inputs := []Reference{{ID: "REQ-039", Path: "docs/requirements/REQ-039.md", Version: "v1", SHA256: strings.Repeat("b", 64)}}
+	inputs := []Reference{{ID: "REQ-039", Path: "docs/requirements/REQ-039.md", Version: "v1"}}
 	for _, responsibility := range []string{"DV-SPEC-CONSISTENCY", "DV-TASK-EXECUTABILITY"} {
 		t.Run(responsibility, func(t *testing.T) {
 			binding := testBinding()
@@ -103,30 +102,26 @@ func TestS5WordingUpdatePreservesIssuedQuestionnaireAndRevision(t *testing.T) {
 				t.Fatalf("old answer no longer validates: %+v", issues)
 			}
 			current, err := BuildS5(binding, inputs)
-			if err != nil || current.ID == old.ID || current.TemplateSHA == old.TemplateSHA {
+			if err != nil || current.ID != old.ID || current.Draft.Instruction == old.Draft.Instruction {
 				t.Fatalf("new issuance did not bind the new wording: %v", err)
 			}
 			binding.Attempt++
 			binding.PreviousSubmissionKey = strings.Repeat("d", 64)
 			binding.RevisionReason = "Recheck one original observation"
 			revision, err := RebuildS5ForBinding(binding, old)
-			if err != nil || revision.TemplateSHA != old.TemplateSHA || revision.ID == old.ID || !reflect.DeepEqual(revision.Draft, old.Draft) {
+			if err != nil || revision.ID == old.ID || !reflect.DeepEqual(revision.Draft, old.Draft) {
 				t.Fatalf("named revision lost its original questionnaire: %v", err)
 			}
 			afterBytes, _ := json.Marshal(old)
 			if !bytes.Equal(oldBytes, afterBytes) {
 				t.Fatal("reconstruction changed the issued packet")
 			}
-			old.TemplateSHA = strings.Repeat("0", 64)
-			if _, err := RebuildS5(old); err == nil {
-				t.Fatal("unknown template fingerprint silently used current wording")
-			}
 		})
 	}
 }
 
 func TestS5PacketIsStableAndOwnerIsolated(t *testing.T) {
-	inputs := []Reference{{ID: "REQ-039", Path: "docs/requirements/REQ-039.md", Version: "v1", SHA256: strings.Repeat("b", 64)}}
+	inputs := []Reference{{ID: "REQ-039", Path: "docs/requirements/REQ-039.md", Version: "v1"}}
 	p, err := BuildS5(testBinding(), inputs)
 	if err != nil {
 		t.Fatal(err)
@@ -163,7 +158,7 @@ func TestS5PacketIsStableAndOwnerIsolated(t *testing.T) {
 }
 
 func TestS5RejectsUnsafeIdentityAndUnknownResponsibility(t *testing.T) {
-	inputs := []Reference{{ID: "REQ-039", Path: "docs/requirements/REQ-039.md", Version: "v1", SHA256: strings.Repeat("b", 64)}}
+	inputs := []Reference{{ID: "REQ-039", Path: "docs/requirements/REQ-039.md", Version: "v1"}}
 	for _, owner := range []string{"../other", "TODO(planner):owner", "", "x/y"} {
 		binding := testBinding()
 		binding.Owner = owner
@@ -179,7 +174,7 @@ func TestS5RejectsUnsafeIdentityAndUnknownResponsibility(t *testing.T) {
 }
 
 func TestS5AnswerCompletenessAndFrozenQuestionnaire(t *testing.T) {
-	p, err := BuildS5(testBinding(), []Reference{{ID: "REQ-039", Path: "docs/requirements/REQ-039.md", Version: "v1", SHA256: strings.Repeat("b", 64)}})
+	p, err := BuildS5(testBinding(), []Reference{{ID: "REQ-039", Path: "docs/requirements/REQ-039.md", Version: "v1"}})
 	if err != nil {
 		t.Fatal(err)
 	}

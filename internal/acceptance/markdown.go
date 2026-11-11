@@ -25,7 +25,7 @@ func RenderMarkdown(manifest Manifest, summary Summary) string {
 	} else {
 		b.WriteString("# Acceptance Check Report (ACC)\n\n")
 	}
-	b.WriteString(fmt.Sprintf("> Runtime：`%s` @ baseline_generation %d, S7 review round %d\n", manifest.RuntimeID, manifest.BaselineGeneration, manifest.ReviewRound))
+	b.WriteString(fmt.Sprintf("> Runtime：`%s` @ baseline_generation %d, S7 ReviewPlan `%s`\n", manifest.RuntimeID, manifest.BaselineGeneration, manifest.ReviewPlanID))
 	b.WriteString("> 来源：本报告由 S10 manifest 渲染生成（single source）；机器完整性以 JSON manifest 为准，\n")
 	b.WriteString("> 手工编辑不会改变 Gate 消费的事实。生成命令：\n")
 	b.WriteString(">\n> ```text\n> loop-harness s10 manifest render --file <manifest.json>\n> ```\n\n")

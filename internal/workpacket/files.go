@@ -11,6 +11,8 @@ import (
 	"strings"
 )
 
+var ErrPacketPathOccupied = errors.New("packet path contains a symlink or non-directory")
+
 // OpenParent pins each directory separately. A symlink to another owner's
 // files is invalid even if it remains inside the project. Root's containment
 // and the inode checks also protect against directory replacement races.
@@ -38,7 +40,7 @@ func OpenParent(root, relative string, create bool) (*os.Root, string, error) {
 		}
 		if !before.IsDir() || before.Mode()&os.ModeSymlink != 0 {
 			r.Close()
-			return nil, "", fmt.Errorf("packet path contains a symlink or non-directory")
+			return nil, "", ErrPacketPathOccupied
 		}
 		next, err := r.OpenRoot(part)
 		if err != nil {
@@ -130,6 +132,53 @@ func readFromParent(p *os.Root, name string, limit int64) ([]byte, error) {
 // If another publisher wins, its complete bytes are returned for validation.
 func Publish(root, relative string, data []byte) ([]byte, error) {
 	return PublishBounded(root, relative, data, 1<<20)
+}
+
+// PublishNewBounded atomically publishes only when the requested path is free.
+// A pre-existing path is left untouched and returns created=false, without
+// using its bytes, digest or name as proof of the new responsibility.
+func PublishNewBounded(root, relative string, data []byte, limit int64) (bool, error) {
+	if limit < 0 || int64(len(data)) > limit {
+		return false, fmt.Errorf("artifact exceeds %d bytes", limit)
+	}
+	p, name, err := OpenParent(root, relative, true)
+	if err != nil {
+		if errors.Is(err, ErrPacketPathOccupied) {
+			return false, nil
+		}
+		return false, err
+	}
+	defer p.Close()
+	if _, err := p.Lstat(name); err == nil {
+		return false, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return false, err
+	}
+	var random [16]byte
+	if _, err := rand.Read(random[:]); err != nil {
+		return false, err
+	}
+	tmp := fmt.Sprintf(".packet-%x.tmp", random)
+	f, err := p.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		return false, err
+	}
+	defer p.Remove(tmp)
+	_, writeErr := f.Write(data)
+	syncErr := f.Sync()
+	closeErr := f.Close()
+	if err := errors.Join(writeErr, syncErr, closeErr); err != nil {
+		return false, err
+	}
+	if err := p.Link(tmp, name); errors.Is(err, os.ErrExist) {
+		return false, nil
+	} else if err != nil {
+		return false, err
+	}
+	if err := SyncDirectory(p); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // PublishBounded preserves exclusive publication for larger recovery assets.

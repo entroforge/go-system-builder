@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -21,15 +22,15 @@ func TestBuildPlanAcceptsRawREQBindingWithRawCRLFInventory(t *testing.T) {
 	if !ok {
 		t.Fatalf("inventory missing %s", path)
 	}
-	if inventory.REQ.SHA256 != input.SHA256 {
-		t.Fatal("binding must retain raw CRLF inventory identity")
+	if inventory.REQ.Path != input.Path {
+		t.Fatal("binding must retain the actual REQ path")
 	}
 	if _, err := BuildPlan(inventory); err != nil {
 		t.Fatalf("BuildPlan() rejected valid raw-byte REQ binding: %v", err)
 	}
 }
 
-func TestBuildPlanHashIsDeterministicAndExcludesAbsoluteRoot(t *testing.T) {
+func TestBuildPlanExcludesAbsoluteRootAndDigests(t *testing.T) {
 	rootA := t.TempDir()
 	rootB := t.TempDir()
 	for _, root := range []string{rootA, rootB} {
@@ -54,8 +55,8 @@ func TestBuildPlanHashIsDeterministicAndExcludesAbsoluteRoot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildPlan B returned error: %v", err)
 	}
-	if planA.PlanSHA256 == "" || planA.PlanSHA256 != planB.PlanSHA256 {
-		t.Fatalf("plan hashes A=%q B=%q, want equal non-empty hashes", planA.PlanSHA256, planB.PlanSHA256)
+	if !reflect.DeepEqual(planA, planB) {
+		t.Fatalf("same original inputs differ: %#v %#v", planA, planB)
 	}
 	encoded, err := json.Marshal(planA)
 	if err != nil {
@@ -87,12 +88,12 @@ func TestBuildPlanIsIdempotentForEquivalentInputOrder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildPlan second returned error: %v", err)
 	}
-	if first.PlanSHA256 != second.PlanSHA256 {
-		t.Fatalf("equivalent input order changed plan hash: %q != %q", first.PlanSHA256, second.PlanSHA256)
+	if !reflect.DeepEqual(first, second) {
+		t.Fatal("equivalent input order changed the actual plan")
 	}
 }
 
-func TestBuildPlanHashChangesWhenAnInputChanges(t *testing.T) {
+func TestBuildPlanDoesNotPretendToDetectSameLengthInputChanges(t *testing.T) {
 	root := t.TempDir()
 	writeRecoveryREQ(t, root, "docs/requirements/REQ-022.md", "locked", "v1.0.0")
 	designPath := filepath.Join(root, "docs", "design", "ARCH-022.md")
@@ -117,12 +118,16 @@ func TestBuildPlanHashChangesWhenAnInputChanges(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildPlan second returned error: %v", err)
 	}
-	if first.PlanSHA256 == second.PlanSHA256 {
-		t.Fatalf("changed input kept plan hash %q", first.PlanSHA256)
+	if first.REQ.Path != second.REQ.Path {
+		t.Fatal("original REQ path changed")
+	}
+	actual, err := os.ReadFile(designPath)
+	if err != nil || string(actual) != "design-v2" {
+		t.Fatal("changed actual material was not retained")
 	}
 }
 
-func TestBuildPlanForReplayCursorFingerprintsFormalProgress(t *testing.T) {
+func TestBuildPlanForReplayCursorRetainsFormalProgress(t *testing.T) {
 	root := t.TempDir()
 	writeRecoveryREQ(t, root, "docs/requirements/REQ-023.md", "locked", "v1.0.0")
 	inventory, err := Inspect(root, "docs/requirements/REQ-023.md")
@@ -140,7 +145,7 @@ func TestBuildPlanForReplayCursorFingerprintsFormalProgress(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.PlanSHA256 == conservative.PlanSHA256 {
-		t.Fatal("formally replayed cursor must change the plan fingerprint")
+	if plan.TargetCursor == conservative.TargetCursor || plan.BaseMode == conservative.BaseMode {
+		t.Fatal("replayed cursor must remain distinct from conservative seed")
 	}
 }

@@ -1,8 +1,8 @@
 # 原生子代理与 Main 工作区集成
 
-本指南是新工作的操作入口。Claude Code 负责创建子代理、前后台运行、消息、等待、worktree 隔离和恢复；Main 负责工程分工、准确资料交付、集成及阶段闭环。`SubagentStart` 补充有界上下文，`SubagentStop` 将实际专业产物交给原消费者。Runtime Writer、领域接收器和原 Gate 保留工程事实与阶段决定。
+本指南是新工作的操作入口。Claude Code 负责创建子代理、前后台运行、消息、等待、worktree 隔离和恢复；Main 负责工程分工、准确资料交付、集成及阶段闭环。`SubagentStart` 补充有界上下文，S7～S9 的 Pre 观察当前原卷，成功 Post 和 Stop/SubagentStop 兜底交原消费者；S5/S6 保留原返回接收合同。Runtime Writer、领域接收器和原 Gate 保留工程事实与阶段决定。
 
-[原生派发技能](../skills/agent-dispatch/SKILL.md)与[阶段协议](control/agent-protocol.md)给出角色和阶段约束。已登记的旧 workspace／Team 执行使用[冻结执行恢复参考](workspace-execution-recovery.md)；其中 prepare/launch、bootstrap、Claude UUID 与旧保存提交命令只恢复原责任，不能成为新原生工作的前置条件。
+[原生派发技能](../skills/agent-dispatch/SKILL.md)与[阶段协议](control/agent-protocol.md)给出角色和阶段约束。实际集成与中断接续见[恢复参考](workspace-execution-recovery.md)。
 
 ## 开始前先确认原责任
 
@@ -11,9 +11,9 @@
 | S2、S3、S4 Main 规划 | 当前阶段的准确 view/answer | Main 保存，由原 PostToolUse 消费；原 Gate 决定推进 |
 | S5 文档审查 | 当前独立责任的 view/answer | 原生 Agent 独立审查，返回原答卷路径，Stop 接收 |
 | S6 实现 | `s6 prepare` 返回的准确 brief | 原生 Agent/worktree，保存专业 PLAN/Result 并返回，Stop 接收 |
-| S7 验证 | 当前 ReviewPlan、责任及准确 view/answer | 原生 Agent 按 Claims、波次和独立性执行，Stop 接收 |
-| S8 调查 | 原 Case/Hypothesis 派发和准确 view/answer | 原生 Investigator 返回原答卷，Stop 接收 |
-| S9 修复／独立复验 | 原 RepairPlan/Contract 下准确 brief 或 Targeted 答卷 | Builder 用原生 worktree；独立 verifier 保留独立性；Stop 交原消费者 |
+| S7 验证 | 当前 ReviewPlan、责任及准确 view/answer | 原生 Agent 按本人责任、波次和独立性执行，Pre／成功 Post／Stop 接收本人原卷 |
+| S8 调查 | 原 Case/Hypothesis 派发和准确 view/answer | 原生 Investigator 保存本人原答卷，Pre／成功 Post／Stop 接收 |
+| S9 修复／独立复验 | 原 RepairPlan/Contract 下准确 brief 或 Targeted 答卷 | Builder 用原生 worktree；独立 verifier 保留独立性；适用 Pre、成功 Post、Stop/SubagentStop 交原消费者 |
 
 工程 owner 是责任身份，可以与实际平台 actor 不同。同一角色可以有多项责任，不能凭角色、actor 名、队列顺序或启动先后猜问卷。Main 必须真正派发原生 Agent；工程登记和准备成功本身不表示子代理已经运行。
 
@@ -27,7 +27,7 @@ Main 保持在用户当前项目 checkout，目标是需求绑定的开发分支
 
 ### S2 Main 设计答卷
 
-启用问卷的 v1.2/v1.3 Runtime（新 install/init 默认开启）在原 S2 责任准备时提供设计问卷，普通 PreToolUse 只读展示当前 `view_path` 与 `answer_path`。Main 读取 view，完成适用设计并锁定 `docs/architecture/ARCHITECTURE-*.md`，将架构、适用 accepted ADR 和模块材料等正式上游提交到原绑定选定的开发分支，再在原 answer 的 `answer` 填写 `conclusion=pass` 与真实 `architecture_path` 并保存。S3 读取已提交来源并与磁盘核对；Hook 不替作者提交文件。成功保存由原 PostToolUse consumer 接收，不需要手工运行 `stage-answer issue` 或 `consume`；具体技术故障仍可使用受支持的诊断和恢复入口。
+启用问卷的 v1.2/v1.3 Runtime（新 install/init 默认开启）在原 S2 责任准备时提供设计问卷，普通 PreToolUse 只读展示当前 `view_path` 与 `answer_path`。Main 读取 view，完成适用设计并锁定 `docs/architecture/ARCHITECTURE-*.md`，保留实际架构、适用 accepted ADR 和模块材料，在原 answer 的 `answer` 填写 `conclusion=pass` 与真实 `architecture_path` 并保存。S3 按原绑定及配置读取所选 fileview；所选来源确有材料缺失或不可读时准确反馈，不要求 checkout 一致或额外提交动作。成功保存由原 PostToolUse consumer 接收，不需要手工运行 `stage-answer issue` 或 `consume`；具体技术故障仍可使用受支持的诊断和恢复入口。
 
 接收、迁移和下一材料准备分别成立。未答完的答案仍为草稿；完整专业答案可被接收并登记 `planning_design` 和 pending followup，但架构未 locked 或 UI impact=unknown 等条件仍会使原门拒绝 `PTR-PLAN-01`。需求澄清沿原人闸处理。S2 接收不以开发来源摘要相等为资格；正式来源问题会影响后续 S3 准备，不能误报为答卷未接收。原转换动作登记架构，随后准备 S3；准备失败时修复反馈指出的实际来源并提交，不改写已经接收的结论。同内容重放返回原回执，未完成出口沿原 continuation 继续，不重复登记。Main 阶段回执不等于项目可结束，也不替代后续独立验证；旧实例保留原兼容合同。
 
@@ -55,8 +55,7 @@ Hook 发行绑定实际 `planning.contracts` 的 Main/runtime/generation/stage-e
 答卷读取原 locked REQ 和 PTR-PLAN-01 已登记的 S2 design，并冻结按原引用闭合的
 模块真相、ADR/共享模型和条件来源。S3 的 CONTRACTS/FE/BE/SYNC 是本阶段的
 交付候选；它们要由本次原检查和 PTR-PLAN-02 消费、登记，不能假定发行时已经
-被 PTR-PLAN-02 登记。源文件摘要及目录成员清单由发行端从上游原登记与引用解析
-重建，不由答卷中的 `contract_paths` 自证完整。必需来源新增、删除、漂移或
+被 PTR-PLAN-02 登记。原消费者使用已有责任与实际材料，不以源文件摘要或目录成员认证作为接收资格。必需来源实际新增、删除或
 stage/baseline 变化时，尚未接收的旧答卷不能覆盖新事实，应按原规划/修复路径
 重发。
 
@@ -101,7 +100,7 @@ Main 保留原独立审查分工与冻结资料，将当前 view、私人 answer
 | `behavior_projection_version` / `behavior_examples` | TASK Manifest 明确引用并经场景包验证的 CASE、witness、oracle、fixture 及实际来源摘要 | 阅读模式和未知条件保留；这是可执行预期的参考，不是产品或浏览器已运行的证据 |
 | `conventions_resolver_version` / `task_conventions` | 原 Rules 或登记规范支持的选择、例外及来源 | registry 自称 approved 不是批准；candidate/conflict/stale 等不能当当前默认；有影响的决定缺口交原 Architect |
 
-原生上下文列出实际来源和阅读顺序；冻结执行如何安装 `.claude/inputs` 由[恢复参考](workspace-execution-recovery.md#s5-独立文档审查)说明。不要把安装副本步骤加给原生审查。旧已发行分析不在重试时追加字段或按今天的解析器重算；具名修订保留同一冻结分析。来源漂移或分析丢失须恢复原来源或走原返工，不能靠重新生成摘要续作。
+原生上下文列出实际来源和阅读顺序。分析或必要来源缺失时如实交给 Main 处理，不要求作者补摘要。
 
 ### S5 具名修订
 
@@ -113,7 +112,7 @@ loop-harness runtime stage-answer revise --root <Main> --previous <submission_ke
 
 同原回执、同原因重放返回同一新 packet；不同原因冲突。发行立即暂停旧证据资格，修订等待期间旧 PASS 不能推进阶段。新答案接收后原 Writer 原子登记替代关系，原 PASS/FIX/需求人闸路由保持。旧回执仍说明历史交付已接收；兼容字段 `responsibility_status=replaced`、`work_complete=false` 指向新 packet，当前 attempt 只有新答卷经原接收后才可能投影为 `done`。资料变化或已离开 S5 走原返工/需求流程。
 
-新原生责任按新问卷的准确引用开展修订审查，Main 携带当前 view/answer 派发；旧 packet 的答案不能代交新 attempt。Claude Code 管理执行和恢复，不为新问卷增加 workspace prepare/launch。已经冻结的独立执行仍保留其来源，按[冻结执行恢复参考](workspace-execution-recovery.md#已登记冻结执行准备与启动)建立后继执行，不能退回 Main 来源或改写旧目录。
+新原生责任按新问卷的准确引用开展修订审查，Main 携带当前 view/answer 派发；旧 packet 的答案不能代交新 attempt。Claude Code 管理执行和恢复，不为新问卷增加 workspace prepare/launch。已接收结果和实际来源沿当前责任保留，不以旧答案代替新责任。
 
 Main 可只读恢复历史回执：
 
@@ -137,13 +136,13 @@ Builder 按 brief 的固定源提交，在本人 worktree 读取其中列明的 
 
 当前私人 Plan 沿 brief 填写 `objective`、`planned_paths`、`assertion_checks`、`risks_blockers`。每项 assertion 包含 `assertion`、`oracle`、`done_when_indexes`，覆盖 Done when 的零基索引。登记依赖由系统带入 canonical Plan，不在私人 Plan/Result 填写 `dependencies`；无风险时 `risks_blockers` 填空数组。
 
-Result 按原草稿填写 `summary`、`assertion_evidence`、`risks_blockers`、`scope_deviations`、`closing_assessment`。每项 `assertion_evidence` 使用本人 Plan 的零基 `plan_assertion_index` 和非空 `evidence_refs`；系统从原 Plan 派生 assertion/oracle，不要求抄写。`evidence_refs` 是实际 worktree 内、本人写范围或已列阅读范围中的精确存在文件路径，不带行号、说明或命令。命令及观察写入 summary 或 rationale，不能虚构日志文件引用。
+Result 按原草稿填写 `summary`、`assertion_evidence`、`risks_blockers`、`scope_deviations`、`closing_assessment`。每项 `assertion_evidence` 使用本人 Plan 的零基 `plan_assertion_index` 和非空 `evidence_refs`；系统从原 Plan 派生 assertion/oracle，不要求抄写。`evidence_refs` 可表达实际命令、观察或可用材料，不要求为接收创建证据文件；如实记录实际检查，Main 另行负责集成检查。
 
-`closing_assessment.disposition` 为 `complete`、`incomplete` 或 `blocked`；每条条件填写 `done_when_index`、`judgment` 和具体 `rationale`；`plan_assertion_indexes` 可由原 Plan 映射派生，显式填写仍核对原关系。历史完整 assertion/oracle 证据行及显式 closing 映射仅作接收兼容，仍严格核对原 Plan；同一证据行不混用 compact index 和全文字段，不把旧格式当当前必填。complete 要求所有条件 satisfied，且没有未决阻断或范围偏差。这是本人专业闭合判断，不能替代 Main 必需检查或 fresh S7。默认准备的原 closing contract 明确使用空 `worker_checks`、`post_merge` 和 Main 检查位置；Builder 仍执行 TASK 自检并如实报告，不能把空 runner 列表解释成不用验证。
+`closing_assessment.disposition` 为 `complete`、`incomplete` 或 `blocked`；每条条件填写 `done_when_index`、`judgment` 和具体 `rationale`；`plan_assertion_indexes` 可由原 Plan 映射派生，显式填写仍核对原关系。按当前原卷填写本人判断，不要求另建旧格式证明。本人以已有 disposition 和条件判断如实表达完成或未完成；风险、假设和范围说明保留原话交 Main，相关列表非空不自动阻止集成或表示偏差获批。Main 依据原 TASK、实际变化和自身责任处理真实范围问题。这是本人专业闭合判断，不能替代 Main 必需检查或 fresh S7。默认准备的原 closing contract 明确使用空 `worker_checks`、`post_merge` 和 Main 检查位置；Builder 仍执行 TASK 自检并如实报告，不能把空 runner 列表解释成不用验证。
 
 真实阻塞可以发生在形成 Plan 前或之后。按 brief 在原 Result 路径保存最小 blocked Result：`summary` 说明进展与未完成工作，非空 `risks_blockers` 说明原因，`closing_assessment.disposition` 为 `blocked`。保留已有 Plan/真实证据，返回原 brief 与实际 Result 的绝对路径；不要编造检查、证据或计划。这是交 Main 恢复的未接收交接。已按完整报告合同填写的 blocked/incomplete Result 仍走原校验，接收不等于可集成，也不能原地改写已接收答案。需要后继修订时，若已有原返工检查点依据，直接沿下节具名修订；若尚无该依据，Main 先运行原 `loop-harness runtime task-integrate --root <Main> --assignment-id <assignment-id>`，由原消费者记录 closing blocker 检查点并拒绝 merge，再运行下节 `s6 prepare --revise-assignment`。保留已接收报告及真实阻塞，不把这次记录阻塞解释成合并或完成。
 
-原登记中的非空 runner 检查、回执耐久副本与静态复用条件见[底层检查参考](workspace-execution-recovery.md#显式-checkprofile)。仅在当前原来源确实提供对应命令时使用，不把冻结执行的命令复制给新责任。
+实际检查与中断接续见[底层检查参考](workspace-execution-recovery.md#本人结果与检查)。
 
 ### 原生 Assignment 返工
 
@@ -154,51 +153,37 @@ loop-harness s6 prepare --root <Main> --task <TASK> --role backend-builder \
   --revise-assignment <assignment-id> --revision-intent-key <stable-key>
 ```
 
-相同修订意图保留 stable key；原 Writer 形成新版本并返回准确 brief，Main 再按当前原生责任派发。原 Result、checkpoint 和源树留存，旧 checks/ACK 不变成新版完成凭据。该入口保留同一 reviewed TASK 的 ID/path/SHA；TASK 规范变化回原规划与文档审查，不通过刷新摘要或反复修订绕过。
+相同修订意图沿原责任接续；原 Writer 形成新版本并返回准确 brief，Main 再按当前原生责任派发。原 Result、checkpoint 和源树留存，旧 checks/ACK 不变成新版完成凭据。该入口使用同一 reviewed TASK 的实际 ID/path；TASK 规范变化回原规划与文档审查，不用摘要作资格。
 
 如果只是原接收失败而专业产物已保存，先检查原回执、来源和 pending。同一责任仍有效且尚未接收时，恢复原生 agent 返回原产物；不用重做实现、另开责任或等待 Main 集成才能让 Builder 结束。
 
 ## 固定产品基线与 S7 接续
 
-显式 Assignment 的薄 Result 不提供机器 changed paths。S7 的固定产品来源由原 TR-003 的 Main 起点回执、journal、Assignment Record/Result、版本化 Main checkpoint、完整 runner/tool receipts 和真实 Git 差异共同重建。`controlproof` 验证原 journal/start receipt，`mainreceipt` 验证单项 Main contribution，`buildsurface.Read` 汇总当前与历史 Record 的合法贡献及 start..final 全路径，`ReadRegistered` 再检查原 typed ReviewPlan 的完整 `frozen_subjects`。这些来源也服务当前原生交付，不是旧 launcher 的专属能力。
-
-基线包括删除路径和未归属某个 Builder 的实际 Main 变化，不能退回作者的 `changed_paths`、`scope_refs` 或遗漏集合。S10 显式 `affected_paths=all` 表示审查范围全量，仍须逐项覆盖机器 `changed_path` 分母和验证来源。缺失或漂移是不可验证，不是“无变化”。
+S6 的真实集成结果与必要检查提供进入 S7 的实际产品材料。Main 组织完整当轮覆盖，向各责任交付准确原题与可读来源。S7～S9 的答卷接收不递归重建 S6 journal、贡献、Git 差异或 frozen-subject 摘要来认证每份答案；实际集成和专业审查仍分别由 Main 与作者负责。S10 自身的审计合同不在此处改写。
 
 TR-006 的 `builder_report_record` 是原 `completion_report` 的兼容候选 kind，不是另一份 Builder Result。原 Engine 仅在已登记的当前 Result ref 确属 `buildsurface.Read` 验证的当前 Main 贡献时接受；本人闭合、精确 TASK、共同起点和 Main 事实任一缺失都不能推进。旧 completion 保持原来源。
 
-S9 的 TR-012 seed bridge 复用同一产品基线，发布 seed 前和原 Writer 变更状态前复验来源，保留完整任务/路径覆盖、DV 和六项 QA 骨架。Main 仍要完善 assertion、oracle、method 与专业分工；seed 不判定 E2E 适用性。机器来源和 seed 成立不代表完整产品或真实模型验收，实际运行证据单独记录。
+S9 完成实际集成、Main 影响判断和独立 Targeted 后，原出口准备新的完整 S7 及准确题面。Main 根据真实变化完善覆盖与分工；seed 不代表 S7 PASS，也不为接收增加基线摘要证明。
 
 ## S7 已发行专业答卷
 
-Main 完成原 ReviewPlan 与专业登记，原准备入口确保当前 dispatched Assignment 的 `s7-review-result-v1` 问卷。波次和依赖保留；未就绪责任不提前取得专业结论。Main 将准确 view/answer 路径带入原生 Agent，Reviewer 阅读真实冻结材料，独立执行其 Claims/lens，填写原 `answer` 并返回准确引用。SubagentStop 调用原 `review.SubmitIssuedResult`，校验当前 Plan/round、owner、来源、Claim exact set、证据与原批准模式。普通工具事件不提供逐保存回执，不要求 generic PLAN/activation。
+Main 保存原 ReviewPlan，按实际责任、波次和独立性派发准确 view/answer。Reviewer 只填写本人原卷的 `answer`，执行分配的 Claims/CASE，保存一次。PreToolUse 观察当前原卷，成功 PostToolUse 和 Stop/SubagentStop 兜底，经同一原消费者单次核解析、必要字段、就绪和结论并保存；未填结论为草稿。不要求返回引用、重存、done 标记、另交报告，或重验 Git／证据／历史摘要。显式批准模式仍保留真实批准。
 
-计划草稿、登记与修订共用绑定 REQ 和当前冻结 TASK 的明确模块范围，读取其中必需浏览器 CASE。TASK 仅以原 `Module current truth` 和 `Module Impact` 的 `Modules touched` 声明选模块，背景阅读及说明链接不扩大范围。每个已知 CASE 在 E2E Claim 的 `source_refs` 使用完整 `cases.json#CASE` 引用，安排实际验证或用原理由/检查表明确 N/A；笼统 `ui_impact=none` 不代替逐 CASE 处置。缺明确来源交 Main 恢复，不全库兜底；Main 仍须分析未显式记录的消费者影响。
+Main 负责整轮完整模块及受影响面的专业判断；作者如实说明通过、发现、blocked 和未执行项。普通 Finding 可继续剩余安全工作；真实 P0 或危险操作停止，保留实际观察与缺口。需要的脚本／夹具只写原分配验证空间，既有回归资产保留其原用途。
 
-新只读责任可直接使用原 Main 根下私人问卷，不创建 execution。已登记独立 Worker 使用其确切来源，缺失时不能回落 Main；cold-start E2E 必须如实报告实际执行来源，`verification_artifact_digest` 由原消费者自动固定并验证，作者保留原卷机器预填或 null，不计算、复制摘要。显式 `plan_approval_required` 等待原审批。
-
-Main 组织整轮完整模块和受影响面，Reviewer 只执行本人分配的 Claims/CASE；浏览器、API、命令和状态型行为各使用实际入口与方法。S7 读取锁定场景/流程及契约，缺项反馈 Main，不重写规格或 FE 契约。cold_start 所需新脚本/夹具写入原 `verification_artifact_workspace`（`e2e-workspace/` 下），命令指向实际文件和适用 runner/config；既有 `web/e2e/<module>/` 资产在原路径只读执行。正常负向 PASS 的状态、副作用、拒绝和恢复写 `ClaimResult.observed` 与真实证据；失败才产生 Finding。普通 Finding 继续其余安全检查，真实 P0／危险操作停止并保留观察及采集缺口。
-
-最后有效 Result 接收形成 CleanRound 后，原完成出口在同次交接检查原 Gate/TR-009，准备并返回 S10 当前验收问卷准确路径。原接收、迁移与材料准备是分别成立的事实；门或迁移失败按原 `loop-harness runtime review-continue --root <Main>` 复核当前干净出口，已进 S10 的缺稿按 `loop-harness runtime audit-prepare --root <Main>` 恢复当前缺失材料，保留已有报告。Main 不重交 Reviewer 答案、不手工复制 clean_round 绑定，也不靠下一次普通 Read/Bash 制造事件；旧 PreToolUse 自动转换只保留兼容恢复。
-
-相同已接收答卷重放不追加 Result/Finding，不同答案沿原冲突/具名修订处理。`runtime stage-answer receipt --agent <owner> --path <issued-path> --root <Main>` 只读恢复事实；普通工作不手动 issue/consume。原 explicit/冻结 teammate 保存入口继续服务其原兼容责任。专业验收须记录实际产品、平台和执行范围。
+必要责任完成且无 Finding 时，原出口同次交 S10 并准备准确验收问卷；有 Finding 时将已收发现和未完成项交 S8，不另产 CleanRound／ObservationBatch 证明。S8 已开始后，已派发 S7 原责任仍可首次接收，晚到 Finding 交 Main 判断补充当前调查或后续处理，不重开 S7、不自动改批准。
 
 ## S8 已发行假设答卷
 
-Main 沿原 Case/Hypothesis 与 `runtime investigation dispatch` 登记工程责任，原准备入口确保准确 view/answer。Main 携带该引用原生启动或恢复 Investigator；逻辑 owner 不要求等于实际平台 actor，登记不代表已经启动。Investigator 阅读真实 encounter/材料，填写本人方法、观察、证据、判别与结论，保存原答卷并返回引用。SubagentStop 调用原 HypothesisResult/Case Writer，普通工具不激活、不接收。
+Main 沿原 Case/Hypothesis 准备准确 view/answer 并实际派发 Investigator。Investigator 阅读实际材料，填写本人方法、观察、引用、判别和结论，保存原卷一次；同样由 Pre／成功 Post／Stop 经原消费者接收。Main 判断因果、未知与去向，`new_hypotheses` 仅为建议，不自动登记责任或增加退出条件。原真实批准与其准确对象保留，答卷保存不构成批准。
 
-新只读责任不要求独立 execution/session。已登记独立目录沿原来源校验，缺失时不得换用 Main。普通 `plan_checkpoint` 无 generic PLAN；显式批准模式保留原批准。原 Writer 同 CAS 保存结果与回执，无关兄弟结果追加不使有效问卷失效，自身来源/派发/路由变化仍拒收。source boundary 使用实际 `finding:<source-id>` 或 encounter pointer；不编造 ref。
+已有发行题面和原路径继续使用。新问题若因当前来源形式尚未受原准备器支持而无法发行，作为 Main/system 的具名准备缺口处理；不臆造来源协议或索引别名。来源边界可用实际 Finding、决定或准确位置说明，不要求逐项机器验指针。真实 blocked／未完成项交 Main，不伪造结论。
 
-新 Hypothesis/Assignment 由原领域生成，Main 仍须真正派发；答案不批准 route、Contract 或 S9 修复。重复 Stop 沿原幂等接收，改写已接收答案仍冲突。只读 receipt、冻结旧保存入口和原人闸保留。S8 当前实际 lifecycle 为 `bug_resolution/investigation`，残留 S9 pointer 不得抢占它。真实原生模型专业验收另记。
+## S9 真实实施与独立复验
 
-## S9 原生修复与独立复验
+Builder 按准确 brief 在实际 worktree 先保存原 PlanReport，独立接收后连续实施与自检，再保存原 RepairResult。Pre／成功 Post／Stop 经各原消费者接收，不增加 flat→typed 作者副本、Git／证据摘要门或返回证明。Main 对已收贡献执行真实集成与必要检查，填写原影响判断；不强制指定 `workspace integrate`、Git commit、Final 或 proof 作为 Impact 接收前置。空变化、空处置均合法，可选说明不成为隐藏必填。独立 Targeted verifier 只填写自己的原答卷，对实际修复产品执行必要观察；不能由 Builder 或 Main 代签。
 
-原批准的 Case/Contract、Session、RepairPlan 与实际修复派发确定责任。Main 将原准备入口给出的准确 S9 brief 交给原生 Agent，Builder 使用原生 worktree 完成实际预检，先保存专业 PlanReport，再实施修复、自检和 Result。存在产品变化才提交真实改动；合法无变化结果不制造空提交。Main 根下的问题是只读输入，专业输出留在实际 worktree 私人路径。
-
-Builder 返回准确 brief 和 Result 的绝对路径。Stop 将实际 PlanReport 专业内容导入原问卷，调用原 PlanReport 与 RepairResult 消费者；不由 Main 代填，不要求普通保存时先投影 AgentBegin，也不新增通用 PLAN_REPORT 或 workspace deliver。`native_delivery` 仅保存实际返回的 Git 坐标，供原 Result、Main 集成及检查使用；它没有 bootstrap、平台会话或启动租约，不能交 launcher 启动。
-
-独立 Targeted verifier 得到准确的原 Targeted 答卷，检查修复后的实际树，不写产品；返回后由 Stop 调用原消费者。每个获批 Contract 保留其独立复验义务，之后原 Handoff 返回 fresh S7。PlanReport 被接收、修复候选被接收以及 Main 最终结果分别有自己的回执，均不代替后续门禁。
-
-`completed` 仍要求原 unit 条件成立且无范围偏差；`blocked`、`contract_conflict`、`stale` 如实交原 blocker/resolution 路径。缺准确来源或接收失败交 Main 处理，不让 Builder 猜 source、刷新 SHA 或运行旧命令冒充完成。冻结 workspace／Main-root 保存问卷只沿[原执行恢复](workspace-execution-recovery.md)消费其历史责任。
+blocked、未完成或真实失败如实保存在原卷并交准确责任。Targeted 通过后原出口准备完整新 S7；局部复验不是干净轮。已收事实不依赖私人文件仍存在或字节不变；后继准备失败保留接收，并沿反馈的原入口只续未完成部分，不重存、不重验历史。清理是资源后继，不撤销已收工作。
 
 ## Main 集成、必需检查与继续流程
 
@@ -214,17 +199,17 @@ loop-harness runtime workspace pending --root <Main>
 loop-harness runtime task-integrate --root <Main> --assignment-id <assignment-id>
 ```
 
-Main 在绑定开发分支集成实际贡献、执行全部原必需检查，再由原检查点和 Writer 确认接收。Result 的路径、摘要及实际受测 HEAD 一起决定回执适用性；产品、结果或受测 HEAD 变化不能复用旧 PASS。中断或失败后允许按原反馈重入同一 `runtime task-integrate` 命令，恢复尚未完成的合并、检查、确认或出口；原检查点避免重复合并和接收。Main 检查失败留下 preserved/blocked 检查点时，先解决原环境/检查原因，再按原 pending 的具名命令带 `--retry-preserved` 重试；裸重入会保留原失败。已成功集成仅需接续出口时，不增加该重试前置。已迁移 S7 后的材料准备缺口沿反馈给出的原 `s7 draft --root <Main> --out <原路径>` 恢复。已有确认后的纯清理重试保留原验证事实，不因为 Main 后续合法推进而重新要求 Builder 工作。Hook 不同步执行长合并；PreCompact 不代收答卷或另建阶段 checkpoint。
+Main 在绑定开发分支集成实际贡献、执行全部原必需检查，再由原检查点和 Writer 确认接收。Main 按真实合并和检查事实处理实际变化；不为答卷接收或阶段出口登记、比较摘要或 Git OID。中断或失败后允许按原反馈重入同一 `runtime task-integrate` 命令，恢复尚未完成的合并、检查、确认或出口；原检查点避免重复合并和接收。Main 检查失败留下 preserved/blocked 检查点时，先解决原环境/检查原因，再按原 pending 的具名命令带 `--retry-preserved` 重试；裸重入会保留原失败。旧 closing 误挡可能覆盖合并结果未知的状态，不能只凭错误码自动重合并；已有 Main 合并事实沿已知边界续接，否则保留未知，由 Main 理解现场。已成功集成仅需接续出口时，不增加该重试前置。已迁移 S7 后的材料准备缺口沿反馈给出的原 `s7 draft --root <Main> --out <原路径>` 恢复。已有确认后的纯清理重试保留原验证事实，不因为 Main 后续合法推进而重新要求 Builder 工作。Hook 不同步执行长合并；PreCompact 不代收答卷或另建阶段 checkpoint。
 
-两种检查位置沿原登记选择，不能为省时把 Worker 自检抄成 Main PASS。原 closing 未闭合、有风险/偏差或缺实际必需检查时，不放行 ACK 或阶段转换。S6 完成进入 S7 后，Main 仍要完成专业 ReviewPlan；S9 Main 集成、独立 Targeted 与原 Handoff 成立后进入 fresh S7，不能由候选接收跳过。
+本节 `runtime task-integrate` 适用于原 S6 集成；S9 沿上节原答卷合同接收。两种检查位置沿原登记选择，不能为省时把 Worker 自检抄成 Main PASS。本人真实未完成或缺实际必需检查时，不把工作当成完成；风险或范围说明非空本身不阻止 ACK 或阶段转换，也不意味着 Main 已批准偏差。S6 完成进入 S7 后，Main 仍要完成专业 ReviewPlan；S9 Main 集成、独立 Targeted 与原 Handoff 成立后进入 fresh S7，不能由候选接收跳过。
 
-环境问题解决后按原 pending 重验保全候选；确需修代码时，原生 S6 使用上节具名 Assignment 修订，S9 使用原领域返工/解阻路径。旧格式与冻结执行的 `workspace rework`、ACK 中断续作及清理细节见[集成恢复参考](workspace-execution-recovery.md#合并s9-与继续流程)。该入口不覆盖旧候选、不自动 reset，也不把失败改成 PASS。
+环境问题解决后按原 pending 重验保全候选；确需修代码时，原生 S6 使用上节具名 Assignment 修订，S9 使用原领域返工/解阻路径。ACK 中断续作及清理细节见[集成恢复参考](workspace-execution-recovery.md#main-集成与继续流程)。该入口不覆盖旧候选、不自动 reset，也不把失败改成 PASS。
 
 ## 统一提交回执
 
 原接收入口和 `stage-answer receipt` 使用同一个 `submission-receipt.schema.json`。原生子代理在 Stop 接收，Main 规划在保存时接收；不能因接口相同就把两者的触发事件合并。
 
-`submission_key` 是原领域接收身份，可以是通用提交摘要、S7 Result ID、S8 Case commit key 或 S9 PlanReport/candidate/Result key，不一定是 SHA256。`current_stage` 表示查询当时的阶段，不标识历史回执的来源阶段。`submission_key`、`domain_refs` 和状态均为只读投影，不由作者修改。
+`submission_key` 是原领域的内部接收身份；S7 Result、S8 Case 和 S9 PlanReport/candidate/Result 沿各自已有责任关联。`current_stage` 表示查询当时的阶段，不标识历史回执的来源阶段。`submission_key`、`domain_refs` 和状态均为只读投影，不由作者修改或提供摘要。
 
 `accepted` 只表示原接收已经成立；`work_complete` 还需要当前 owner 本人责任的证明。S9 PlanReport 可以 accepted 而本人仍 active；`candidate_accepted` 在检查满足时可以将本人投影为 done，同时列出 Main integration 待办。`main_result_accepted` 也不代替后续 Gate。历史 `main_result_accepted_rework_required`、`main_result_accepted_owner_status_unavailable` 保持 `work_complete=false`，按原回执的具体恢复动作处理。尚未接收的候选返回 `not_accepted`，不能用空状态冒充完成。
 
@@ -279,8 +264,7 @@ install 接受相同两个参数。max 至少 1；resume 必须小于 max，缺�
 原 Assignment 的未接收结果达到 max 时，新的 S6 Builder 注册暂缓，看板
 候选显示 queued；已登记作业照常交付。迟滞持续到原 Main 接收量降至 resume。
 在途交付可能超过触发值，不能据此取消作业或缩小 required 覆盖。
-原 ACK 登记确认的报告路径与 SHA；匹配当前 checkpoint 才释放，新报告清除
-旧 ACK 绑定。cleanup 失败单列恢复，不延长已确认结果的反压。
+原 ACK 沿已有责任和实际报告引用确认，cleanup 失败单列恢复，不延长已确认结果的反压；不要求报告 SHA。
 源 manifest 无法解析时先恢复原登记来源，不能把未知接收量当零。
 
 ## 原 Main 集成锁的只读观测
@@ -298,10 +282,7 @@ install 接受相同两个参数。max 至少 1；resume 必须小于 max，缺�
 
 ## 已发行答卷的 Runtime 恢复
 
-1.2 Runtime 发行工作包后，原 Writer 会在清除提交/指纹 pending 前保存完整
-state/journal checkpoint（包含旋转段），索引只保留最新两份。它是恢复证据，
-正常门禁仍只读原 Runtime。快照失败会保留原 pending，修复报告的问题后由原
-Writer 重试；不要删除 marker 或把答卷重新登记。
+Runtime 的真实事务中断沿当前提交和 journal 接线恢复；保留已接收事实与实际用户文件。旧 fingerprint 标记不再表示当前事务，也不阻挡正常 Writer；不要删除未知文件来换取推进。
 
 先运行 `runtime recover inspect --root . --req <locked-REQ-path>`，从输出取得
 `latest_checkpoint`，然后生成可审核的原 pair 计划：
@@ -312,14 +293,13 @@ Writer 重试；不要删除 marker 或把答卷重新登记。
   --release-upstream <bound-release-destination> --checkpoint <latest_checkpoint>
 ```
 
-核对 `checkpoint_restoration` / `original_pair`、候选摘要、责任与激活、修订及
+核对 `checkpoint_restoration` / `original_pair`、实际候选、责任与激活、修订及
 失效记录、原 cursor 与迁移事件后，按原人闸执行
 `runtime recover apply --root . --plan <plan-path> --approved-by <human-operator>`。
 原合法 pending 优先于计划；半替换后重复同一 apply，不能重新生成接收键。
 已处理接续保持已处理，未交的新 attempt 保持未交，旧 PASS 不复活。
 计划应用拒绝仍持 launch lease 的 Worker、较新事实、资料漂移和已关闭 Runtime。
-现存 Worker 冻结资料与原计划仍需完整可验证；缺少可信完整来源时，不从文件存在猜测
-专业签字。单份快照 state 上限16 MiB、完整 journal 上限64 MiB，超限明确保留 pending。
+必要原材料缺失时如实保留未知，不从文件存在猜测专业签字。
 
 ## Hook 与指标维护
 
@@ -327,7 +307,7 @@ Writer 重试；不要删除 marker 或把答卷重新登记。
 
 计数型指标统一追加独立观察文件，不等待汇总锁。health/doctor、SessionStart 和 PreCompact 执行可恢复压缩：原子记录累计值和已消费文件，再删原文件，避免重复计数。普通 PreToolUse 不做压缩。持续长会话没有这些边界事件时仍应定期运行 health，指标不是业务恢复证据；不能对无限长、完全无维护的会话承诺磁盘恒定。
 
-已冻结 S5 保存消费者识别答卷的调用在 health/doctor 显示
+S5 答卷保存消费者的调用在 health/doctor 显示
 `loop_submission_save_total` 与 `loop_submission_save_duration_ms`。
 草稿/无效答卷记为 incomplete，完整答卷的领域拒收另记 complete_rejected；
 原 Writer 持久接收的 pass、fix_required、req_change_required 分别显示。
@@ -341,7 +321,7 @@ Main 的 PostToolUse 监听 Read/Glob/Grep，Worker 沿用原 matcher。
 原 Runtime/派发/答卷/收尾事实与必要资料的实际读取范围相同时，连续
 5 次支持的 Read/status 观察记录一次 typed stall。默认 shadow，只保存到
 诊断缓存；维护者显式 hook --progress-mode notify 才追加 WORK PROGRESS
-提示。安装与冻结 Worker Bootstrap 不默认启用提醒。
+提示。默认不启用提醒。
 新资料范围、专业字段或责任范围代码变化重置计数；原运行锁、人闸、
 外部责任等待和已接收交付抑制提示。未知范围、未适配工具、缓存损坏、
 锁忙或资源超限只标观察不足，不作为空转事实。
@@ -359,9 +339,9 @@ Main 的 PostToolUse 监听 Read/Glob/Grep，Worker 沿用原 matcher。
 原生机制验收在隔离项目使用实际可用的 Claude Code，记录 CLI 版本、操作系统、Harness 提交及产品提交：
 
 1. 在绑定开发分支准备具体责任并真正派发原生 Agent，核对准确资料引用和独立性；Main 目录及分支保持绑定事实。
-2. S5/S7/S8 返回原答卷，S6/S9 返回实际 worktree 的专业产物；核对 Start 上下文和 Stop 原领域回执，确认普通工具与保存不负责激活、接收或工具准入。
+2. S5/S6 保留原产物交接合同；S9 在实际 worktree 保存原 PlanReport/Result，独立 Targeted 保存本人的原答卷。核对 Start 上下文、适用自然事件及原领域回执；S7/S8/S9 PreToolUse 观察就绪原答卷，成功 PostToolUse 和 Stop/SubagentStop 兜底，普通工具无需激活或工具准入。
 3. 验证保存了但尚未接收、同答重放、来源缺失及并发中断时的原路恢复；不能把收到完成通知解释成领域已接收。
 4. 对写责任运行真实自检、集成与必需 Main 检查；注入检查失败，确认候选/checkpoint 保全、后继未放行，恢复沿原待办而不改旧 PASS。
 5. 按实际目标平台分别记录能力和结果；runner 隔离不可用、依赖缺失或未执行项如实说明。源码测试、CLI fixture、交叉编译和真实产品/浏览器运行分别证明各自范围。
 
-冻结 launcher/目录迁移的专项验证见[恢复参考](workspace-execution-recovery.md#冻结执行的真实会话验收)。版本、平台和实际流程证据保存在维护记录；本指南不充当完整 S0～S11 或产品验收报告。
+实际集成与恢复见[恢复参考](workspace-execution-recovery.md)。版本、平台和实际流程证据保存在维护记录；本指南不充当完整 S0～S11 或产品验收报告。

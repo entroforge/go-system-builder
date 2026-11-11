@@ -12,7 +12,7 @@ import (
 	"github.com/entroforge/go-system-builder/internal/packetbody"
 )
 
-func TestPacketBodyPublicationStagingClassifiesOnlyExactRegularTemporary(t *testing.T) {
+func TestPacketBodyPublicationStagingDoesNotClaimUnregisteredTemporary(t *testing.T) {
 	root := t.TempDir()
 	staged := packetbody.Directory + ".packet-" + strings.Repeat("a", 32) + ".tmp"
 	if err := os.MkdirAll(filepath.Dir(filepath.Join(root, staged)), 0700); err != nil {
@@ -33,7 +33,7 @@ func TestPacketBodyPublicationStagingClassifiesOnlyExactRegularTemporary(t *test
 	}
 	paths := append([]string{staged}, unknown...)
 	got, err := ClassifyPacketBodyStoragePathsContext(context.Background(), root, paths)
-	if err != nil || !reflect.DeepEqual(got, []string{staged}) {
+	if err != nil || len(got) != 0 {
 		t.Fatalf("publication staging classification: %v %v", got, err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -49,12 +49,12 @@ func TestPacketBodyPublicationStagingClassifiesOnlyExactRegularTemporary(t *test
 	if err := os.Remove(filepath.Join(root, staged)); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := ClassifyPacketBodyStoragePathsContext(context.Background(), root, []string{staged}); err != nil || !reflect.DeepEqual(got, []string{staged}) {
+	if got, err := ClassifyPacketBodyStoragePathsContext(context.Background(), root, []string{staged}); err != nil || len(got) != 0 {
 		t.Fatalf("vanished publication temporary: %v %v", got, err)
 	}
 }
 
-func TestPacketBodyPublicationStagingRejectsSymlinksAndDirectories(t *testing.T) {
+func TestPacketBodyPublicationStagingDoesNotClaimSymlinksOrDirectories(t *testing.T) {
 	for _, kind := range []string{"symlink", "directory", "parent-symlink"} {
 		t.Run(kind, func(t *testing.T) {
 			root := t.TempDir()
@@ -85,7 +85,7 @@ func TestPacketBodyPublicationStagingRejectsSymlinksAndDirectories(t *testing.T)
 					t.Fatal(err)
 				}
 			}
-			if got, err := ClassifyPacketBodyStoragePathsContext(context.Background(), root, []string{staged}); err == nil || len(got) != 0 {
+			if got, err := ClassifyPacketBodyStoragePathsContext(context.Background(), root, []string{staged}); err != nil || len(got) != 0 {
 				t.Fatalf("%s gained staging exemption: %v %v", kind, got, err)
 			}
 		})

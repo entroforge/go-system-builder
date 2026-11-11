@@ -9,9 +9,7 @@ import (
 	"testing"
 
 	"github.com/entroforge/go-system-builder/internal/cli"
-	reviewpkg "github.com/entroforge/go-system-builder/internal/review"
-	"github.com/entroforge/go-system-builder/internal/runtime"
-	"github.com/entroforge/go-system-builder/internal/semantic"
+	"github.com/entroforge/go-system-builder/internal/workstate"
 )
 
 func TestS10QuestionnaireHookUsesPreparedManifestAndMainProducer(t *testing.T) {
@@ -29,7 +27,7 @@ func TestS10PreparedQuestionnaireBindsMachineFieldsWithoutAuthorReentry(t *testi
 			prepared := readS10QuestionnaireState(t, path)
 			fillS10QuestionnaireAnswer(t, path, "acceptance", "pass")
 			answer := readS10QuestionnaireState(t, path)
-			fields := []string{"schema_version", "manifest_type", "runtime_id", "baseline_generation", "review_round", "metrics"}
+			fields := []string{"schema_version", "manifest_type", "runtime_id", "baseline_generation", "metrics"}
 			for _, field := range fields {
 				delete(answer, field)
 			}
@@ -38,7 +36,6 @@ func TestS10PreparedQuestionnaireBindsMachineFieldsWithoutAuthorReentry(t *testi
 				answer["manifest_type"] = "release_audit"
 				answer["runtime_id"] = "another-runtime"
 				answer["baseline_generation"] = 99
-				answer["review_round"] = 99
 				answer["metrics"] = map[string]any{"unknown_count": 99}
 			}
 			// Selecting real professional material does not require registering
@@ -64,7 +61,7 @@ func TestS10PreparedQuestionnaireBindsMachineFieldsWithoutAuthorReentry(t *testi
 				t.Fatalf("professional answer did not reach the original TR-015: %s", out)
 			}
 			received := readS10QuestionnaireState(t, path)
-			for _, field := range fields[:5] {
+			for _, field := range fields[:4] {
 				if received[field] != prepared[field] {
 					t.Fatalf("system did not bind current %s: got %#v, want %#v", field, received[field], prepared[field])
 				}
@@ -138,38 +135,14 @@ func testS10QuestionnaireSave(t *testing.T, tool string) {
 	if replayed["revision"] != pendingState["revision"] || len(replayed["evidence"].([]any)) != len(pendingState["evidence"].([]any)) {
 		t.Fatalf("current same-answer replay wrote: %s", out)
 	}
-	// A real professional supplement is recorded even while its original
-	// completion outlet waits for an actual clean-round condition. This is a
-	// synthetic fixture adjustment, not a budget failure or an author procedure.
+	// A real professional supplement completes its original outlet. The
+	// already completed S7 entry is not re-authenticated as a new proof gate.
 	fillS10QuestionnaireAnswer(t, manifestPath, "acceptance", "pass")
-	waiting := readS10QuestionnaireState(t, statePath)
-	waiting["review"].(map[string]any)["plan"].(map[string]any)["status"] = "running"
-	waitingBytes, err := json.MarshalIndent(waiting, "", "  ")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(statePath, waitingBytes, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	countBeforeCompletion := len(replayed["evidence"].([]any))
 	out = callS10QuestionnaireHook(t, root, request)
-	recordedWaiting := readS10QuestionnaireState(t, statePath)
-	if recordedWaiting["lifecycle"].(map[string]any)["state"] != "acceptance" {
-		t.Fatalf("missing clean-round condition was bypassed: %s", out)
-	}
-	countBeforeContinuation := len(recordedWaiting["evidence"].([]any))
-	recordedWaiting["review"].(map[string]any)["plan"].(map[string]any)["status"] = "clean"
-	restoredBytes, err := json.MarshalIndent(recordedWaiting, "", "  ")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(statePath, restoredBytes, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	// The same normal save finishes the pending original outlet without a
-	// second evidence registration or a separate progression command.
-	out = callS10QuestionnaireHook(t, root, request)
-	if got := len(readS10QuestionnaireState(t, statePath)["evidence"].([]any)); got != countBeforeContinuation {
-		t.Fatalf("same received report registered again: %d -> %d; %s", countBeforeContinuation, got, out)
+	completed := readS10QuestionnaireState(t, statePath)
+	if len(completed["evidence"].([]any)) != countBeforeCompletion+1 {
+		t.Fatalf("professional supplement was not recorded exactly once: %s", out)
 	}
 	if !strings.Contains(out, manifestPath) || !strings.Contains(out, "recorded at") {
 		t.Fatalf("valid S10 answer was not registered at its exact path: %s", out)
@@ -204,6 +177,10 @@ func testS10QuestionnaireSave(t *testing.T, tool string) {
 }
 
 func s10QuestionnaireHookRoot(t *testing.T) (string, string) {
+	return s10QuestionnaireHookRootWithIdentity(t, "")
+}
+
+func s10QuestionnaireHookRootWithIdentity(t *testing.T, identity string) (string, string) {
 	t.Helper()
 	root := newUXTestRoot(t, map[string]string{"REQ-AC-001.md": "# REQ-AC-001\n"})
 	var stdout, stderr bytes.Buffer
@@ -218,7 +195,7 @@ func s10QuestionnaireHookRoot(t *testing.T) (string, string) {
 	req := []byte("# REQ-AC-001\n")
 	writeS10QuestionnaireFile(t, root, reqPath, req)
 	state["bound_req"] = map[string]any{
-		"id": "REQ-001", "path": reqPath, "version": "v1.0.0", "sha256": sha256Hex(req),
+		"id": "REQ-001", "path": reqPath, "version": "v1.0.0",
 		"status": "locked", "approved_by": "review-owner", "approved_at": "2026-10-15T00:00:00Z",
 		"metadata": map[string]any{"ui_impact": "none"},
 	}
@@ -227,18 +204,30 @@ func s10QuestionnaireHookRoot(t *testing.T) (string, string) {
 	writeS10QuestionnaireFile(t, root, contractPath, contract)
 	state["documents"] = []any{map[string]any{
 		"id": "CONTRACT-001", "kind": "contract", "path": contractPath, "version": "v1.0.0",
-		"sha256": sha256Hex(contract), "status": "locked", "generation": 1,
+		"status": "locked", "generation": 1,
 	}}
 	planPath := ".claude/review/plans/review-plan-s10-questionnaire.json"
-	plan := []byte(`{"review_plan_id":"review-plan-s10-questionnaire","review_round":1,"baseline_generation":1,"claims":[{"claim_id":"AUDIT-001"}]}`)
+	plan := []byte(`{"review_plan_id":"review-plan-s10-questionnaire","baseline_generation":1,"claims":[{"claim_id":"AUDIT-001"}]}`)
 	writeS10QuestionnaireFile(t, root, planPath, plan)
 	review := state["review"].(map[string]any)
-	review["round"] = 1
-	review["clean_round"] = nil
 	review["plan"] = map[string]any{
-		"plan_id": "review-plan-s10-questionnaire", "path": planPath, "sha256": sha256Hex(plan),
-		"revision": 1, "review_round": 1, "status": "running",
+		"plan_id": "review-plan-s10-questionnaire", "path": planPath,
+		"revision": 1, "status": "running",
 		"e2e_coverage_state": "not_applicable", "submitted_at": "2026-10-15T00:00:00Z",
+	}
+	if identity == "" {
+		identity = "review-plan-s10-questionnaire"
+	}
+	review["round_entry"] = map[string]any{"plan_id": identity, "transition_id": "TR-006", "baseline_generation": 1, "change_impact_ref": nil}
+	if identity != "review-plan-s10-questionnaire" {
+		ptr := review["plan"].(map[string]any)
+		ptr["plan_id"] = identity
+		originalPlan := map[string]any{"review_plan_id": identity, "baseline_generation": 1, "claims": []any{map[string]any{"claim_id": "AUDIT-001"}}}
+		originalPlanData, err := json.Marshal(originalPlan)
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeS10QuestionnaireFile(t, root, planPath, originalPlanData)
 	}
 	completionPath := ".claude/evidence/s10-questionnaire-completion.json"
 	writeS10QuestionnaireFile(t, root, "internal/service.go", []byte("package service\n"))
@@ -246,7 +235,7 @@ func s10QuestionnaireHookRoot(t *testing.T) (string, string) {
 	writeS10QuestionnaireFile(t, root, completionPath, completion)
 	evidence := []any{map[string]any{
 		"id": "completion-s10-questionnaire", "kind": "completion_report", "path": completionPath,
-		"sha256": sha256Hex(completion), "status": "valid", "baseline_generation": 1, "review_round": 1,
+		"status": "valid", "baseline_generation": 1,
 		"produced_by": []any{"Main"}, "invalidated_by": nil, "invalidation_rule": nil,
 		"invalidation_reason": nil, "responsibility_id": "S7", "scope_refs": []any{},
 	}}
@@ -258,8 +247,8 @@ func s10QuestionnaireHookRoot(t *testing.T) (string, string) {
 		proof := []byte("supporting evidence")
 		writeS10QuestionnaireFile(t, root, proofPath, proof)
 		evidence = append(evidence, map[string]any{
-			"id": id, "kind": "document_review", "path": proofPath, "sha256": sha256Hex(proof),
-			"status": "valid", "baseline_generation": 1, "review_round": 1,
+			"id": id, "kind": "document_review", "path": proofPath,
+			"status": "valid", "baseline_generation": 1,
 			"produced_by": []any{"S10 reviewer"}, "invalidated_by": nil, "invalidation_rule": nil,
 			"invalidation_reason": nil, "responsibility_id": "S10", "scope_refs": []any{},
 		})
@@ -270,8 +259,8 @@ func s10QuestionnaireHookRoot(t *testing.T) (string, string) {
 		proof := []byte("release-audit evidence for " + area)
 		writeS10QuestionnaireFile(t, root, proofPath, proof)
 		evidence = append(evidence, map[string]any{
-			"id": id, "kind": "document_review", "path": proofPath, "sha256": sha256Hex(proof),
-			"status": "valid", "baseline_generation": 1, "review_round": 1,
+			"id": id, "kind": "document_review", "path": proofPath,
+			"status": "valid", "baseline_generation": 1,
 			"produced_by": []any{"S10 reviewer"}, "invalidated_by": nil, "invalidation_rule": nil,
 			"invalidation_reason": nil, "responsibility_id": "S10", "scope_refs": []any{},
 		})
@@ -288,14 +277,8 @@ func s10QuestionnaireHookRoot(t *testing.T) (string, string) {
 	runGit(t, root, "add", reqPath, contractPath, "internal/service.go")
 	runGit(t, root, "commit", "-m", "S10 prior-stage product fixture")
 	runGit(t, root, "branch", "-f", "main", "develop")
-	devCommit := recheckGitOutput(t, root, "rev-parse", "--verify", "refs/heads/develop^{commit}")
-	mainCommit := recheckGitOutput(t, root, "rev-parse", "--verify", "refs/heads/main^{commit}")
-	if devCommit != mainCommit {
-		t.Fatalf("S10 fixture refs diverged: develop=%s main=%s", devCommit, mainCommit)
-	}
 	state["bound_req"].(map[string]any)["workspace"] = map[string]any{
 		"project_root": root, "dev_branch": "develop", "release_upstream": "main",
-		"bound_commit": devCommit,
 	}
 	stateData, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
@@ -317,7 +300,10 @@ func s10QuestionnaireHookRoot(t *testing.T) (string, string) {
 	if entered["lifecycle"].(map[string]any)["state"] != "acceptance" {
 		t.Fatalf("synthetic S7 clean round did not pass the original TR-009: %s", out)
 	}
-	return root, filepath.Join(root, "s10", "loop-test", "g1", "r1", "acceptance-manifest.json")
+	currentReview := entered["review"].(map[string]any)
+	currentPlan := currentReview["plan"].(map[string]any)
+	source := currentPlan["plan_id"].(string)
+	return root, filepath.Join(root, "s10", "loop-test", "g1", source, "acceptance-manifest.json")
 }
 
 func callS10QuestionnaireHook(t *testing.T, root string, payload map[string]any) string {
@@ -428,7 +414,14 @@ func seedS10QuestionnaireCleanRound(t *testing.T, root string) {
 			"finding_ids": []any{},
 		},
 	}
-	review["clean_round"] = float64(1)
+	review["assignments"] = map[string]any{"assignment-qa-s10-questionnaire": map[string]any{
+		"lens": "qa", "claim_ids": []any{"AUDIT-001"}, "status": "consumed",
+		"agent_id": "reviewer-qa", "result_ref": nil,
+	}}
+	row := review["assignments"].(map[string]any)["assignment-qa-s10-questionnaire"].(map[string]any)
+	if err := workstate.RecordReviewAssignmentActivity(state, row, "consumed", "review_result_submitted"); err != nil {
+		t.Fatal(err)
+	}
 	encoded, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
 		t.Fatal(err)
@@ -436,32 +429,7 @@ func seedS10QuestionnaireCleanRound(t *testing.T, root string) {
 	if err := os.WriteFile(statePath, append(encoded, '\n'), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	pinnedPlan, _, err := reviewpkg.LoadPlan(root, state)
-	if err != nil {
-		t.Fatalf("load the exact pinned S7 ReviewPlan for the clean-round producer: %v", err)
-	}
-	cleanRound := map[string]any{
-		"schema_version": "1.0.0", "clean_round_id": "clean-round-s10-questionnaire",
-		"evidence_id": "clean-round-s10-questionnaire", "kind": "clean_round", "runtime_id": "loop-test",
-		"producer_agent_id": "round-consumer", "producer_responsibility": "Clean Round Evaluator",
-		"review_plan_id": "review-plan-s10-questionnaire", "review_round": 1,
-		"baseline_generation": 1, "subject_digest": reviewpkg.SubjectDigest(pinnedPlan), "result_refs": []any{},
-		"conclusion": "pass", "evaluated_at": "2026-10-15T00:00:00Z",
-		"evaluated_by": "round-consumer", "evaluator_version": "review.SubmitResult/1",
-	}
-	artifact, err := json.Marshal(cleanRound)
-	if err != nil {
-		t.Fatal(err)
-	}
-	const relative = ".claude/evidence/clean-round-s10-questionnaire.json"
-	writeS10QuestionnaireFile(t, root, relative, artifact)
-	if _, err := runtime.RecordEvidence(root, statePath, filepath.Join(root, ".claude", "loop-events.jsonl"), runtime.EvidenceRequest{
-		ExpectedRevision: -1, ID: "clean-round-s10-questionnaire", Kind: "clean_round", Path: relative,
-		ProducedBy: []string{"round-consumer"}, ResponsibilityID: "Clean Round Evaluator", ReviewRound: s10IntPointer(1),
-		Validator: semantic.RuntimeCandidateValidator{},
-	}); err != nil {
-		t.Fatalf("record S7 clean-round precondition through the existing evidence consumer: %v", err)
-	}
+
 }
 
 func s10IntPointer(value int) *int { return &value }

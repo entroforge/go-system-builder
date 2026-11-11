@@ -58,8 +58,21 @@ func TestMainCheckReuseObservationIsReadonlyAndCannotSkipRequiredChecks(t *testi
 	if err := json.Unmarshal([]byte(output), &report); err != nil {
 		t.Fatal(err)
 	}
-	if len(report) != 1 || report[0].Decision.Action != "run" || report[0].Decision.WouldReuse || report[0].Decision.Reason != "independent_or_mandatory_domain_check" {
-		t.Fatal(output)
+	if len(report) != 1 {
+		t.Fatalf("reuse observation did not report exactly one decision: %s", output)
+	}
+	decision := report[0].Decision
+	// The domain check is mandatory and independent, so reuse never qualifies
+	// and the check still runs. That is the structural fact this test owns.
+	if decision.Action != "run" || decision.WouldReuse {
+		t.Fatalf("reuse observation granted reuse or skipped the required check: %s", output)
+	}
+	// L4-workflow-convergence.md:279 removed the "same input" machine
+	// equivalence proof as a reuse precondition, so the observation carries one
+	// flat not-qualified reason and no longer grades the reason by input
+	// equivalence (L4-workspace-execution-profiles.md:142).
+	if decision.Reason != "reuse_not_applicable" {
+		t.Fatalf("reuse decision graded its reason by input equivalence: %s", output)
 	}
 	if stageSnapshot(t, f.root).Revision != before.Revision {
 		t.Fatal("reuse observation wrote runtime")

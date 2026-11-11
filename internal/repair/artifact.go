@@ -2,23 +2,18 @@ package repair
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/entroforge/go-system-builder/internal/diagnosticstorage"
-	"github.com/entroforge/go-system-builder/internal/pathscope"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strings"
 	"time"
 
-	"github.com/entroforge/go-system-builder/internal/metrics"
 	runtimepkg "github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/schema"
 	"github.com/entroforge/go-system-builder/internal/workpacket"
@@ -80,13 +75,41 @@ func relativePath(root, path string) (string, error) {
 	return filepath.ToSlash(rel), nil
 }
 
-func sha256Bytes(data []byte) string {
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:])
+func fileRef(relative string, data []byte) ArtifactRef {
+	return ArtifactRef{Path: filepath.ToSlash(filepath.Clean(filepath.FromSlash(relative)))}
 }
 
-func fileRef(relative string, data []byte) ArtifactRef {
-	return ArtifactRef{Path: filepath.ToSlash(filepath.Clean(filepath.FromSlash(relative))), SHA256: sha256Bytes(data)}
+// responsibilityArtifactPath preserves legacy short paths and splits long
+// issued identifiers into reversible bounded components. No content digest is
+// needed and already issued paths remain readable.
+// QuestionnaireRoot identifies the original Main questionnaire directory for
+// a newly issued repair responsibility without depending on content digests.
+func QuestionnaireRoot(runtimeID, sessionID string) string {
+	data, _ := json.Marshal([]string{runtimeID, sessionID})
+	encoded := base64.RawURLEncoding.EncodeToString(data)
+	parts := []string{".claude", "submissions", "s9", "p"}
+	for len(encoded) > 120 {
+		parts = append(parts, encoded[:120])
+		encoded = encoded[120:]
+	}
+	parts = append(parts, encoded)
+	return filepath.ToSlash(filepath.Join(parts...))
+}
+
+// ArtifactStoragePath returns the location chosen for an original S9 responsibility.
+func ArtifactStoragePath(category, id string) string { return responsibilityArtifactPath(category, id) }
+
+func responsibilityArtifactPath(category, id string) string {
+	if len(id) <= 200 {
+		return filepath.ToSlash(filepath.Join(artifactRoot, category, id+".json"))
+	}
+	parts := []string{artifactRoot, category, "p"}
+	for len(id) > 120 {
+		parts = append(parts, id[:120])
+		id = id[120:]
+	}
+	parts = append(parts, id+".json")
+	return filepath.ToSlash(filepath.Join(parts...))
 }
 
 func writeImmutable(root, relative, schemaName string, document any) (ArtifactRef, error) {
@@ -152,10 +175,6 @@ func readArtifact(root string, ref ArtifactRef, schemaName string) ([]byte, erro
 	if err != nil {
 		return nil, fmt.Errorf("read artifact %s: %w", ref.Path, err)
 	}
-	actual := sha256Bytes(data)
-	if ref.SHA256 == "" || actual != ref.SHA256 {
-		return nil, fmt.Errorf("artifact %s hash drift: expected %s, got %s", ref.Path, ref.SHA256, actual)
-	}
 	if schemaName != "" {
 		if err := schema.NewEmbeddedValidator().ValidateBytes(schemaName, data); err != nil {
 			return nil, fmt.Errorf("artifact %s schema invalid: %w", ref.Path, err)
@@ -199,127 +218,6 @@ func scopeAllows(path string, prospective, forbidden []string) error {
 		}
 	}
 	return fmt.Errorf("changed artifact %q is outside prospective_scope", path)
-}
-
-// captureRepositoryBaseline records the implementation surface at Session
-// open. Control-plane files are deliberately excluded: they are mutated by
-// the runtime while the repair is running and are not implementation output.
-//
-// RC-03 (EH-8) narrowing: the exclusion is explicit, not blanket ".claude".
-// Known control-plane subtrees (.claude/review, .claude/evidence,
-// .claude/workgroups, the explicit machine-output directories, and mutable
-// state files) are skipped, but an unexpected .claude path (e.g.,
-// .claude/foo/product.go) is treated as product surface — a repair that hides
-// product writes under .claude must be visible to the Session diff instead of
-// silently excluded. Any legitimate control-plane write must be under the
-// known paths; product writes under .claude remain product drift.
-func captureRepositoryBaseline(root string, protected ...ArtifactRef) ([]ArtifactRef, string, error) {
-	rootAbs, err := filepath.Abs(root)
-	if err != nil {
-		return nil, "", fmt.Errorf("resolve repository root: %w", err)
-	}
-	artifacts := []ArtifactRef{}
-	boundary := newBaselineBoundary(rootAbs)
-	for _, artifact := range protected {
-		boundary.addTracked(normalizePath(artifact.Path))
-	}
-	scope := pathscope.New(root)
-	err = filepath.WalkDir(rootAbs, func(path string, entry os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		rel, err := filepath.Rel(rootAbs, path)
-		if err != nil {
-			return err
-		}
-		if rel == "." {
-			return nil
-		}
-		relSlash := filepath.ToSlash(rel)
-		// HEAD, index and the Session's historical members always win over a
-		// temporary name. A missing/unavailable Git proof grants no exception.
-		if boundary.gitOK && boundary.headOK && !boundary.hasTracked(relSlash) && metrics.IsTemporaryPath(relSlash) {
-			recognized, err := metrics.RecognizeTemporary(context.Background(), rootAbs, relSlash)
-			if err != nil {
-				return fmt.Errorf("inspect metrics temporary %s: %w", relSlash, err)
-			}
-			if recognized {
-				return nil
-			}
-		}
-		if (scope.Excludes(path) && !boundary.hasTracked(relSlash)) || ignoreBaselinePath(relSlash, rootAbs) || boundary.excludes(relSlash) || (entry.IsDir() && boundary.discoverEnvironment(relSlash)) {
-			if entry.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		parts := strings.Split(relSlash, "/")
-		if parts[0] == ".git" {
-			if entry.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if parts[0] == ".claude" {
-			if isControlPlanePath(relSlash, entry.IsDir(), rootAbs) {
-				if entry.IsDir() {
-					return filepath.SkipDir
-				}
-				return nil
-			}
-			if entry.IsDir() {
-				return nil
-			}
-		} else if entry.IsDir() || !entry.Type().IsRegular() {
-			return nil
-		}
-		if entry.IsDir() {
-			return nil
-		}
-		if !entry.Type().IsRegular() {
-			return nil
-		}
-		// Inventory first: excluded logs are never read or hashed.
-		artifacts = append(artifacts, ArtifactRef{ID: "baseline-" + strings.NewReplacer("/", "-", "\\", "-").Replace(relSlash), Path: relSlash, Status: "modified"})
-		return nil
-	})
-	if err != nil {
-		return nil, "", fmt.Errorf("capture repository baseline: %w", err)
-	}
-	// Ignore only newly discovered generated logs. HEAD/index ownership and
-	// immutable Session membership both take precedence over current ignore rules.
-	if excluded := runtimeLogPaths(rootAbs, artifactPaths(artifacts)); len(excluded) > 0 {
-		kept := make([]ArtifactRef, 0, len(artifacts))
-		for _, artifact := range artifacts {
-			if excluded[artifact.Path] && !boundary.tracked[artifact.Path] {
-				continue
-			}
-			kept = append(kept, artifact)
-		}
-		artifacts = kept
-	}
-	for i := range artifacts {
-		f, err := os.Open(filepath.Join(rootAbs, filepath.FromSlash(artifacts[i].Path)))
-		if err != nil {
-			return nil, "", fmt.Errorf("read baseline artifact %s: %w", artifacts[i].Path, err)
-		}
-		h := sha256.New()
-		_, readErr := io.Copy(h, f)
-		closeErr := f.Close()
-		if readErr != nil {
-			return nil, "", readErr
-		}
-		if closeErr != nil {
-			return nil, "", closeErr
-		}
-		artifacts[i].SHA256 = hex.EncodeToString(h.Sum(nil))
-	}
-	sort.Slice(artifacts, func(i, j int) bool { return artifacts[i].Path < artifacts[j].Path })
-	lines := make([]string, 0, len(artifacts))
-	for _, artifact := range artifacts {
-		lines = append(lines, artifact.Path+":"+artifact.SHA256)
-	}
-	return artifacts, sha256Bytes([]byte(strings.Join(lines, "\n"))), nil
 }
 
 // ignoreBaselinePath reports whether a repository-relative path must never
@@ -542,94 +440,34 @@ func runtimeLogPaths(root string, paths []string) map[string]bool {
 	return gitIgnoredPaths(root, candidates)
 }
 
-// captureSessionBaseline retains the immutable baseline's ownership even after
-// deletion, untracking or ignore-rule changes. Legacy logs without historical
-// classification stay protected; existing approved artifacts are never rewritten.
-func captureSessionBaseline(root string, session RepairSession) ([]ArtifactRef, string, error) {
-	excluded := excludedBaselinePaths(root, artifactPaths(session.BaselineArtifacts))
-	protected := make([]ArtifactRef, 0, len(session.BaselineArtifacts))
-	for _, a := range session.BaselineArtifacts {
-		if !excluded[normalizePath(a.Path)] {
-			protected = append(protected, a)
-		}
-	}
-	return captureRepositoryBaseline(root, protected...)
-}
-
-// ComputeSessionChangeset derives the actual implementation delta from the
-// immutable Session baseline and the current repository. It is the authority
-// used by result submission; agents may describe a change, but cannot invent
-// one or omit one.
+// ComputeSessionChangeset returns only paths already available from this
+// Session's accepted contributions. No saved baseline can establish the full
+// history of changes, so missing contributions remain unknown rather than
+// becoming an empty change set or a whole-tree digest comparison.
 func ComputeSessionChangeset(root string, session RepairSession) ([]ArtifactRef, error) {
-	current, _, err := captureSessionBaseline(root, session)
+	record, err := ComputeSessionChangesetRecord(root, session)
 	if err != nil {
 		return nil, err
 	}
-	base := map[string]ArtifactRef{}
-	// Preserve historical membership, including legacy logs with unknown provenance.
-	logs := excludedBaselinePaths(root, artifactPaths(session.BaselineArtifacts))
-	for _, artifact := range session.BaselineArtifacts {
-		path := normalizePath(artifact.Path)
-		if logs[path] {
-			continue
-		}
-		// RC-17 (S9-L2): the base side applies the same control-plane
-		// classification as capture and the authority gate. A stored baseline
-		// captured before a path was classified as control plane (notably
-		// .claude/multi.json, the launcher's local profile file) would
-		// otherwise surface here as a phantom "deleted" or "modified" entry
-		// that no RepairResult can legitimately claim. Stored baselines never
-		// contain the other exempt classes (capture already excluded them), so
-		// this filter is a no-op except for paths reclassified after session
-		// open.
-		if ignoreBaselinePath(path, root) {
-			continue
-		}
-		base[path] = artifact
-	}
-	now := map[string]ArtifactRef{}
-	for _, artifact := range current {
-		now[normalizePath(artifact.Path)] = artifact
-	}
-	paths := map[string]bool{}
-	for path := range base {
-		paths[path] = true
-	}
-	for path := range now {
-		paths[path] = true
-	}
-	ordered := make([]string, 0, len(paths))
-	for path := range paths {
-		ordered = append(ordered, path)
-	}
-	sort.Strings(ordered)
-	changed := []ArtifactRef{}
-	for _, path := range ordered {
-		before, hadBefore := base[path]
-		after, hadAfter := now[path]
-		switch {
-		case !hadBefore && hadAfter:
-			after.Status = "added"
-			changed = append(changed, after)
-		case hadBefore && !hadAfter:
-			before.Status = "deleted"
-			changed = append(changed, before)
-		case hadBefore && hadAfter && before.SHA256 != after.SHA256:
-			after.Status = "modified"
-			changed = append(changed, after)
-		}
-	}
-	return changed, nil
+	return record.Artifacts, nil
 }
 
-// ComputeSessionChangesetRecord wraps the authoritative Session diff in the
-// persisted Changeset envelope used by Impact and Handoff.
+// ComputeSessionChangesetRecord projects known accepted contributions. A new
+// Session does not retain historical file contents or a Git baseline, so a
+// repository scan cannot honestly reconstruct its prior changes.
 func ComputeSessionChangesetRecord(root string, session RepairSession) (Changeset, error) {
-	artifacts, err := ComputeSessionChangeset(root, session)
+	data, err := workpacket.ReadFile(root, ".claude/loop-state.json", 20<<20)
 	if err != nil {
-		return Changeset{}, err
+		return Changeset{}, fmt.Errorf("Session changes are unknown: current accepted responsibilities unavailable: %w", err)
 	}
-	return repairChangesetRecord(session.SessionID, "session_diff", artifacts)
+	var state map[string]any
+	if err := json.Unmarshal(data, &state); err != nil {
+		return Changeset{}, fmt.Errorf("Session changes are unknown: decode current responsibilities: %w", err)
+	}
+	if stringField(repairPointer(state)["session_id"]) != session.SessionID {
+		return Changeset{}, errors.New("Session changes are unknown: the current responsibility belongs to a different Session")
+	}
+	return CurrentRepairResultChangeset(root, state)
 }
 
 // CurrentRepairResultChangeset projects the existing accepted Final Result
@@ -637,9 +475,12 @@ func ComputeSessionChangesetRecord(root string, session RepairSession) (Changese
 // or replay Contract/Plan/source qualification.
 func CurrentRepairResultChangeset(root string, state map[string]any) (Changeset, error) {
 	pointer := repairPointer(state)
-	results, err := currentRepairResults(root, pointer)
+	results, err := ReceivedRepairContributions(root, state)
 	if err != nil {
 		return Changeset{}, err
+	}
+	if len(results) == 0 {
+		return Changeset{}, errors.New("Session changes are unknown: no original contribution has been received")
 	}
 	return repairResultChangeset(stringField(pointer["session_id"]), results)
 }
@@ -672,19 +513,14 @@ func repairResultChangeset(sessionID string, results []RepairResult) (Changeset,
 	}
 	artifacts := make([]ArtifactRef, 0, len(changed))
 	for _, item := range changed {
-		artifacts = append(artifacts, ArtifactRef{Path: item.Path, SHA256: item.SHA256, Status: item.Status})
+		artifacts = append(artifacts, ArtifactRef{Path: item.Path, Status: item.Status})
 	}
-	return repairChangesetRecord(sessionID, "explicit", artifacts)
+	return repairChangesetRecord(sessionID, "accepted_results", artifacts)
 }
 
 func repairChangesetRecord(sessionID, source string, artifacts []ArtifactRef) (Changeset, error) {
-	lines := make([]string, 0, len(artifacts))
-	for _, artifact := range artifacts {
-		lines = append(lines, artifact.Path+":"+artifact.SHA256)
-	}
-	sort.Strings(lines)
-	digest := sha256Bytes([]byte(strings.Join(lines, "\n")))
-	changeset := Changeset{SchemaVersion: "1.0.0", RecordType: "repair_changeset", SessionID: sessionID, Source: source, Artifacts: append([]ArtifactRef{}, artifacts...), Digest: digest, ComputedAt: nowOr(time.Time{})}
+	projected := append([]ArtifactRef{}, artifacts...)
+	changeset := Changeset{SchemaVersion: "1.0.0", RecordType: "repair_changeset", SessionID: sessionID, Source: source, Artifacts: projected, ComputedAt: nowOr(time.Time{})}
 	changeset.ChangesetID = repairChangesetID(changeset)
 	return changeset, nil
 }

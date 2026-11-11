@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -86,9 +87,7 @@ func (s *Service) IssueReviewResults(ctx context.Context, ownerFilter string) ([
 			if err := registry.ValidateAuthority(latest.State); err != nil {
 				return nil, err
 			}
-			if err := registry.ValidateExecution(ctx, execution, false); err != nil {
-				return nil, err
-			}
+
 			if err := publishReviewResultAt(execution.Path, packet); err != nil {
 				return nil, err
 			}
@@ -163,8 +162,18 @@ func (s *Service) SaveReviewResultFrom(ctx context.Context, owner, path, sourceR
 			return rejected(snapshot, packet.ID, err), err
 		}
 	}
+	if accepted, ok, err := review.IssuedResultReceiptContext(ctx, s.Root, snapshot.State, packet.ID, owner); err != nil {
+		return rejected(snapshot, packet.ID, err), err
+	} else if ok && review.IssuedResultWorkComplete(snapshot.State, packet) {
+		return acceptedReviewResultReceipt(snapshot, packet, accepted), nil
+	}
 	input, issues, err := review.ReadIssuedResultInput(ctx, actualRoot, packet, owner)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			if accepted, ok, receiptErr := review.IssuedResultReceiptContext(ctx, s.Root, snapshot.State, packet.ID, owner); receiptErr == nil && ok {
+				return acceptedReviewResultReceipt(snapshot, packet, accepted), nil
+			}
+		}
 		return rejected(snapshot, packet.ID, err), err
 	}
 	if len(issues) != 0 {
@@ -178,7 +187,7 @@ func (s *Service) SaveReviewResultFrom(ctx context.Context, owner, path, sourceR
 	}
 	next, submitErr := review.SubmitIssuedResult(s.Root, s.StatePath, s.JournalPath, review.IssuedSubmitRequest{
 		Context:          ctx,
-		ExpectedRevision: snapshot.Revision,
+		ExpectedRevision: -1,
 		PacketID:         packet.ID,
 		AnswerPath:       packet.AnswerPath,
 		OwnerAgentID:     owner,
@@ -256,7 +265,7 @@ func currentReviewResultSourceForPathContext(ctx context.Context, root string, s
 	if err := ctx.Err(); err != nil {
 		return workpacket.ReviewResultPacket{}, "", false, err
 	}
-	index, err := loopruntime.ProjectCurrentReviewResultPacketIndex(state, "")
+	index, err := loopruntime.ProjectIssuedReviewResultPacketIndex(state, "")
 	if err != nil {
 		return workpacket.ReviewResultPacket{}, "", false, err
 	}
@@ -335,25 +344,14 @@ func reviewResultPathInRoots(root string, state map[string]any, inputPath string
 			return workpacket.ReviewResultPacket{}, "", false, err
 		}
 	}
-	registry, err := workspace.Decode(state)
-	if err != nil {
-		return workpacket.ReviewResultPacket{}, "", false, err
-	}
 	var selected *workpacket.ReviewResultPacket
 	selectedRoot := ""
 	for _, packet := range packets {
-		roots := []string{root}
-		if registry != nil {
-			if err := registry.ValidateAuthority(state); err != nil {
-				return workpacket.ReviewResultPacket{}, "", false, err
-			}
-			if execution, found := registry.Execution(packet.Binding.AssignmentID, packet.Binding.RuntimeID, packet.Binding.BaselineGeneration); found {
-				if execution.AgentID != packet.Binding.OwnerAgentID || execution.Status != "ready" || (currentOnly && !reviewExecutionMatchesState(state, execution)) {
-					return workpacket.ReviewResultPacket{}, "", false, errors.New("S7 packet's registered execution owner or status differs")
-				}
-				roots = []string{execution.Path}
-			}
+		source, sourceErr := review.IssuedResultSourceRoot(root, state, packet)
+		if sourceErr != nil {
+			return workpacket.ReviewResultPacket{}, "", false, sourceErr
 		}
+		roots := []string{source}
 		for _, candidateRoot := range roots {
 			rootAbs, err := filepath.Abs(candidateRoot)
 			if err != nil {
@@ -364,7 +362,7 @@ func reviewResultPathInRoots(root string, state map[string]any, inputPath string
 				continue
 			}
 			rel = filepath.ToSlash(filepath.Clean(rel))
-			if rel != packet.AnswerPath || workpacket.CheckPath(rootAbs, rel) != nil {
+			if rel != packet.AnswerPath || (!review.IssuedResultWorkComplete(state, packet) && workpacket.CheckPath(rootAbs, rel) != nil) {
 				continue
 			}
 			if selected != nil && (selected.ID != packet.ID || filepath.Clean(selectedRoot) != filepath.Clean(rootAbs)) {
@@ -414,14 +412,8 @@ func publishReviewResultView(root string, packet workpacket.ReviewResultPacket) 
 		return err
 	}
 	data = append(data, '\n')
-	stored, err := workpacket.PublishBounded(root, packet.ViewPath, data, reviewResultAnswerLimit)
-	if err != nil {
-		return err
-	}
-	if !bytesEqual(stored, data) {
-		return fmt.Errorf("S7 issued view differs from the Runtime packet: %s", packet.ViewPath)
-	}
-	return nil
+	_, err = workpacket.PublishNewBounded(root, packet.ViewPath, data, reviewResultAnswerLimit)
+	return err
 }
 
 func publishReviewResultAt(root string, packet workpacket.ReviewResultPacket) error {
@@ -432,17 +424,13 @@ func publishReviewResultAt(root string, packet workpacket.ReviewResultPacket) er
 	if err != nil {
 		return err
 	}
-	_, err = workpacket.PublishBounded(root, packet.AnswerPath, append(draft, '\n'), reviewResultAnswerLimit)
+	_, err = workpacket.PublishNewBounded(root, packet.AnswerPath, append(draft, '\n'), reviewResultAnswerLimit)
 	return err
 }
 
 func sameReviewResultPacket(a, b workpacket.ReviewResultPacket) bool {
-	left, err := workpacket.ReviewResultPacketDigest(a)
-	if err != nil {
-		return false
-	}
-	right, err := workpacket.ReviewResultPacketDigest(b)
-	return err == nil && left == right
+	x, y := a.Binding, b.Binding
+	return a.ID == b.ID && x.RuntimeID == y.RuntimeID && x.ReviewPlanID == y.ReviewPlanID && x.ReviewPlanRevision == y.ReviewPlanRevision && x.AssignmentID == y.AssignmentID && x.OwnerAgentID == y.OwnerAgentID
 }
 
 func hasReviewResultPacket(packets []workpacket.ReviewResultPacket, expected workpacket.ReviewResultPacket) bool {
@@ -474,21 +462,26 @@ func acceptedReviewResultReceipt(snapshot loopruntime.Snapshot, packet workpacke
 	result.SubmissionKey = accepted.SubmissionKey
 	result.Accepted = true
 	result.ResponsibilityStatus = "accepted"
-	result.WorkComplete = true
+	result.WorkComplete = review.IssuedResultWorkComplete(snapshot.State, packet)
 	result.DomainRefs = []string{accepted.ResultRef}
 	result.WaitingOn = []Waiting{}
-	result.NextAction = "Canonical ReviewResult 已由原 S7 接收器登记；本人的 Review Assignment 已交付。"
+	result.NextAction = "原 S7 答卷已接收；已完成本人责任。"
+	current := loopruntime.ReviewResultPacketCurrent(snapshot.State, packet)
+	if !current {
+		reviewState, _ := snapshot.State["review"].(map[string]any)
+		assignments, _ := reviewState["assignments"].(map[string]any)
+		row, _ := assignments[packet.Binding.AssignmentID].(map[string]any)
+		receipt, _ := row["result_receipt"].(map[string]any)
+		// An unchanged in-flight responsibility may have completed after a
+		// different Assignment's amendment; its original receipt is also the
+		// existing current Assignment receipt.
+		current = receipt["packet_id"] == packet.ID && packet.ID != ""
+	}
+	if !current {
+		result.NextAction = "原 S7 晚到答卷已沿原责任接收；Main 查阅原 Result 与发现并决定补充当前调查或后续处理；当前 Plan 结论保持原对象。"
+	}
+	if !result.WorkComplete {
+		result.NextAction = "原 S7 答卷已接收；本人责任尚未确认完成，Main 按原结论处理未完成或未知事项，本人自然继续后保存新结论即可接续。"
+	}
 	return result
-}
-
-func bytesEqual(a, b []byte) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }

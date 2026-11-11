@@ -297,7 +297,7 @@ func addS11Evidence(t *testing.T, root string, state map[string]any, fixtures []
 			scopeRefs = []any{fmt.Sprintf("runtime_release:%s@%d", runtimeID, fixtureInt(state["revision"]))}
 		}
 		items = append(items, map[string]any{
-			"id": id, "kind": fixture.kind, "path": ref, "sha256": transition.SHA256(content),
+			"id": id, "kind": fixture.kind, "path": ref,
 			"status": "valid", "baseline_generation": 0, "review_round": nil,
 			"produced_by": []any{"user"}, "invalidated_by": nil, "invalidation_rule": nil,
 			"invalidation_reason": nil, "responsibility_id": nil, "scope_refs": scopeRefs,

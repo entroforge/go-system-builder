@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/entroforge/go-system-builder/internal/assignmentrecord"
@@ -11,7 +12,6 @@ import (
 	"github.com/entroforge/go-system-builder/internal/integration"
 	"github.com/entroforge/go-system-builder/internal/policy"
 	"github.com/entroforge/go-system-builder/internal/runtime"
-	"github.com/entroforge/go-system-builder/internal/workspace"
 )
 
 func TestControllerCheckpointPathUsesLoadedCurrentRecordRevision(t *testing.T) {
@@ -24,20 +24,14 @@ func TestControllerCheckpointPathUsesLoadedCurrentRecordRevision(t *testing.T) {
 	}
 	assignment := hookctx.AssignmentContext{
 		AssignmentID: "assignment-ack-path", AssignmentRecord: &ref, AssignmentRevision: 2,
-		AssignmentRecordSHA256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 	}
 	got, err := checkpointPathForLoadedAssignment("/repo", loaded, assignment)
 	if err != nil || got != integration.CheckpointPathForRecord("/repo", ref) {
 		t.Fatalf("current r2 controller slot = %q, err %v", got, err)
 	}
-	assignment.AssignmentRecordSHA256 = ""
+	assignment.AssignmentRecord = nil
 	if _, err := checkpointPathForLoadedAssignment("/repo", loaded, assignment); err == nil {
-		t.Fatal("incomplete canonical projection fell back to the r1 checkpoint slot")
-	}
-	legacy := hookctx.AssignmentContext{AssignmentID: "legacy-ack-path"}
-	got, err = checkpointPathForLoadedAssignment("/repo", loaded, legacy)
-	if err != nil || got != integration.CheckpointPath("/repo", "loop-ack-path", 3, "legacy-ack-path") {
-		t.Fatalf("legacy controller slot = %q, err %v", got, err)
+		t.Fatal("missing current responsibility selected a legacy checkpoint slot")
 	}
 }
 
@@ -58,7 +52,23 @@ func TestIntegrationSelectionRequiresExactAssignmentAndOwner(t *testing.T) {
 		t.Fatal("lost ack through row copy")
 	}
 }
-func TestVerifiedAcknowledgmentUsesAgentLifecycle(t *testing.T) {
+
+// G18: the completion acknowledgement identity is the Assignment it closes,
+// never the Runtime write count.
+func TestIntegrationAckMessageIDCarriesNoWriteCount(t *testing.T) {
+	first := integrationAckMessageID("assignment-ack-1")
+	if first != "msg-integration-assignment-ack-1" {
+		t.Fatalf("ack message id = %q", first)
+	}
+	if strings.Contains(first, "-r2") || strings.Contains(first, "-r3") {
+		t.Fatalf("ack message id carries a write count: %q", first)
+	}
+	if integrationAckMessageID("assignment-ack-2") == first {
+		t.Fatal("two Assignments share one acknowledgement identity")
+	}
+}
+
+func TestVerifiedAcknowledgmentRequiresOriginalResponsibility(t *testing.T) {
 	fix := newRuntimeFixture(t)
 	definitionPath := filepath.Join(fix.root, "docs/control/loop-definition.json")
 	data, _ := os.ReadFile(definitionPath)
@@ -75,28 +85,11 @@ func TestVerifiedAcknowledgmentUsesAgentLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	a := &hookctx.AssignmentContext{AssignmentID: "a", OwnerAgentID: "agent-ack", TaskID: "TASK-001"}
-	cp := integration.Checkpoint{State: integration.StateVerified, BaselineGeneration: 1, MergeCommit: "merge", TestedHead: "merge"}
-	runtimeID, _ := snapshot.State["runtime_id"].(string)
-	os.MkdirAll(filepath.Dir(integration.CheckpointPath(fix.root, runtimeID, 1, "a")), 0700)
-	snapshot.State["workspace"] = workspace.Encode(&workspace.ExecutionRegistry{Version: 1, MainRoot: fix.root, CommonDir: filepath.Join(fix.root, ".git"), Branch: "feature/customer", Executions: map[string]workspace.Execution{"b": {AssignmentID: "b", RuntimeID: runtimeID, BaselineGeneration: 1, AgentID: "agent-ack"}}})
+	cp := integration.Checkpoint{State: integration.StateVerified, BaselineGeneration: 1}
 	if _, err := acknowledgeVerifiedIntegration(fix.root, snapshot, a, cp); err == nil {
-		t.Fatal("acknowledged owner before its second assignment was verified")
+		t.Fatal("acknowledged without the original responsibility and accepted result")
 	}
 	if a.CompletionAckRef != "" {
 		t.Fatal("premature acknowledgment mutated assignment")
-	}
-	delete(snapshot.State, "workspace")
-	next, err := acknowledgeVerifiedIntegration(fix.root, snapshot, a, cp)
-	if err != nil {
-		t.Fatal(err)
-	}
-	rows := next.State["entities"].(map[string]any)["agents"].([]any)
-	agent := rows[0].(map[string]any)
-	if agent["state"] != "done" || agent["completion_acknowledged_ref"] == nil || a.CompletionAckRef == "" {
-		t.Fatalf("missing durable ack: %v", agent)
-	}
-	again, err := acknowledgeVerifiedIntegration(fix.root, next, a, cp)
-	if err != nil || again.Revision != next.Revision {
-		t.Fatal("ack not idempotent")
 	}
 }

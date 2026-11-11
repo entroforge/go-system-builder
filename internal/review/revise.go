@@ -6,16 +6,16 @@ import (
 	"fmt"
 	"github.com/entroforge/go-system-builder/internal/workstate"
 	"os"
-	"path/filepath"
-	"reflect"
+	"strings"
 	"time"
 
 	loopruntime "github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/schema"
 	"github.com/entroforge/go-system-builder/internal/semantic"
+	"github.com/entroforge/go-system-builder/internal/workpacket"
 )
 
-// ReviseRequest drives `runtime review-plan revise` — the one controlled
+// ReviseRequest drives original ReviewPlan revision — the one controlled
 // ReviewPlan revision per round (L3-S7 §3.2, §5.3).
 type ReviseRequest struct {
 	Context          context.Context `json:"-"`
@@ -24,6 +24,8 @@ type ReviseRequest struct {
 	SourceRef        string
 	AffectedSurface  string
 	OccurredAt       time.Time
+	answerBytes      []byte
+	natural          bool
 }
 
 // RevisePlan applies the one permitted controlled revision. Rules:
@@ -41,10 +43,14 @@ func RevisePlan(
 	root, statePath, journalPath string,
 	request ReviseRequest,
 ) (loopruntime.Snapshot, error) {
-	if request.PlanPath == "" || request.SourceRef == "" || request.AffectedSurface == "" {
+	if request.PlanPath == "" || (!request.natural && (request.SourceRef == "" || request.AffectedSurface == "")) {
 		return loopruntime.Snapshot{}, fmt.Errorf("revise requires --file, --source-ref and --affected-surface; a revision without a concrete source is unbounded scope creep (L3-S7 §5.3)")
 	}
-	data, err := os.ReadFile(request.PlanPath)
+	data := request.answerBytes
+	var err error
+	if data == nil {
+		data, err = os.ReadFile(request.PlanPath)
+	}
 	if err != nil {
 		return loopruntime.Snapshot{}, fmt.Errorf("read revised ReviewPlan: %w", err)
 	}
@@ -52,7 +58,9 @@ func RevisePlan(
 	if !json.Valid(data) {
 		return loopruntime.Snapshot{}, &PlanAnswerError{fmt.Errorf("revised ReviewPlan file %s must contain JSON; --file expects a JSON file path, not Markdown or inline JSON", request.PlanPath)}
 	}
-
+	if err := workpacket.ValidateUniqueJSON(data); err != nil {
+		return loopruntime.Snapshot{}, &PlanAnswerError{fmt.Errorf("revised ReviewPlan JSON: %w", err)}
+	}
 	stateData, err := os.ReadFile(statePath)
 	if err != nil {
 		return loopruntime.Snapshot{}, fmt.Errorf("read runtime: %w", err)
@@ -60,10 +68,6 @@ func RevisePlan(
 	var current map[string]any
 	if err := json.Unmarshal(stateData, &current); err != nil {
 		return loopruntime.Snapshot{}, fmt.Errorf("decode runtime: %w", err)
-	}
-	data, err = preparePlanAssets(root, data, current, request.Context)
-	if err != nil {
-		return loopruntime.Snapshot{}, fmt.Errorf("prepare ReviewPlan assets: %w", err)
 	}
 	if err := schema.NewValidator(root).ValidateBytes("review-plan.schema.json", data); err != nil {
 		return loopruntime.Snapshot{}, &PlanAnswerError{fmt.Errorf("revised ReviewPlan schema: %w", err)}
@@ -73,18 +77,22 @@ func RevisePlan(
 		return loopruntime.Snapshot{}, fmt.Errorf("decode revised ReviewPlan: %w", err)
 	}
 	if err := ValidatePlan(&next); err != nil {
-		return loopruntime.Snapshot{}, fmt.Errorf("revised ReviewPlan coverage: %w", err)
+		return loopruntime.Snapshot{}, fmt.Errorf("revised ReviewPlan content and responsibility: %w", err)
 	}
 
-	if request.ExpectedRevision >= 0 && intField(current["revision"]) != request.ExpectedRevision {
-		return loopruntime.Snapshot{}, loopruntime.ErrStaleRevision
-	}
+	// The Runtime write count never qualifies this revision
+	// (L4-revision-usage.md §4/§8, G18 §3.1). The three-piece proof replaces
+	// the retired comparison: the received Plan row (the currently registered
+	// Plan pointer below), the journal-level dedup of
+	// evt-review-revise-<planID>-v<planRevision>, and the Plan pointer's own
+	// revision (the one-revision budget and nextRevision below).
+	//
+	// An explicit caller binding keeps the store's own CAS semantics
+	// (L4-revision-usage.md §4, §10.2); the omission marker (-1) uses the
+	// current-value entry instead.
 	commitRevision := currentCommitRevision(request.ExpectedRevision, current)
 	currentPlan, ptr, err := LoadPlan(root, current)
 	if err != nil {
-		return loopruntime.Snapshot{}, err
-	}
-	if err := validateAuthoredBehaviorSurfaces(&next, currentPlan); err != nil {
 		return loopruntime.Snapshot{}, err
 	}
 	switch ptr.Status {
@@ -93,53 +101,37 @@ func RevisePlan(
 	// (register is blocked by the same-round pointer), deadlocking the loop.
 	case "running", "cannot_clean", "discovery_draining", "stale":
 	default:
-		return loopruntime.Snapshot{}, fmt.Errorf("ReviewPlan %s is %s; revisions are only legal while the round is still discovering", ptr.PlanID, ptr.Status)
+		lifecycle, _ := current["lifecycle"].(map[string]any)
+		if !request.natural || lifecycle["state"] != "verification" {
+			return loopruntime.Snapshot{}, fmt.Errorf("ReviewPlan %s is %s; revisions are only legal while verification is active", ptr.PlanID, ptr.Status)
+		}
 	}
 	// The one-revision budget governs discovery revisions; a stale plan
 	// may be revised again purely to recover (the drift source must still
 	// verify clean against frozen subjects below).
-	if ptr.Revision != 1 && ptr.Status != "stale" {
+	if !request.natural && ptr.Revision != 1 && ptr.Status != "stale" {
 		return loopruntime.Snapshot{}, fmt.Errorf("ReviewPlan %s is already at revision %d; at most one controlled revision per round (L3-S7 §5.3)", ptr.PlanID, ptr.Revision)
 	}
 	if next.ReviewPlanID != currentPlan.ReviewPlanID {
 		return loopruntime.Snapshot{}, fmt.Errorf("a revision keeps the plan id %s (got %s)", currentPlan.ReviewPlanID, next.ReviewPlanID)
 	}
-	if next.ReviewRound != currentPlan.ReviewRound || next.BaselineGeneration != currentPlan.BaselineGeneration {
-		return loopruntime.Snapshot{}, fmt.Errorf("a revision keeps the review_round and baseline_generation; a changed baseline is a stale round, not a revision")
+	if next.BaselineGeneration != currentPlan.BaselineGeneration {
+		return loopruntime.Snapshot{}, fmt.Errorf("a revision keeps the baseline_generation")
 	}
-	if !reflect.DeepEqual(next.ProductBaseline, currentPlan.ProductBaseline) {
-		return loopruntime.Snapshot{}, fmt.Errorf("a ReviewPlan revision cannot replace or move the pinned S6 product baseline; start a new review round for a new Main commit")
-	}
-	if err := verifyFrozenSubjects(root, &next, current, request.Context); err != nil {
-		return loopruntime.Snapshot{}, fmt.Errorf("revised ReviewPlan frozen subject baseline: %w", err)
-	}
-	if err := verifyRegressionAssetFingerprints(root, &next); err != nil {
-		return loopruntime.Snapshot{}, err
-	}
-	if err := ValidatePlanTaskCoverage(current, &next); err != nil {
-		return loopruntime.Snapshot{}, err
-	}
-	if err := validateCoverageInventory(root, current, &next); err != nil {
-		return loopruntime.Snapshot{}, err
-	}
-	if err := validateKnownE2ECaseCoverage(request.Context, root, current, &next); err != nil {
-		return loopruntime.Snapshot{}, err
-	}
-	if err := validateRepairRoundBaseline(root, current, &next); err != nil {
-		return loopruntime.Snapshot{}, err
-	}
-	if workspaceValue(next.VerificationArtifactWorkspace) != workspaceValue(currentPlan.VerificationArtifactWorkspace) {
+	if !request.natural && workspaceValue(next.VerificationArtifactWorkspace) != workspaceValue(currentPlan.VerificationArtifactWorkspace) {
 		return loopruntime.Snapshot{}, fmt.Errorf("a revision keeps the verification_artifact_workspace; changing the E2E write surface requires a new review round")
 	}
-	if err := validateRevisionSource(root, current, request.SourceRef, currentPlan.ReviewRound, currentPlan.BaselineGeneration); err != nil {
-		return loopruntime.Snapshot{}, err
+	if !request.natural {
+		if err := validateRevisionSource(root, current, request.SourceRef, 0, currentPlan.BaselineGeneration); err != nil {
+			return loopruntime.Snapshot{}, err
+		}
 	}
 
 	changed, err := diffClaims(currentPlan, &next, request.SourceRef, request.AffectedSurface)
 	if err != nil {
 		return loopruntime.Snapshot{}, err
 	}
-	if len(changed) == 0 {
+	if !request.natural && len(changed) == 0 {
 		return loopruntime.Snapshot{}, fmt.Errorf("the revision changes no Claim; nothing to revise")
 	}
 	changedSet := map[string]bool{}
@@ -164,15 +156,15 @@ func RevisePlan(
 		if previousAssignment == nil {
 			continue
 		}
-		previousDigest, err := planAssignmentDigest(previousAssignment)
+		previousContent, err := planAssignmentContent(previousAssignment)
 		if err != nil {
 			return loopruntime.Snapshot{}, err
 		}
-		nextDigest, err := planAssignmentDigest(&nextAssignment)
+		nextContent, err := planAssignmentContent(&nextAssignment)
 		if err != nil {
 			return loopruntime.Snapshot{}, err
 		}
-		if previousDigest == nextDigest {
+		if previousContent == nextContent {
 			continue
 		}
 		metadataChangedAssignments[nextAssignment.AssignmentID] = true
@@ -199,10 +191,25 @@ func RevisePlan(
 		}
 	}
 
-	// Persist v2 as a new immutable pinned artifact; the pointer path+sha
+	// Persist v2 as a new original artifact; the pointer path
 	// updates in the CAS. Overwriting v1 before the CAS would let a stale
 	// revision silently rewrite evidence consumed by other readers.
-	planBytes := append(canonicalJSON(data), '\n')
+	// A revised Plan keeps its professional paths and judgments. Historical
+	// machine baselines and source digests are not copied into a new record.
+	next.ProductBaseline = nil
+	if next.FrozenSubjects == nil {
+		next.FrozenSubjects = []FrozenSubject{}
+	}
+	for i := range next.Claims {
+		if next.Claims[i].SourceRefs == nil {
+			next.Claims[i].SourceRefs = []string{}
+		}
+	}
+	planData, err := json.Marshal(next)
+	if err != nil {
+		return loopruntime.Snapshot{}, fmt.Errorf("encode revised ReviewPlan: %w", err)
+	}
+	planBytes := append(canonicalJSON(planData), '\n')
 	// A recovery revision of an already-revised (revision 2, stale) plan
 	// must not restage the same -r2.json artifact: the pointer read needs
 	// the file present while writeArtifact's O_EXCL needs it absent.
@@ -210,11 +217,10 @@ func RevisePlan(
 	if nextRevision < 2 {
 		nextRevision = 2
 	}
-	planRel := filepath.ToSlash(filepath.Join(".claude", "review", "plans", fmt.Sprintf("%s-r%d.json", next.ReviewPlanID, nextRevision)))
+	planRel := boundedReviewArtifactPath([]string{".claude", "review", "plans"}, fmt.Sprintf("%s-r%d", next.ReviewPlanID, nextRevision))
 	if err := writeArtifact(root, planRel, planBytes); err != nil {
 		return loopruntime.Snapshot{}, err
 	}
-	planSHA := sha256Of(planBytes)
 	runtimeID, _ := current["runtime_id"].(string)
 	occurredAt := request.OccurredAt
 	if occurredAt.IsZero() {
@@ -224,27 +230,19 @@ func RevisePlan(
 	cursor := map[string]any{"state": lifecycle["state"], "phase": lifecycle["phase"]}
 	store := loopruntime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{}).WithContext(request.Context)
 	snapshot, err := updateRuntime(store, request.ExpectedRevision, loopruntime.Mutation{
-		EventID:        fmt.Sprintf("evt-review-revise-%s-r%d", next.ReviewPlanID, commitRevision+1),
+		EventID:        reviewReviseEventID(next.ReviewPlanID, nextRevision),
 		TransitionID:   "REVIEW-PLAN-REVISE",
 		Event:          "review_plan_revised",
 		Actor:          "orchestrator",
-		IdempotencyKey: fmt.Sprintf("runtime:review-revise:%s:%d", next.ReviewPlanID, commitRevision),
+		IdempotencyKey: reviewReviseIdempotencyKey(next.ReviewPlanID, nextRevision),
 		RuntimeID:      runtimeID,
 		From:           cursor,
 		To:             cursor,
-		Message: fmt.Sprintf("Revised ReviewPlan %s to revision 2 (%d claims changed via %s)",
-			next.ReviewPlanID, len(changed), request.SourceRef),
+		Message: fmt.Sprintf("Revised ReviewPlan %s to revision %d (%d claims changed)",
+			next.ReviewPlanID, nextRevision, len(changed)),
 		OccurredAt: occurredAt,
 		Apply: func(state map[string]any) error {
-			if err := verifyFrozenSubjects(root, &next, state, request.Context); err != nil {
-				return fmt.Errorf("canonical product baseline changed before ReviewPlan revision commit: %w", err)
-			}
-			if err := validateKnownE2ECaseCoverage(store.Context(), root, state, &next); err != nil {
-				return err
-			}
-			if err := verifyRegressionAssetFingerprints(root, &next); err != nil {
-				return err
-			}
+
 			reviewMap, ok := state["review"].(map[string]any)
 			if !ok {
 				return fmt.Errorf("runtime review section must be an object")
@@ -255,11 +253,10 @@ func RevisePlan(
 			}
 			planMap["revision"] = nextRevision
 			planMap["path"] = planRel
-			planMap["sha256"] = planSHA
-			// stale-recovery: the revision re-pinned a drift-clean baseline
-			// (verifyFrozenSubjects already passed above); a round that was
-			// marked stale must return to discovering or it has no exit.
-			if status, _ := planMap["status"].(string); status == "stale" {
+			planMap["e2e_coverage_state"] = next.E2ECoverageState
+			planMap["verification_artifact_workspace"] = workspaceValue(next.VerificationArtifactWorkspace)
+			// An original revision resumes work on its current Plan responsibility.
+			if status, _ := planMap["status"].(string); status == "stale" || (status == "clean" && (len(changedSet) > 0 || next.E2ECoverageState != currentPlan.E2ECoverageState)) {
 				lifecycleMap, _ := state["lifecycle"].(map[string]any)
 				setPlanStatus(reviewMap, lifecycleMap, "running")
 			}
@@ -407,6 +404,10 @@ func RevisePlan(
 				}
 			}
 			state["updated_at"] = occurredAt.UTC().Format(time.RFC3339Nano)
+			if request.natural && planMap["status"] == "running" && RequiredResponsibilitiesComplete(state) && len(RoundFindings(state)) == 0 {
+				lifecycleMap, _ := state["lifecycle"].(map[string]any)
+				setPlanStatus(reviewMap, lifecycleMap, "clean")
+			}
 			return nil
 		},
 	})
@@ -419,7 +420,7 @@ func RevisePlan(
 		if _, cleanupErr := cleanupStore.RemoveUnreferencedArtifact(loopruntime.ArtifactCleanupRequest{
 			ExpectedRevision: commitRevision,
 			ArtifactPath:     planRel,
-			ArtifactSHA256:   planSHA,
+			ArtifactBytes:    planBytes,
 			ReferencedPaths:  []string{ptr.Path},
 		}); cleanupErr != nil {
 			return snapshot, fmt.Errorf("revise failed and staged plan cleanup was inconclusive: %w (original: %v)", cleanupErr, err)
@@ -427,6 +428,27 @@ func RevisePlan(
 		return snapshot, err
 	}
 	return snapshot, nil
+}
+
+// reviewReviseEventID names one controlled Plan revision by the Plan
+// responsibility and by the Plan revision it produces. The Plan revision is
+// the domain's own artifact revision (the same number the revised Plan file
+// carries), never the Runtime write count (G18 §1.1, §1.2).
+func reviewReviseEventID(planID string, planRevision int) string {
+	if strings.TrimSpace(planID) == "" || planRevision < 1 {
+		return ""
+	}
+	return fmt.Sprintf("evt-review-revise-%s-v%d", planID, planRevision)
+}
+
+// reviewReviseIdempotencyKey names the revision intent: the Plan identity is
+// the responsibility coordinate and the Plan revision is the intent key
+// (G18 §1.3).
+func reviewReviseIdempotencyKey(planID string, planRevision int) string {
+	if strings.TrimSpace(planID) == "" || planRevision < 1 {
+		return ""
+	}
+	return fmt.Sprintf("runtime:review-revise:%s:v%d", planID, planRevision)
 }
 
 func workspaceValue(value *string) string {
@@ -449,6 +471,9 @@ func diffClaims(v1, v2 *Plan, sourceRef, surface string) ([]string, error) {
 	}
 	var changed []string
 	check := func(claimID string, claim *Claim) error {
+		if sourceRef == "" && surface == "" {
+			return nil
+		}
 		if claim == nil {
 			// Removed claim: bind the removal to the surface via the v1 row.
 			original := byID1[claimID]
@@ -458,7 +483,7 @@ func diffClaims(v1, v2 *Plan, sourceRef, surface string) ([]string, error) {
 					fmt.Sprintf("claim %s (target %s) is removed but its target sits outside the affected surface %s", claimID, original.Target, surface),
 					[]string{"removed Claim target: " + original.Target, "affected surface: " + surface},
 					[]string{"limit the revision to Claims whose normalized target is the affected surface or a child path"},
-					"runtime review-plan revise --file plan-v2.json --source-ref <current-result-or-finding> --affected-surface <surface>",
+					"update and save the original ReviewPlan questionnaire using the actual source and affected responsibility",
 				)
 			}
 			return nil
@@ -479,7 +504,7 @@ func diffClaims(v1, v2 *Plan, sourceRef, surface string) ([]string, error) {
 				fmt.Sprintf("changed claim %s targets %q, outside the affected surface %q", claimID, claim.Target, surface),
 				[]string{"Claim target: " + claim.Target, "affected surface: " + surface},
 				[]string{"change only Claims whose normalized target is the affected surface or a child path"},
-				"runtime review-plan revise --file plan-v2.json --source-ref <current-result-or-finding> --affected-surface <surface>",
+				"update and save the original ReviewPlan questionnaire using the actual source and affected responsibility",
 			)
 		}
 		return nil
@@ -493,9 +518,7 @@ func diffClaims(v1, v2 *Plan, sourceRef, surface string) ([]string, error) {
 			changed = append(changed, claimID)
 			continue
 		}
-		left, _ := json.Marshal(claim1)
-		right, _ := json.Marshal(claim2)
-		if string(left) != string(right) {
+		if !sameClaimContent(claim1, claim2) {
 			if err := check(claimID, &claim2); err != nil {
 				return nil, err
 			}

@@ -1,66 +1,36 @@
 package hook
 
 import (
-	"bytes"
-	"encoding/json"
-	"path/filepath"
-	"strings"
-
-	"github.com/entroforge/go-system-builder/internal/fileview"
+	"github.com/entroforge/go-system-builder/internal/assignmentrecord"
+	"github.com/entroforge/go-system-builder/internal/assignmentresult"
 	"github.com/entroforge/go-system-builder/internal/hookctx"
-	"github.com/entroforge/go-system-builder/internal/qualitygate"
 	loopruntime "github.com/entroforge/go-system-builder/internal/runtime"
-	"github.com/entroforge/go-system-builder/internal/schema"
-	"github.com/entroforge/go-system-builder/internal/transition"
+	"github.com/entroforge/go-system-builder/internal/workpacket"
 )
 
-// currentBuilderWorkComplete asks the original S6 consumer to validate the
-// current Builder delivery. A generic completion ref, manifest status or
-// Agent terminal label never substitutes for this proof.
+// currentBuilderWorkComplete reads the original registered result and owner
+// facts. Main integration and its checks remain Main's separate responsibility.
 func currentBuilderWorkComplete(root string, snapshot loopruntime.Snapshot, assignment *hookctx.AssignmentContext) bool {
-	if assignment == nil || assignment.OwnerAgentID == "" || assignment.AssignmentID == "" || assignment.TaskID == "" {
+	if assignment == nil || assignment.OwnerAgentID == "" || assignment.AssignmentID == "" || assignment.TaskID == "" || assignment.CompletionRef == "" || !requiresBuilderReceipt(assignment) {
 		return false
 	}
-	if !requiresBuilderReceipt(assignment) {
+	record, found, err := assignmentrecord.ForOwner(snapshot.State, assignment.OwnerAgentID)
+	if err != nil || !found || record.AssignmentID != assignment.AssignmentID || record.Task.ID != assignment.TaskID || record.ClosingContract == nil {
 		return false
 	}
-	if err := fileview.ValidateAuthority(root, snapshot.State); err != nil {
+	if assignment.AssignmentRecord != nil && *assignment.AssignmentRecord != record.Reference() {
 		return false
 	}
-	branch, err := fileview.DevelopmentRef(snapshot.State)
-	if err != nil {
+	result, err := assignmentresult.LoadRecordedAccepted(snapshot.State, record, assignment.CompletionRef, func(ref string) ([]byte, error) {
+		return workpacket.ReadFile(root, ref, 20<<20)
+	})
+	if err != nil || !assignmentresult.ClosingAssessmentComplete(result.Answer) {
 		return false
 	}
-	catalog, err := transition.LoadCatalog(root)
-	if err != nil || catalog == nil || catalog.Definition == nil {
-		return false
+	for _, fact := range result.WorkerCheckFacts {
+		if fact.Status == "fail" {
+			return false
+		}
 	}
-	ref := "refs/heads/" + strings.TrimPrefix(branch, "refs/heads/")
-	view, err := fileview.New(root, ref, catalog.Definition.FileSources)
-	if err != nil {
-		return false
-	}
-	request := qualitygate.BuilderReceiptRequest{
-		Owner: assignment.OwnerAgentID, AssignmentID: assignment.AssignmentID,
-		TaskID: assignment.TaskID, CompletionRef: assignment.CompletionRef,
-		RequiredChecks: append([]string(nil), assignment.RequiredChecks...),
-		DoneWhen:       append([]string(nil), assignment.DoneWhen...),
-	}
-	receipt := qualitygate.CurrentBuilderReceipt(qualitygate.Input{Root: root, Snapshot: snapshot, Files: view}, request)
-	if err := view.Verify(); err != nil || !receipt.WorkComplete {
-		return false
-	}
-	data, err := json.Marshal(receipt)
-	if err != nil || schema.NewEmbeddedValidator().ValidateBytes("builder-receipt.schema.json", data) != nil {
-		return false
-	}
-	currentData, err := json.Marshal(qualitygate.CurrentBuilderReceipt(qualitygate.Input{Root: root, Snapshot: snapshot, Files: view}, request))
-	if err != nil || !bytes.Equal(data, currentData) || view.Verify() != nil {
-		return false
-	}
-	latest, err := loopruntime.NewStore(
-		filepath.Join(root, ".claude", "loop-state.json"),
-		filepath.Join(root, ".claude", "loop-events.jsonl"),
-	).Snapshot()
-	return err == nil && latest.Revision == snapshot.Revision && latest.State["runtime_id"] == snapshot.State["runtime_id"]
+	return true
 }

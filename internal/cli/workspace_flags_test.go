@@ -25,7 +25,7 @@ func TestWorkspaceFlagRoutingUsesParsedArgumentsAndPreservesArtifactRoot(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	e := workspace.Execution{AssignmentID: "a", RuntimeID: workspace.RuntimeID(fix.state), BaselineGeneration: workspace.Generation(fix.state), Generation: 1, AgentID: "builder", Path: filepath.Join(fix.root, ".worktrees/a"), Branch: "codex/a", TargetBranch: b.Branch, BaseCommit: b.BoundHead, Status: "preparing", Inputs: map[string]string{}}
+	e := workspace.Execution{AssignmentID: "a", RuntimeID: workspace.RuntimeID(fix.state), BaselineGeneration: workspace.Generation(fix.state), Generation: 1, AgentID: "builder", Path: filepath.Join(fix.root, ".worktrees/a"), Branch: "codex/a", TargetBranch: b.Branch, Status: "preparing", Inputs: map[string]string{}}
 	b.Executions[e.AssignmentID] = e
 	if err = b.Materialize(ctx, e); err != nil {
 		t.Fatal(err)
@@ -45,10 +45,6 @@ func TestWorkspaceFlagRoutingUsesParsedArgumentsAndPreservesArtifactRoot(t *test
 		t.Fatal(err)
 	}
 	if err = b.Bootstrap(e, binary); err != nil {
-		t.Fatal(err)
-	}
-	e.BootstrapSHA256, err = workspace.BootstrapDigest(e)
-	if err != nil {
 		t.Fatal(err)
 	}
 	b.Executions[e.AssignmentID] = e

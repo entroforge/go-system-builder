@@ -1,52 +1,27 @@
-# Repair baseline boundaries and safe recovery
+# Repair change boundaries and recovery
 
-The Session baseline is immutable. Freshness and changeset preserve its historical
-file membership; current ignore rules cannot remove that ownership. New capture
-excludes generated output before reading its bytes.
+Use the original RepairSession, assignments, accepted Builder results and actual
+available changes to understand the repair. Main handles the real integration and
+checks; independent Targeted verification and the next S7 remain separate
+responsibilities. Normal Git operations can show actual changes, but a Git OID,
+content hash, file fingerprint or a full-tree byte comparison is not a new
+qualification for receiving a result or continuing the workflow.
 
-- Main-tree tracked files remain protected from the new ownership exclusions.
-- Git-registered nested worktrees belong to their own assignments. They are
-  excluded only when the main index does not track content under that root.
-  An arbitrary directory called .worktrees is not enough. Git before list -z
-  is supported via quoted porcelain parsing.
-- Python environments need a regular pyvenv.cfg marker, a Git ignore verdict,
-  and no main-index tracked content. Vendored or unverifiable trees stay in
-  scope. Missing Git does not grant exemptions.
-- Runtime logs require a narrow output name plus Git ignored/untracked status;
-  tracked fixtures remain protected, including staged and committed deletions,
-  renames and later ignore-rule changes. Arbitrary extensionless files, .txt,
-  .json and compressed archives are not automatically logs. The historical
-  .claude/multi.json launcher profile exception is exact, not all of .claude.
-- Excluded directories/logs are classified before file bytes are read. Included
-  files are hashed as streams. No mtime-only pass cache is used.
+Preserve user files, original receipts and in-flight responsibilities. A missing
+result receipt does not prove that no work happened; a missing original baseline
+does not prove that the current tree is unchanged. If available facts cannot
+distinguish those cases, report the specific unknown to Main instead of guessing,
+deleting an existing Session, or requiring an author to create a new proof.
 
-A missing result receipt does not imply no implementation work: session
-replacement checks plural result/plan refs, dispatched owners and actual diff.
-If progress exists, resume with the original baseline instead of re-opening.
-The Runtime fingerprint uses the Session's single captured digest. Drift errors
-report all detected blockers (first 50 paths in the diagnostic), without file
-contents, instead of forcing one full scan per newly revealed blocker.
+For an explicit change list, use the actual paths and their observed statuses;
+do not invent a deleted or changed file from incomplete history. Ignore decisions
+do not by themselves establish that an existing file belongs to the framework or
+is safe to remove. Hook source and tracked product files remain part of their
+actual task scope; a decision journal or a generated log is not automatically a
+product fix.
 
-This classification does not prove every possible generated file safe to ignore.
-Existing cache-path exceptions remain compatibility rules. Do not add a broad
-.gitignore bypass or erase legacy evidence to avoid investigating an unknown.
-
-## Historical entries and Hook code
-
-A legacy Session containing a runtime log without historical provenance keeps
-that entry protected. An unchanged entry does not create a phantom deletion;
-actual edits or deletion remain visible to freshness and changeset checks.
-New Sessions exclude genuinely ignored, untracked log output as usual.
-
-If such an old Session blocks on log drift, preserve its original artifacts and
-inspect the drift. Use the supported Session replacement procedure only when its
-preconditions allow it; otherwise retain the old environment and resolve the
-migration at an approved baseline change window. Do not edit baseline hashes,
-re-sign historical evidence, or claim generated logs as product fixes to clear a
-gate. Current Git ignore status alone cannot prove historical ownership.
-
-Only `.claude/hook-decisions.jsonl` is excluded as the Hook decision journal.
-The `.claude/hooks/` directory and similarly named Hook source files remain
-implementation inputs; edits/deletions require the normal scope and evidence
-checks. This S9 baseline protection is not an OS sandbox or a substitute for
-reviewing executable Hooks before enabling them.
+Some legacy Session change and replacement paths still depend on a previously
+captured baseline digest and are being migrated to this contract. If such an
+entry reports a digest requirement, retain the original Session and worktree,
+report the system recovery gap and available facts, and do not ask the Builder
+to register a replacement hash or assert that an unknown tree is unchanged.

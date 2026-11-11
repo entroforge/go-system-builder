@@ -8,14 +8,59 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/entroforge/go-system-builder/internal/assignmentrecord"
+	"github.com/entroforge/go-system-builder/internal/cli"
 	"github.com/entroforge/go-system-builder/internal/controller"
+	"github.com/entroforge/go-system-builder/internal/fileview"
+	"github.com/entroforge/go-system-builder/internal/runtime"
+	"github.com/entroforge/go-system-builder/internal/transition"
+	"github.com/entroforge/go-system-builder/internal/workspace"
 	req039fixtures "github.com/entroforge/go-system-builder/tests/fixtures/req039"
 )
 
-func TestS6UnchangedPreToolUseReusesObservation(t *testing.T) {
-	root := req039fixtures.FreshRoot(t)
-	state := req039fixtures.BaseState(t, root, "building", "", 19)
+// newS6MainBaselineFixture starts a Runtime through the real TR-003 Writer, so
+// the current generation owns the original common Main baseline. The baseline
+// is a structural fact of the committed original stage: the journal keeps the
+// original transition receipt and the Runtime keeps the registered common Main
+// start of this generation. The S6 batch recheck needs that baseline before it
+// may read the current batch.
+func newS6MainBaselineFixture(t *testing.T, sources map[string][]byte) (string, string) {
+	t.Helper()
+	root, task, _ := newS6RecordContextFixtureWithReadSources(t, sources)
+	state := stageSnapshot(t, root).State
+	state["configuration"].(map[string]any)["optimization"] = map[string]any{"packet": true}
+	req039fixtures.SeedDocumentPassS5(t, root, state, "s6-baseline-spec-reviewer", "s6-baseline-task-reviewer")
 	req039fixtures.WriteState(t, root, state)
+	catalog, err := transition.LoadCatalog(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	view, err := fileview.New(root, "refs/heads/test-development", catalog.Definition.FileSources)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next, err := transition.Apply(root, filepath.Join(root, ".claude/loop-state.json"), filepath.Join(root, ".claude/loop-events.jsonl"), transition.Request{
+		Files: view, TransitionID: "TR-003", ExpectedRevision: -1,
+		ExpectedRuntimeID: state["runtime_id"].(string), Actor: "orchestrator",
+		Evidence:         map[string]string{"document_review_record": "ev-dv-spec"},
+		GateEvidenceRefs: []string{"ev-dv-spec", "ev-dv-task"},
+		GateID:           "GATE-DOCUMENT-PASS", ProducerResponsibility: "document_verifier"})
+	if err != nil {
+		t.Fatalf("real TR-003: %v", err)
+	}
+	journal, err := runtime.ReadJournalForState(root, next.State)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start, err := runtime.RequireCurrentS6MainStart(next.State, journal)
+	if err != nil || len(start.TaskSet) != 1 || start.TaskSet[0].TaskID != task {
+		t.Fatalf("exact common Main batch: %+v %v", start, err)
+	}
+	return root, task
+}
+
+func TestS6UnchangedPreToolUseReusesObservation(t *testing.T) {
+	root, task := newS6MainBaselineFixture(t, map[string][]byte{"go.mod": []byte("module observation.fixture\n\ngo 1.26\n"), "src/pkg/input_test.go": []byte("package pkg\nimport \"testing\"\nfunc TestPackage(t *testing.T) {}\n")})
 	runner := &req039fixtures.CLIRunner{}
 	body := req039fixtures.PreToolUseBody("s6-observation", "Agent", map[string]any{"subagent_type": "s6-prior-delegation-marker"})
 	run := func() string {
@@ -101,15 +146,34 @@ func TestS6UnchangedPreToolUseReusesObservation(t *testing.T) {
 		t.Fatal("same-outcome observation did not settle after its new revision")
 	}
 
-	// Model a newly recorded batch through the existing fixture seeding
-	// helper. Its new Runtime revision must defeat observation reuse.
-	changed := req039fixtures.ReadState(t, root)
-	req039fixtures.SeedBuilderBatchReady(t, root, changed)
-	changed["revision"] = req039fixtures.Revision(changed) + 1
-	req039fixtures.WriteState(t, root, changed)
+	// Model a newly recorded batch through the original native delivery: the
+	// real S6 preparation, the real Builder Result and Main's real merge. Its
+	// new Runtime revision must defeat observation reuse.
+	stageCLI(t, "s6", "prepare", "--root", root, "--task", task, "--role", "backend-builder")
+	record, found, err := assignmentrecord.ForOwner(stageSnapshot(t, root).State, "native-"+task)
+	if err != nil || !found {
+		t.Fatalf("native registration: %+v %v", record, err)
+	}
+	source := filepath.Join(t.TempDir(), "native-worktree")
+	if _, err := workspace.Git(t.Context(), root, "worktree", "add", "-b", "native/observation", source, "HEAD"); err != nil {
+		t.Fatal(err)
+	}
+	nativeCommit(t, source)
+	nativeAnswer(t, source, record)
+	brief, _, result := assignmentrecord.NativePaths(record)
+	if code, output := nativeEvent(t, root, source, "SubagentStop", filepath.Join(root, brief)+"\n"+filepath.Join(source, result), false); code != 0 {
+		t.Fatalf("original Builder Result was not received: %d %s", code, output)
+	}
+	before = controller.MetricsGateEvaluations
 	run()
 	if controller.MetricsGateEvaluations == before {
 		t.Fatal("changed Runtime facts did not execute the original gate")
+	}
+	// The recorded batch reaches TR-006 at Main's integration exit, the only
+	// place that commits it.
+	var integrated, diagnostic bytes.Buffer
+	if code := cli.Run([]string{"runtime", "task-integrate", "--root", root, "--assignment-id", record.AssignmentID, "--agent-id", record.OwnerAgentID}, nil, &integrated, &diagnostic); code != 0 {
+		t.Fatalf("Main integration failed: %d %s %s", code, &integrated, &diagnostic)
 	}
 	if lifecycle, phase := req039fixtures.Lifecycle(req039fixtures.ReadState(t, root)); lifecycle != "verification" || phase != "planned" {
 		t.Fatalf("changed ready batch did not advance through TR-006: %s/%s", lifecycle, phase)

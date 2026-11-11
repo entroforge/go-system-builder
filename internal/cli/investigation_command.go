@@ -2,8 +2,6 @@ package cli
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -118,10 +116,6 @@ func runRuntimeInvestigationDispatch(args []string, stdout, stderr io.Writer) in
 		fmt.Fprintln(stderr, formatFailure("runtime investigation dispatch", fmt.Errorf("read pinned Case %s: %w", caseRel, err)))
 		return 1
 	}
-	if actual := sha256HexForArtifact(caseBytes); actual != stringValue(pointer["sha256"]) {
-		fmt.Fprintf(stderr, "runtime investigation dispatch: Case %s sha256 drifted (pinned %s, disk %s); restore the Case before dispatch\n", caseRel, stringValue(pointer["sha256"]), actual)
-		return 1
-	}
 	if err := schema.NewValidator(rootPath).ValidateBytes("review-investigation-case.schema.json", caseBytes); err != nil {
 		fmt.Fprintln(stderr, formatFailure("runtime investigation dispatch", fmt.Errorf("Case schema: %w", err)))
 		return 1
@@ -176,12 +170,12 @@ func runRuntimeInvestigationDispatch(args []string, stdout, stderr io.Writer) in
 		fmt.Fprintln(stderr, "runtime investigation dispatch: --agent-definition must not be empty")
 		return 2
 	}
-	definitionBytes, err := os.ReadFile(resolveRootPath(rootPath, *definitionRef))
+	_, err = os.ReadFile(resolveRootPath(rootPath, *definitionRef))
 	if err != nil {
 		fmt.Fprintln(stderr, formatFailure("runtime investigation dispatch", fmt.Errorf("read Agent Definition (dispatch derives the worker capability set — allowed tools, write paths, command classes — from the definition file, so it must exist in the repository): %w", err)))
 		return 1
 	}
-	protocolBytes, err := os.ReadFile(filepath.Join(rootPath, projectlayout.Protocol))
+	_, err = os.ReadFile(filepath.Join(rootPath, projectlayout.Protocol))
 	if err != nil {
 		fmt.Fprintln(stderr, formatFailure("runtime investigation dispatch", fmt.Errorf("read agent protocol: %w", err)))
 		return 1
@@ -201,12 +195,6 @@ func runRuntimeInvestigationDispatch(args []string, stdout, stderr io.Writer) in
 	taskID := nextInvestigationTaskID(snapshot.State)
 	taskRel := filepath.ToSlash(filepath.Join(".claude", "workgroups", reqID, taskID, taskID+".json"))
 	manifestRel := filepath.ToSlash(filepath.Join(".claude", "workgroups", reqID, taskID, "manifest.json"))
-	review := mapFieldCLI(snapshot.State, "review")
-	reviewRound := intFieldCLI(review["round"])
-	var reviewRoundValue any
-	if reviewRound > 0 {
-		reviewRoundValue = reviewRound
-	}
 	baseline := mapFieldCLI(snapshot.State, "baseline")
 	baselineGeneration := intFieldCLI(baseline["generation"])
 	if baselineGeneration < 1 {
@@ -214,13 +202,13 @@ func runRuntimeInvestigationDispatch(args []string, stdout, stderr io.Writer) in
 		return 1
 	}
 	documents := []any{
-		map[string]any{"id": "investigation-case", "path": caseRel, "version": fmt.Sprintf("r%d", intFieldCLI(pointer["revision"])), "sha256": stringValue(pointer["sha256"])},
-		map[string]any{"id": "agent-protocol", "path": projectlayout.Protocol, "version": "current", "sha256": sha256HexForArtifact(protocolBytes)},
-		map[string]any{"id": "investigator-definition", "path": filepath.ToSlash(*definitionRef), "version": "current", "sha256": sha256HexForArtifact(definitionBytes)},
+		map[string]any{"id": "investigation-case", "path": caseRel, "version": fmt.Sprintf("r%d", intFieldCLI(pointer["revision"]))},
+		map[string]any{"id": "agent-protocol", "path": projectlayout.Protocol, "version": "current"},
+		map[string]any{"id": "investigator-definition", "path": filepath.ToSlash(*definitionRef), "version": "current"},
 	}
 	manifest := map[string]any{
 		"schema_version": "1.0.0", "manifest_id": manifestID, "version": "1.0.0", "runtime_id": stringValue(snapshot.State["runtime_id"]),
-		"req_id": reqID, "baseline_generation": baselineGeneration, "review_round": reviewRoundValue,
+		"req_id": reqID, "baseline_generation": baselineGeneration,
 		"platform_team_id": "platform-s8-investigation", "workgroup_id": workgroupID, "workgroup_kind": "investigator", "status": "planned",
 		"documents": documents, "risk_tags": []any{},
 		"responsibility_dispositions": []any{map[string]any{
@@ -241,7 +229,7 @@ func runRuntimeInvestigationDispatch(args []string, stdout, stderr io.Writer) in
 	}
 	nextAction := fmt.Sprintf("send one generic PLAN_REPORT while still running, then submit `runtime investigation hypothesis result --case-id %s --hypothesis-id %s --assignment-id %s --method <...> --observed <...> --result <supported|refuted|inconclusive> --explains <finding> --source-boundary <ref> --evidence <ref> --counterfactual <...>`", *caseID, *hypothesisID, resolvedAssignmentID)
 	if runtime.PacketEnabled(snapshot.State) {
-		nextAction = "The original preparation supplies the exact registered S8 view/answer paths. Main carries those references into Claude Code native Agent; the Investigator reads the actual sources, saves only the professional answer and returns its exact reference. SubagentStop invokes the original Case consumer; ordinary tools do not activate or receive the work. Main or the owner may inspect the original receipt with `runtime stage-answer receipt --agent " + strings.TrimSpace(*agentID) + " --packet <packet-id>`."
+		nextAction = "The original preparation supplies the exact registered S8 view/answer paths. Main carries those references into Claude Code native Agent; the Investigator reads the actual sources and saves the professional answer at its original path. Natural PreToolUse, successful PostToolUse and SubagentStop invoke the original Case consumer; ordinary tools remain available and no return-reference action is required. Main or the owner may inspect the original receipt with `runtime stage-answer receipt --agent " + strings.TrimSpace(*agentID) + " --packet <packet-id>`."
 	}
 	task := map[string]any{
 		"task_id": taskID, "case_id": strings.TrimSpace(*caseID), "hypothesis_id": strings.TrimSpace(*hypothesisID), "assignment_id": resolvedAssignmentID,
@@ -383,7 +371,6 @@ func runRuntimeInvestigationHypothesisRegister(args []string, stdout, stderr io.
 	caseID := flags.String("case-id", "", "active InvestigationCase id")
 	hypothesisID := flags.String("id", "", "hypothesis id")
 	expectedCaseRevision := flags.Int("expected-case-revision", -1, "optional explicit Case revision assertion")
-	expectedCaseSHA := flags.String("expected-case-sha256", "", "optional explicit Case sha256 assertion")
 	assignmentID := flags.String("assignment-id", "", "dispatched Assignment answering this hypothesis")
 	statement := flags.String("statement", "", "falsifiable causal statement")
 	invariant := flags.String("invariant", "", "invariant the hypothesis claims is violated")
@@ -420,7 +407,6 @@ func runRuntimeInvestigationHypothesisRegister(args []string, stdout, stderr io.
 	snapshot, err := investigation.RegisterHypothesis(*root, resolveRootPath(*root, *statePath), resolveRootPath(*root, *journalPath), investigation.HypothesisRequest{
 		ExpectedRevision:     *expectedRevision,
 		ExpectedCaseRevision: *expectedCaseRevision,
-		ExpectedCaseSHA256:   strings.TrimSpace(*expectedCaseSHA),
 		CaseID:               strings.TrimSpace(*caseID),
 		HypothesisID:         strings.TrimSpace(*hypothesisID),
 		AssignmentID:         strings.TrimSpace(*assignmentID),
@@ -439,10 +425,9 @@ func runRuntimeInvestigationHypothesisRegister(args []string, stdout, stderr io.
 	pointer := investigationPointer(snapshot.State)
 	fmt.Fprintf(stderr, "hypothesis registered on Case %s; next: dispatch the discriminator question, then submit the result\n", pointer["case_id"])
 	return encodeJSON(stdout, map[string]any{
-		"case_id":     pointer["case_id"],
-		"case_path":   pointer["path"],
-		"case_sha256": pointer["sha256"],
-		"revision":    snapshot.Revision,
+		"case_id":   pointer["case_id"],
+		"case_path": pointer["path"],
+		"revision":  snapshot.Revision,
 	})
 }
 
@@ -459,7 +444,6 @@ func runRuntimeInvestigationHypothesisResult(args []string, stdout, stderr io.Wr
 	caseID := flags.String("case-id", "", "active InvestigationCase id")
 	hypothesisID := flags.String("hypothesis-id", "", "registered hypothesis id")
 	expectedCaseRevision := flags.Int("expected-case-revision", -1, "optional explicit Case revision assertion")
-	expectedCaseSHA := flags.String("expected-case-sha256", "", "optional explicit Case sha256 assertion")
 	assignmentID := flags.String("assignment-id", "", "Assignment that produced this result")
 	method := flags.String("method", "", "how the observation was made")
 	observed := flags.String("observed", "", "what was observed at the discriminator")
@@ -499,7 +483,6 @@ func runRuntimeInvestigationHypothesisResult(args []string, stdout, stderr io.Wr
 	snapshot, err := investigation.SubmitHypothesisResult(*root, resolveRootPath(*root, *statePath), resolveRootPath(*root, *journalPath), investigation.HypothesisResultRequest{
 		ExpectedRevision:     *expectedRevision,
 		ExpectedCaseRevision: *expectedCaseRevision,
-		ExpectedCaseSHA256:   strings.TrimSpace(*expectedCaseSHA),
 		CaseID:               strings.TrimSpace(*caseID),
 		HypothesisID:         strings.TrimSpace(*hypothesisID),
 		AssignmentID:         strings.TrimSpace(*assignmentID),
@@ -520,10 +503,9 @@ func runRuntimeInvestigationHypothesisResult(args []string, stdout, stderr io.Wr
 	pointer := investigationPointer(snapshot.State)
 	fmt.Fprintf(stderr, "hypothesis result recorded on Case %s; when every source Finding is explained, route the Case\n", pointer["case_id"])
 	return encodeJSON(stdout, map[string]any{
-		"case_id":     pointer["case_id"],
-		"case_path":   pointer["path"],
-		"case_sha256": pointer["sha256"],
-		"revision":    snapshot.Revision,
+		"case_id":   pointer["case_id"],
+		"case_path": pointer["path"],
+		"revision":  snapshot.Revision,
 	})
 }
 
@@ -541,7 +523,6 @@ func runRuntimeInvestigationRoute(args []string, stdout, stderr io.Writer) int {
 	caseID := flags.String("case-id", "", "active InvestigationCase id")
 	route := flags.String("route", "", "investigate_more | s9_repair | duplicate | s2_spec_rework | human_req_change | s7_no_change")
 	expectedCaseRevision := flags.Int("expected-case-revision", -1, "optional explicit Case revision assertion")
-	expectedCaseSHA := flags.String("expected-case-sha256", "", "optional explicit Case sha256 assertion")
 	routeReason := flags.String("reason", "", "why this disposition")
 	primaryRootCause := flags.String("primary-root-cause", "", "s9_repair: the one-sentence root cause")
 	causalModelFile := flags.String("causal-model-file", "", "s9_repair: JSON file with the causal model")
@@ -619,7 +600,6 @@ func runRuntimeInvestigationRoute(args []string, stdout, stderr io.Writer) int {
 	snapshot, err := investigation.UpdateCaseRoute(*root, resolveRootPath(*root, *statePath), resolveRootPath(*root, *journalPath), investigation.RouteRequest{
 		ExpectedRevision:               *expectedRevision,
 		ExpectedCaseRevision:           *expectedCaseRevision,
-		ExpectedCaseSHA256:             strings.TrimSpace(*expectedCaseSHA),
 		CaseID:                         strings.TrimSpace(*caseID),
 		Route:                          strings.TrimSpace(*route),
 		RouteReason:                    *routeReason,
@@ -654,11 +634,10 @@ func runRuntimeInvestigationRoute(args []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stderr, "case routed to %s; %s\n", routed, next)
 	return encodeJSON(stdout, map[string]any{
-		"case_id":     pointer["case_id"],
-		"route":       routed,
-		"case_path":   pointer["path"],
-		"case_sha256": pointer["sha256"],
-		"revision":    snapshot.Revision,
+		"case_id":   pointer["case_id"],
+		"route":     routed,
+		"case_path": pointer["path"],
+		"revision":  snapshot.Revision,
 	})
 }
 
@@ -669,7 +648,7 @@ func investigationRouteNextAction(route string, pointer map[string]any) string {
 	switch route {
 	case "s9_repair":
 		caseID := stringValue(pointer["case_id"])
-		return fmt.Sprintf("draft the RepairContract for Case %s in the original supplied professional application, then save to fix its final review draft; Main/system prepares the original human or bounded Driver decision application at its exact path. Record only the actual decision and professional judgments there; the original Writer supplies identity, approval hash and evidence registration. Missing application preparation belongs to Main/system, not author-created metadata", caseID)
+		return fmt.Sprintf("draft the RepairContract for Case %s in the original supplied professional application, then save to fix its final review draft; Main/system prepares the original human or bounded Driver decision application at its exact path. Record only the actual decision and professional judgments there; the original Writer supplies identity, the presented Contract and decision record. Missing application preparation belongs to Main/system, not author-created metadata", caseID)
 	case "investigate_more":
 		return "append the actual new falsifiable question to the supplied original hypotheses application, or receive its genuine professional result before routing again; original registration is supplied internally"
 	case "duplicate":
@@ -779,11 +758,10 @@ func loadCausalReassessmentEvidence(root, value string) ([]investigation.Evidenc
 			return nil, fmt.Errorf("reassessment evidence contains duplicate path %q", relative)
 		}
 		seen[relative] = struct{}{}
-		data, err := os.ReadFile(absolute)
-		if err != nil {
+		if _, err := os.Stat(absolute); err != nil {
 			return nil, fmt.Errorf("read reassessment evidence %q: %w", relative, err)
 		}
-		refs = append(refs, investigation.EvidenceReference{Path: relative, SHA256: sha256HexForArtifact(data)})
+		refs = append(refs, investigation.EvidenceReference{Path: relative})
 	}
 	return refs, nil
 }
@@ -835,12 +813,11 @@ func runRuntimeInvestigationProject(args []string, stdout, stderr io.Writer) int
 			continue
 		}
 		path := stringValue(row["path"])
-		sha := stringValue(row["sha256"])
-		if path == "" || sha == "" {
-			fmt.Fprintf(stderr, "runtime investigation project: Finding %s lacks path/sha256; refresh S7 finding projection\n", id)
+		if path == "" {
+			fmt.Fprintf(stderr, "runtime investigation project: Finding %s has no original path; inspect its existing S7 responsibility\n", id)
 			return 1
 		}
-		findingRefs = append(findingRefs, bugprojection.FindingRef{ID: id, Path: path, SHA256: sha})
+		findingRefs = append(findingRefs, bugprojection.FindingRef{ID: id, Path: path})
 	}
 	if len(findingRefs) != len(wanted) {
 		fmt.Fprintln(stderr, "runtime investigation project: runtime.entities.findings does not contain the exact Case Finding set; do not fabricate a BUG projection")
@@ -849,7 +826,7 @@ func runRuntimeInvestigationProject(args []string, stdout, stderr io.Writer) int
 	bound, _ := snapshot.State["bound_req"].(map[string]any)
 	runtimeID := stringValue(snapshot.State["runtime_id"])
 	reqID := stringValue(bound["id"])
-	result, err := bugprojection.ProjectApprovedContract(*root, bugprojection.Request{Case: bugprojection.ArtifactRef{Path: stringValue(pointer["path"]), SHA256: stringValue(pointer["sha256"])}, Contract: bugprojection.ArtifactRef{Path: stringValue(pointer["repair_contract_ref"]), SHA256: stringValue(pointer["repair_contract_sha256"])}, BugID: *bugID, RuntimeID: runtimeID, ReqID: reqID, FindingRefs: findingRefs, ReviewedBy: *reviewedBy})
+	result, err := bugprojection.ProjectApprovedContract(*root, bugprojection.Request{Case: bugprojection.ArtifactRef{Path: stringValue(pointer["path"])}, Contract: bugprojection.ArtifactRef{Path: stringValue(pointer["repair_contract_ref"])}, BugID: *bugID, RuntimeID: runtimeID, ReqID: reqID, FindingRefs: findingRefs, ReviewedBy: *reviewedBy})
 	if err != nil {
 		fmt.Fprintln(stderr, formatFailure("runtime investigation project", err))
 		return 1
@@ -933,15 +910,13 @@ func runRuntimeInvestigationIngest(args []string, stdout, stderr io.Writer) int 
 			fmt.Fprintf(stderr, "investigation ingest: warning: --emit-template failed (%v); the Case ingest itself committed — re-run the scaffold after `runtime investigation status`\n", err)
 		}
 	}
-	fmt.Fprintf(stderr, "investigation ingest: Case %s is investigating; consume S7 batch %s; next: dispatch hypothesis questions, do not create a BUG\n", pointer["case_id"], pointer["observation_batch_id"])
+	fmt.Fprintf(stderr, "investigation ingest: Case %s is investigating; next: dispatch hypothesis questions, do not create a BUG\n", pointer["case_id"])
 	return encodeJSON(stdout, map[string]any{
-		"case_id":              pointer["case_id"],
-		"path":                 pointer["path"],
-		"sha256":               pointer["sha256"],
-		"status":               pointer["status"],
-		"source_finding_ids":   pointer["source_finding_ids"],
-		"observation_batch_id": pointer["observation_batch_id"],
-		"revision":             snapshot.Revision,
+		"case_id":            pointer["case_id"],
+		"path":               pointer["path"],
+		"status":             pointer["status"],
+		"source_finding_ids": pointer["source_finding_ids"],
+		"revision":           snapshot.Revision,
 	})
 }
 
@@ -1023,10 +998,8 @@ func writeInvestigationCaseTemplate(root string, pointer map[string]any, target 
 		"template":                    "case-template",
 		"case_id":                     caseID,
 		"case_path":                   caseRel,
-		"case_sha256":                 stringValue(pointer["sha256"]),
 		"case_revision":               revision,
 		"status":                      stringValue(pointer["status"]),
-		"observation_batch_id":        stringValue(pointer["observation_batch_id"]),
 		"source_finding_ids":          sourceFindings,
 		"grouping_rationale":          caseDocument["grouping_rationale"],
 		"unexplained_finding_ids":     stringSliceAny(caseDocument["unexplained_finding_ids"]),
@@ -1065,7 +1038,6 @@ func runRuntimeInvestigationContractApprove(args []string, stdout, stderr io.Wri
 	caseID := flags.String("case-id", "", "active InvestigationCase id")
 	contractPath := flags.String("file", "", "draft RepairContract path")
 	approvedBy := flags.String("approved-by", "", "approving human or orchestrator identity")
-	approvalHash := flags.String("approval-hash", "", "sha256 of the exact draft reviewed by the approver")
 	approvalEvidenceID := flags.String("approval-evidence-id", "", "valid human_decision evidence, or repair_contract_review when --delegation-evidence-id is set")
 	delegationEvidenceID := flags.String("delegation-evidence-id", "", "optional explicit human grant for bounded repair; no grant means human approval remains required")
 	occurredAtValue := flags.String("occurred-at", "", "RFC3339 transition time")
@@ -1078,8 +1050,8 @@ func runRuntimeInvestigationContractApprove(args []string, stdout, stderr io.Wri
 	if err := parseWorkspaceFlags(flags, args); err != nil {
 		return 2
 	}
-	if strings.TrimSpace(*caseID) == "" || strings.TrimSpace(*contractPath) == "" || strings.TrimSpace(*approvedBy) == "" || strings.TrimSpace(*approvalHash) == "" || strings.TrimSpace(*approvalEvidenceID) == "" {
-		fmt.Fprintln(stderr, "runtime investigation contract approve requires --case-id, --file, --approved-by, --approval-hash and --approval-evidence-id; approval is the S8→S9 authority transaction")
+	if strings.TrimSpace(*caseID) == "" || strings.TrimSpace(*contractPath) == "" || strings.TrimSpace(*approvedBy) == "" || strings.TrimSpace(*approvalEvidenceID) == "" {
+		fmt.Fprintln(stderr, "runtime investigation contract approve requires --case-id, --file, --approved-by and --approval-evidence-id; approval is the S8→S9 authority transaction")
 		return 2
 	}
 	var occurredAt time.Time
@@ -1096,7 +1068,6 @@ func runRuntimeInvestigationContractApprove(args []string, stdout, stderr io.Wri
 		CaseID:               strings.TrimSpace(*caseID),
 		ContractPath:         *contractPath,
 		ApprovedBy:           *approvedBy,
-		ApprovalHash:         strings.TrimSpace(*approvalHash),
 		ApprovalEvidenceID:   strings.TrimSpace(*approvalEvidenceID),
 		DelegationEvidenceID: strings.TrimSpace(*delegationEvidenceID),
 		OccurredAt:           occurredAt,
@@ -1115,14 +1086,12 @@ func runRuntimeInvestigationContractApprove(args []string, stdout, stderr io.Wri
 	pointer := investigationPointer(snapshot.State)
 	fmt.Fprintf(stderr, "repair contract approve: %s is approved for Case %s; original S9 entry prepared. Main continues: %s\n", pointer["repair_contract_ref"], pointer["case_id"], repairNextAction(snapshot.State, stringValue(mapFieldCLI(snapshot.State, "lifecycle")["phase"])))
 	return encodeJSON(stdout, map[string]any{
-		"case_id":                pointer["case_id"],
-		"case_path":              pointer["path"],
-		"case_sha256":            pointer["sha256"],
-		"case_revision":          pointer["revision"],
-		"status":                 pointer["status"],
-		"repair_contract_ref":    pointer["repair_contract_ref"],
-		"repair_contract_sha256": pointer["repair_contract_sha256"],
-		"revision":               snapshot.Revision,
+		"case_id":             pointer["case_id"],
+		"case_path":           pointer["path"],
+		"case_revision":       pointer["revision"],
+		"status":              pointer["status"],
+		"repair_contract_ref": pointer["repair_contract_ref"],
+		"revision":            snapshot.Revision,
 	})
 }
 
@@ -1249,7 +1218,6 @@ func investigationCaseAggregate(root string, runtimeRevision int) (map[string]an
 		board, boardErr := investigationStatusBoard(root, map[string]any{
 			"case_id":  id,
 			"path":     relPath,
-			"sha256":   sha256HexForArtifact(data),
 			"revision": revision,
 		}, nil)
 		if boardErr != nil {
@@ -1309,14 +1277,6 @@ func investigationStatusBoard(root string, pointer map[string]any, state map[str
 	data, err := os.ReadFile(resolveRootPath(root, path))
 	if err != nil {
 		return nil, fmt.Errorf("read active InvestigationCase %s: %w", path, err)
-	}
-	expectedSHA := stringValue(pointer["sha256"])
-	if expectedSHA == "" {
-		return nil, fmt.Errorf("active InvestigationCase pointer has no sha256 for %s; reconcile the Runtime pointer before continuing", path)
-	}
-	actualSHA := sha256HexForArtifact(data)
-	if actualSHA != expectedSHA {
-		return nil, fmt.Errorf("active InvestigationCase %s sha256 drifted: Runtime pins %s but disk is %s; restore the pinned artifact or run runtime reconcile", path, expectedSHA, actualSHA)
 	}
 	var document map[string]any
 	if err := json.Unmarshal(data, &document); err != nil {
@@ -1442,40 +1402,21 @@ func investigationStatusBoard(root string, pointer map[string]any, state map[str
 		case unissuedDispatchedHypothesis:
 			nextAction = "The Hook listener prepares the dispatched Investigator questionnaire and supplies its exact paths; queued Assignments wait for dispatch"
 		case issuedHypothesisResult:
-			nextAction = "Main passes the exact view_path and answer_path from hypothesis_result_packets into native Agent; the Investigator reads actual sources, saves the professional answer and returns its exact reference. SubagentStop invokes the original Case consumer; ordinary saves do not receive native results. Already registered frozen executions keep their original source/save consumer. Inspect the original receipt with its receipt_command"
+			nextAction = "Main passes the exact view_path and answer_path from hypothesis_result_packets into native Agent; the Investigator reads actual sources and saves the professional answer at its original path. Natural PreToolUse, successful PostToolUse and SubagentStop invoke the original Case consumer; ordinary tools remain available and no return-reference action is required. Already registered frozen executions keep their original source/save consumer. Inspect the original receipt with its receipt_command"
 		}
 	}
 	if route := stringValue(document["route"]); route != "" && !issuedHypothesisResult && !unissuedDispatchedHypothesis && !packetProjectionProblem {
 		nextAction = investigationRouteNextAction(route, pointer)
 	}
-	// Aggregate historical Cases have no active Runtime configuration; do not
-	// project a guessed budget for them.
-	var reentryBudget *investigation.InvestigationBudgetStatus
-	if state != nil {
-		budget, err := investigation.InvestigationReentryBudget(state, document)
-		if err != nil {
-			return nil, err
-		}
-		reentryBudget = &budget
-		if budget.Exhausted && stringValue(document["route"]) == "investigate_more" {
-			nextAction += "; consecutive investigate_more route-registration budget is exhausted. Continue actual investigation in this Case through the supplied questions and original result consumer; submit a disposition only when evidence supports it. Do not resubmit investigate_more or invent another disposition to bypass the limit"
-		}
-	}
 	// RC-18 S8-H3: surface the baseline-drift warning on the status board so
 	// the investigator sees the stale-baseline fact at read time, not only in
 	// the journal message recorded by the last Case revision.
-	var baselineDrift string
-	if reviewMap := mapFieldCLI(state, "review"); reviewMap != nil {
-		baselineDrift = stringValue(reviewMap["investigation_baseline_drift"])
-	}
 	return map[string]any{
 		"case_id":                 stringValue(pointer["case_id"]),
 		"status":                  stringValue(document["status"]),
 		"route":                   stringValue(document["route"]),
 		"source_finding_ids":      sourceFindingIDs,
 		"unexplained_finding_ids": unexplained,
-		"baseline_digest":         stringValue(document["baseline_digest"]),
-		"baseline_drift_warning":  baselineDrift,
 		"hypothesis_summary": map[string]any{
 			"total":            len(hypotheses),
 			"pending":          pendingHypotheses,
@@ -1483,16 +1424,9 @@ func investigationStatusBoard(root string, pointer map[string]any, state map[str
 			"completed":        completedHypotheses,
 			"dispatch_unknown": unknownDispatchHypotheses,
 		},
-		"investigation_reentry_budget": reentryBudget,
-		"hypothesis_result_packets":    hypothesisResultPackets,
-		"ready_for_contract":           len(unexplained) == 0 && stringValue(document["route"]) == "s9_repair",
-		"next_action":                  nextAction,
+		"hypothesis_result_packets": hypothesisResultPackets,
+		"next_action":               nextAction,
 	}, nil
-}
-
-func sha256HexForArtifact(data []byte) string {
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:])
 }
 
 func objectSliceAny(value any) []map[string]any {

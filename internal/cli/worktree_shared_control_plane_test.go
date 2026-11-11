@@ -8,11 +8,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
 	"strings"
 	"testing"
 
 	"github.com/entroforge/go-system-builder/internal/cli"
+	"github.com/entroforge/go-system-builder/internal/review"
 	"github.com/entroforge/go-system-builder/internal/schema"
 )
 
@@ -160,10 +160,11 @@ func minimalReviewPlan(t *testing.T, dir, planID string) string {
 	plan := map[string]any{
 		"schema_version":      "1.0.0",
 		"review_plan_id":      planID,
-		"review_round":        1,
 		"baseline_generation": 1,
 		"frozen_subjects": []any{
-			map[string]any{"path": "internal/example/service.go", "sha256": fmt.Sprintf("%x", sha256.Sum256(subjectBytes)), "kind": "product_code"},
+			// Existing frozen references carry no digest. The machine does not
+			// certify file content from a path and a version.
+			map[string]any{"path": "internal/example/service.go", "kind": "product_code"},
 		},
 		"claims": []any{
 			map[string]any{
@@ -216,10 +217,16 @@ func minimalReviewPlan(t *testing.T, dir, planID string) string {
 	return path
 }
 
-// §14.1: review-plan registered from a worktree with --root pointed at
-// the project root → .claude/loop-state.json + .claude/review/plans/...
-// land ONLY under the project root. The worktree has its own checked-out
-// .claude/ but no plan / state mutation occurs there.
+// §14.1: the ReviewPlan is received through the original consumer against the
+// authoritative root, so the registered plan lands ONLY under the project root.
+// The worktree has its own checked-out .claude/ but must not grow a second
+// running state.
+//
+// The manual `runtime review-plan` registration command is gone: Main saves
+// the Hook-provided questionnaire and the original consumer receives it
+// (L3-S7 §7.1, L4-workflow-convergence §"接线与验收"). The authoritative root
+// still owns the Runtime: a Worker checkout is not a second control plane
+// (L4-state-transition-core §2.2).
 func TestReviewPlanFromWorktreeWritesToSharedControlPlane(t *testing.T) {
 	root := worktreeProjectRoot(t)
 
@@ -233,29 +240,56 @@ func TestReviewPlanFromWorktreeWritesToSharedControlPlane(t *testing.T) {
 		t.Fatalf("worktree must carry a checked-out state to prove the divergence, got %v", err)
 	}
 
-	// Write the plan in the worktree (simulating the Worker authoring
-	// it in its own checkout) and run review-plan with --root=root.
-	planPath := minimalReviewPlan(t, worktreePath, "review-plan-worktree")
+	// The authoritative root owns the current ReviewPlan identity.
+	state := stageSnapshot(t, root).State
+	state["review"].(map[string]any)["round_entry"] = map[string]any{
+		"plan_id": "review-plan-worktree", "transition_id": "TR-006",
+		"baseline_generation": 1, "change_impact_ref": nil,
+	}
+	raw, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".claude", "loop-state.json"), raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	path := review.PlanQuestionnairePath(root, state)
 
-	var stdout, stderr bytes.Buffer
-	code := cli.Run([]string{
-		"runtime", "review-plan",
-		"--root", root,
-		"--state", ".claude/loop-state.json",
-		"--journal", ".claude/loop-events.jsonl",
-		"--expected-revision", "1",
-		"--file", planPath,
-	}, strings.NewReader(""), &stdout, &stderr)
-	if code != 0 {
-		t.Fatalf("review-plan from worktree failed: code=%d stderr=%s stdout=%s",
-			code, stderr.String(), stdout.String())
+	// The Worker authored a plan in its own checkout. Its copy carries a
+	// different Plan identity, so a consumer that read the worktree copy
+	// would register the wrong Plan.
+	localPath := review.PlanQuestionnairePath(worktreePath, state)
+	localPlan := minimalReviewPlan(t, worktreePath, "review-plan-worktree-local")
+	localData, err := os.ReadFile(localPlan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(localPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(localPath, localData, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Main saves the professional plan at the authoritative questionnaire path.
+	authored := minimalReviewPlan(t, worktreePath, "review-plan-worktree")
+	data, err := os.ReadFile(authored)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	out := worktreeSharedControlPlaneHook(t, root, "PreToolUse", path)
+	if !strings.Contains(out, "review-plan: registered review-plan-worktree") {
+		t.Fatalf("original consumer did not receive the authoritative Plan: %s", out)
 	}
 
 	// The shared control plane lives under the project root.
-	planFile := filepath.Join(root, ".claude", "review", "plans", "review-plan-worktree.json")
-	if _, err := os.Stat(planFile); err != nil {
-		t.Fatalf("shared plan file missing under project root: %v", err)
-	}
 	rootState, err := os.ReadFile(filepath.Join(root, ".claude", "loop-state.json"))
 	if err != nil {
 		t.Fatal(err)
@@ -264,13 +298,13 @@ func TestReviewPlanFromWorktreeWritesToSharedControlPlane(t *testing.T) {
 	if err := json.Unmarshal(rootState, &rootMap); err != nil {
 		t.Fatal(err)
 	}
-	review, _ := rootMap["review"].(map[string]any)
-	if review == nil {
-		t.Fatal("project-root state.review missing after worktree-driven register")
+	reviewFacts, _ := rootMap["review"].(map[string]any)
+	if reviewFacts == nil {
+		t.Fatal("project-root state.review missing after the original consumer received the Plan")
 	}
-	planPointer, _ := review["plan"].(map[string]any)
+	planPointer, _ := reviewFacts["plan"].(map[string]any)
 	if planPointer == nil {
-		t.Fatal("project-root state.review.plan missing — register did not pin under root")
+		t.Fatal("project-root state.review.plan missing — the Plan did not land under the authoritative root")
 	}
 	if pointerID, _ := planPointer["plan_id"].(string); pointerID != "review-plan-worktree" {
 		t.Fatalf("pointer plan_id = %q, want review-plan-worktree", pointerID)
@@ -298,98 +332,41 @@ func TestReviewPlanFromWorktreeWritesToSharedControlPlane(t *testing.T) {
 	}
 }
 
-// §14.1: review-result submit from a worktree with --root pointed at the
-// project root → the consumed Result row lands under root/.claude/,
-// NEVER under the worktree's .claude/.
+// §14.1: the Reviewer answer is received through the original consumer, and
+// the answer coordinate belongs to the authoritative root. The removed
+// `runtime review-result submit` route must not come back, and the issued
+// answer path must never point into a Worker checkout
+// (L3-S7 §7.1, L4-state-transition-core §2.2).
 func TestReviewResultFromWorktreeWritesToSharedControlPlane(t *testing.T) {
 	root := worktreeProjectRoot(t)
 	worktreePath := filepath.Join(t.TempDir(), "wt")
 	runGit(t, root, "worktree", "add", "-b", "wt/test", worktreePath, "HEAD")
 
-	// Register a plan under the project root first.
-	planPath := minimalReviewPlan(t, worktreePath, "review-plan-worktree-result")
-	var stdout, stderr bytes.Buffer
-	if code := cli.Run([]string{
-		"runtime", "review-plan",
-		"--root", root,
-		"--state", ".claude/loop-state.json",
-		"--journal", ".claude/loop-events.jsonl",
-		"--expected-revision", "1",
-		"--file", planPath,
-	}, strings.NewReader(""), &stdout, &stderr); code != 0 {
-		t.Fatalf("register plan: code=%d stderr=%s", code, stderr.String())
+	// The manual submission route is gone; the original consumer receives
+	// the saved answer.
+	var removedOut, removedErr bytes.Buffer
+	if code := cli.Run([]string{"runtime", "review-result", "submit", "--root", root, "--result", "review-result.json"}, strings.NewReader(""), &removedOut, &removedErr); code == 0 {
+		t.Fatalf("removed review-result submit route is still accepted: %s", &removedOut)
+	} else if !strings.Contains(removedErr.String(), "unknown runtime command") {
+		t.Fatalf("removed review-result submit route was not reported as an unknown runtime command: %d %s", code, &removedErr)
 	}
 
-	// Simulate the Worker dispatching the DV Assignment. We hand-update
-	// the shared state — this is exactly what runtime register-workgroup
-	// would do, but we're testing the control plane, not the dispatch
-	// validator (that's covered in internal/assignment/review_bind_lock_test.go).
-	markAssignmentDispatched(t, root, "assignment-dv-1", "agent-wt")
-
-	// Now simulate writing the Result in the worktree and submitting
-	// through the shared control plane.
-	digest := subjectDigestFor(t, root)
-	result := map[string]any{
-		"schema_version":      "1.0.0",
-		"result_id":           "review-result-worktree",
-		"assignment_id":       "assignment-dv-1",
-		"assignment_revision": 1,
-		"review_plan_id":      "review-plan-worktree-result",
-		"review_round":        1,
-		"baseline_generation": 1,
-		"producer_agent_id":   "agent-wt",
-		"subject_digest":      digest,
-		"claim_results": []any{
-			map[string]any{
-				"claim_id":      "claim-dv-1",
-				"conclusion":    "pass",
-				"observed":      "trace passes",
-				"evidence_refs": []string{typedEvidenceRef(t, root, "dv.md")},
-			},
-		},
-		"verdict": "pass",
+	// The current reception route is the natural Hook path through the
+	// original ReviewResult consumer; no manual submission command exists.
+	var catalog, catalogErr bytes.Buffer
+	if code := cli.Run([]string{"actions"}, nil, &catalog, &catalogErr); code != 0 {
+		t.Fatalf("actions catalog failed: %d %s", code, &catalogErr)
 	}
-	resultBytes, err := json.MarshalIndent(result, "", "  ")
-	if err != nil {
-		t.Fatal(err)
+	if !strings.Contains(catalog.String(), "through the original ReviewResult consumer") {
+		t.Fatalf("action catalog lost the original ReviewResult consumer route: %s", &catalog)
 	}
-	wtResultPath := filepath.Join(worktreePath, "review-result.json")
-	if err := os.WriteFile(wtResultPath, append(resultBytes, '\n'), 0o644); err != nil {
-		t.Fatal(err)
+	if strings.Contains(catalog.String(), "runtime review-result") {
+		t.Fatalf("action catalog still advertises the removed manual ReviewResult submission: %s", &catalog)
 	}
 
-	stdout.Reset()
-	stderr.Reset()
-	if code := cli.Run([]string{
-		"runtime", "review-result", "submit",
-		"--root", root,
-		"--state", ".claude/loop-state.json",
-		"--journal", ".claude/loop-events.jsonl",
-		"--expected-revision", "2",
-		"--assignment-id", "assignment-dv-1",
-		"--result", wtResultPath,
-	}, strings.NewReader(""), &stdout, &stderr); code != 0 {
-		t.Fatalf("review-result submit from worktree: code=%d stderr=%s stdout=%s",
-			code, stderr.String(), stdout.String())
-	}
-
-	// The Result row + claim disposition must live under the project
-	// root state, never under the worktree's.
-	rootState, err := os.ReadFile(filepath.Join(root, ".claude", "loop-state.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var rootMap map[string]any
-	if err := json.Unmarshal(rootState, &rootMap); err != nil {
-		t.Fatal(err)
-	}
-	rootReview := rootMap["review"].(map[string]any)
-	rootClaims := rootReview["claims"].(map[string]any)
-	dv := rootClaims["claim-dv-1"].(map[string]any)
-	if dv["disposition"] != "pass" {
-		t.Fatalf("claim-dv-1 disposition = %v, want pass (Result must land under project root)", dv["disposition"])
-	}
-
+	// The worktree's own .claude/loop-state.json must remain at the
+	// original revision (1) — the Worker did not write a second running
+	// state into its checkout.
 	wtStatePath := filepath.Join(worktreePath, ".claude", "loop-state.json")
 	wtStateBytes, err := os.ReadFile(wtStatePath)
 	if err != nil {
@@ -410,6 +387,18 @@ func TestReviewResultFromWorktreeWritesToSharedControlPlane(t *testing.T) {
 			}
 		}
 	}
+}
+
+// worktreeSharedControlPlaneHook forwards the real installed Hook event for
+// the shared control plane tests.
+func worktreeSharedControlPlaneHook(t *testing.T, root, event, path string) string {
+	t.Helper()
+	body, _ := json.Marshal(map[string]any{"hook_event_name": event, "cwd": root, "tool_name": "Write", "tool_input": map[string]any{"file_path": path}})
+	var out, diagnostic bytes.Buffer
+	if code := cli.Run([]string{"hook", "--root", root, "--event", event}, bytes.NewReader(body), &out, &diagnostic); code != 0 {
+		t.Fatalf("%s hook failed %d: %s %s", event, code, &out, &diagnostic)
+	}
+	return out.String()
 }
 
 // markAssignmentDispatched writes the projection row's status/agent_id
@@ -439,7 +428,7 @@ func markAssignmentDispatched(t *testing.T, root, assignmentID, agentID string) 
 	// real registration and selected-method delivery have separate integration tests.
 	manifest := map[string]any{
 		"runtime_id": state["runtime_id"], "baseline_generation": state["baseline"].(map[string]any)["generation"],
-		"review_round": state["review"].(map[string]any)["round"], "workgroup_id": teamID, "workgroup_kind": kind,
+		"workgroup_id": teamID, "workgroup_kind": kind,
 		"assignments": []any{map[string]any{"assignment_id": assignmentID, "agent_id": agentID, "role_family": role, "claim_ids": row["claim_ids"], "skill_refs": []string{}}},
 	}
 	manifestData, err := json.MarshalIndent(manifest, "", "  ")
@@ -453,7 +442,7 @@ func markAssignmentDispatched(t *testing.T, root, assignmentID, agentID string) 
 		t.Fatal(err)
 	}
 	teams, _ := state["entities"].(map[string]any)["teams"].([]any)
-	team := map[string]any{"id": teamID, "platform_team_id": teamID, "kind": kind, "status": "planned", "manifest_ref": manifestRef, "responsibility_ids": []any{}, "agent_ids": []any{agentID}, "review_round": state["review"].(map[string]any)["round"]}
+	team := map[string]any{"id": teamID, "platform_team_id": teamID, "kind": kind, "status": "planned", "manifest_ref": manifestRef, "responsibility_ids": []any{}, "agent_ids": []any{agentID}}
 	if state["schema_version"] != "1.1.0" {
 		team["manifest_sha256"] = fmt.Sprintf("%x", sha256.Sum256(manifestData))
 	}
@@ -539,35 +528,6 @@ func TestReviewPlanWithoutExplicitRootWritesToCwdNotProjectRoot(t *testing.T) {
 	_ = code
 	_ = stdout
 	_ = stderr
-}
-
-// subjectDigestFor computes the same sha256 that review.SubjectDigest
-// produces. The shared control plane keeps frozen_subjects per plan, so
-// the result's subject_digest must equal this digest or the runtime
-// rejects it.
-func subjectDigestFor(t *testing.T, root string) string {
-	t.Helper()
-	planBytes, err := os.ReadFile(filepath.Join(root, ".claude", "review", "plans",
-		"review-plan-worktree-result.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var plan struct {
-		FrozenSubjects []struct {
-			Path   string `json:"path"`
-			SHA256 string `json:"sha256"`
-		} `json:"frozen_subjects"`
-	}
-	if err := json.Unmarshal(planBytes, &plan); err != nil {
-		t.Fatal(err)
-	}
-	paths := make([]string, 0, len(plan.FrozenSubjects))
-	for _, fs := range plan.FrozenSubjects {
-		paths = append(paths, fs.Path+":"+fs.SHA256)
-	}
-	sort.Strings(paths)
-	joined := strings.Join(paths, "\n")
-	return fmt.Sprintf("%x", sha256.Sum256([]byte(joined)))
 }
 
 func intFieldValue(value any) int {

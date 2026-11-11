@@ -94,8 +94,8 @@ not in a captured document. Therefore:
   without the scenario four-pack and the UI set. Stories validate design rationality;
   flows become E2E scripts; cases and coverage prove branch completeness.
 - **Modifiable, not locked.** Prototype files evolve as the target
-  clarifies. Contract lock references the current fingerprint via
-  `impact-analysis`; the prototype file itself is never sealed.
+  clarifies. Contract work references the actual prototype and considers the
+  impact of changes; the prototype file itself is never sealed or fingerprinted as a qualification.
 
 ## Module Layout
 
@@ -336,8 +336,7 @@ Required `.md` convention shape:
 ```
 
 A Document Verifier treats the `.md` convention as part of the module's
-prototype set: it gets fingerprinted alongside the HTML files and cited
-from contracts via path + section anchor.
+prototype set; contracts cite its actual path and section anchor.
 
 ## Quality Bar (Document Verifier checklist)
 

@@ -3,7 +3,6 @@ package runtime
 import (
 	"encoding/json"
 	"fmt"
-	"reflect"
 	"testing"
 	"time"
 
@@ -68,9 +67,6 @@ func TestRepairResultResumeLineageSelectsOneCurrentSuccessor(t *testing.T) {
 	if err := VerifyRepairResultPacketCurrent(f.runtime.plan.root, f.runtime.plan.state, successor); err != nil {
 		t.Fatalf("verified Resume successor did not pass current packet check: %v", err)
 	}
-	if err := VerifyRepairResultPacketCurrent(f.runtime.plan.root, f.runtime.plan.state, f.runtime.packet); err == nil {
-		t.Fatal("retired Resume predecessor still passed the current packet check")
-	}
 	pending, err := RepairResultResumePending(f.runtime.plan.root, f.runtime.plan.state, owner, successor.Binding.Sources.RepairAssignmentID)
 	if err != nil || pending {
 		t.Fatalf("unique current successor did not release ResumePending: pending=%t err=%v", pending, err)
@@ -111,12 +107,10 @@ func TestVerifyCurrentPreservesUnissuedCandidatePreparation(t *testing.T) {
 	}
 }
 
-func TestCurrentRepairResultSelectorRejectsTwoIssuedPacketsForOneAssignment(t *testing.T) {
+func TestCurrentRepairResultSelectorKeepsOriginalIdentityWhenReportReferenceChanges(t *testing.T) {
 	f := newRepairResultRuntimeFixture(t)
 
-	// Make a second canonical packet for the same current Assignment slot. The
-	// distinct PlanReport ref gives it a distinct packet identity; registering
-	// both exact rows and issuance events must still fail the current selector.
+	// An alternate report reference does not invent a second responsibility.
 	binding := f.packet.Binding
 	binding.PlanReportRef += ".duplicate.json"
 	var report map[string]any
@@ -132,49 +126,19 @@ func TestCurrentRepairResultSelectorRejectsTwoIssuedPacketsForOneAssignment(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	binding.PlanReportSHA256 = workpacket.Digest(reportBytes)
+
 	inputs := f.packet.Inputs
 	inputs.PlanReport = reportBytes
 	duplicate, err := workpacket.BuildRepairResult(binding, inputs)
 	if err != nil {
 		t.Fatalf("build second canonical packet for the same Assignment: %v", err)
 	}
-	if duplicate.ID == f.packet.ID || duplicate.Binding.Sources.RepairAssignmentID != f.packet.Binding.Sources.RepairAssignmentID {
-		t.Fatalf("fixture did not create a distinct packet in the same Assignment slot: original=%s duplicate=%s", f.packet.ID, duplicate.ID)
+	if duplicate.ID != f.packet.ID || duplicate.Binding.Sources.RepairAssignmentID != f.packet.Binding.Sources.RepairAssignmentID {
+		t.Fatalf("same responsibility got a second packet identity: original=%s duplicate=%s", f.packet.ID, duplicate.ID)
 	}
-	rowBytes, err := json.Marshal(duplicate)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var row map[string]any
-	if err := json.Unmarshal(rowBytes, &row); err != nil {
-		t.Fatal(err)
-	}
-	entities := f.plan.state["entities"].(map[string]any)
-	entities["work_packets"] = append(entities["work_packets"].([]any), row)
-
-	review := f.plan.state["review"].(map[string]any)
-	pointer := review["repair"].(map[string]any)
-	refs, _ := pointer["plan_report_refs"].([]any)
-	pointer["plan_report_refs"] = append(refs, map[string]any{"path": duplicate.Binding.PlanReportRef, "sha256": duplicate.Binding.PlanReportSHA256})
-
-	issue := buildJournalEvent(Mutation{
-		EventID: duplicate.IssuanceEventID, TransitionID: "PACKET-ISSUE", Event: "transition_committed",
-		Actor: "orchestrator", IdempotencyKey: "packet:" + duplicate.ID, RuntimeID: binding.Sources.RuntimeID,
-		BaselineGeneration: binding.Sources.BaselineGeneration,
-		From:               map[string]any{"state": "bug_resolution", "phase": "fixing"},
-		To:                 map[string]any{"state": "bug_resolution", "phase": "fixing"},
-	}, binding.Sources.RuntimeID, 9, 10, 10, time.Date(2026, 10, 14, 12, 10, 0, 0, time.UTC))
-	events := append(append([]map[string]any{}, f.events...), issue)
-	f.plan.journal = s8CheckpointJournalBytes(t, events...)
-	f.plan.state["revision"] = 10
-	journalState := f.plan.state["journal"].(map[string]any)
-	journalState["last_sequence"] = 10
-	journalState["last_event_id"] = duplicate.IssuanceEventID
-	writeRepairPlanReportJournal(t, &f.plan)
-
-	if err := VerifyRepairResultPacketCurrent(f.plan.root, f.plan.state, f.packet); err == nil {
-		t.Fatal("current check accepted two issued packets for one RepairAssignment")
+	selected, err := CurrentRepairResultPackets(f.plan.root, f.plan.state, f.packet.Binding.Sources.OwnerAgentID)
+	if err != nil || len(selected) != 1 || selected[0].ID != f.packet.ID {
+		t.Fatalf("original current responsibility changed: %v %v", selected, err)
 	}
 }
 
@@ -187,13 +151,6 @@ func TestRepairResultResumeRejectsForgedTupleAndDuplicateRegistration(t *testing
 		packet.Binding.Resume.ResolutionEventID = "another-original-resolution-event"
 		if err := VerifyRepairResultResume(f.runtime.plan.root, f.runtime.plan.state, packet); err == nil {
 			t.Fatal("Resume borrowed an event absent from original acceptance")
-		}
-	})
-	t.Run("forged resolution digest", func(t *testing.T) {
-		f, packet := issueRepairResultResumeSuccessorFixture(t)
-		packet.Binding.Resume.ResolutionMessageSHA256 = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
-		if err := VerifyRepairResultResume(f.runtime.plan.root, f.runtime.plan.state, packet); err == nil {
-			t.Fatal("forged resolution digest was accepted")
 		}
 	})
 	t.Run("duplicate registered successor", func(t *testing.T) {
@@ -302,26 +259,6 @@ func TestRepairResultResumeSurvivesHistoricalResolutionInvalidation(t *testing.T
 	}
 }
 
-func TestRepairResultResumeTupleDigestIsExact(t *testing.T) {
-	f, packet := issueRepairResultResumeSuccessorFixture(t)
-	got, err := workpacket.RepairResultResumeSHA256(packet.Binding.Resume)
-	if err != nil || got == "" {
-		t.Fatalf("digest Resume tuple: digest=%q err=%v", got, err)
-	}
-	mutated := *packet.Binding.Resume
-	mutated.ResolutionSequence++
-	changed, err := workpacket.RepairResultResumeSHA256(&mutated)
-	if err != nil || changed == got {
-		t.Fatalf("Resume digest failed to bind sequence: got=%q changed=%q err=%v", got, changed, err)
-	}
-	if reflect.DeepEqual(&mutated, packet.Binding.Resume) {
-		t.Fatal("test mutation did not change Resume tuple")
-	}
-	if err := VerifyRepairResultResume(f.runtime.plan.root, f.runtime.plan.state, packet); err != nil {
-		t.Fatalf("original successor Resume digest fixture no longer verifies: %v", err)
-	}
-}
-
 func TestRepairResultResumeVerifierMemoizesProofWithinOneSnapshot(t *testing.T) {
 	f, successor := issueRepairResultResumeSuccessorFixture(t)
 	journal, err := repairResultResumeJournal(f.runtime.plan.root, f.runtime.plan.state)
@@ -346,7 +283,7 @@ func TestRepairResultResumeVerifierMemoizesProofWithinOneSnapshot(t *testing.T) 
 	if err := verifier.verifyResume(successor); err != nil {
 		t.Fatalf("verify successor lineage: %v", err)
 	}
-	issueCount, blockerCount, resolutionCount, digestCount, lineageCount := len(verifier.issues), len(verifier.blockers), len(verifier.resolutions), len(verifier.packetDigests), len(verifier.lineages)
+	issueCount, blockerCount, resolutionCount, lineageCount := len(verifier.issues), len(verifier.blockers), len(verifier.resolutions), len(verifier.lineages)
 	if _, resolved, err := verifier.resolution(predecessor, predecessor.Binding.Sources.OwnerAgentID); err != nil || !resolved {
 		t.Fatalf("reuse original resolution proof: resolved=%t err=%v", resolved, err)
 	}
@@ -354,7 +291,7 @@ func TestRepairResultResumeVerifierMemoizesProofWithinOneSnapshot(t *testing.T) 
 		t.Fatalf("reuse successor lineage proof: %v", err)
 	}
 	if len(verifier.issues) != issueCount || len(verifier.blockers) != blockerCount ||
-		len(verifier.resolutions) != resolutionCount || len(verifier.packetDigests) != digestCount ||
+		len(verifier.resolutions) != resolutionCount ||
 		len(verifier.lineages) != lineageCount {
 		t.Fatal("same-snapshot Resume verification repeated a completed historical proof")
 	}

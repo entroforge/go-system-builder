@@ -30,13 +30,11 @@ func TestPendingCandidateCannotSwitchAuthorityWithCurrentState(t *testing.T) {
 	candidate := readJSONMapRuntimeTest(t, statePath)
 	bindAuthorityWorkspaceTest(t, candidate, otherRoot)
 	marker := map[string]any{
-		"schema_version":        "1.0.0",
-		"previous_state_sha256": sha256HexForTest(mustRead(t, statePath)),
-		"previous_revision":     1,
-		"state_sha256":          sha256HexForTest(mustJSON(t, candidate)),
-		"state":                 candidate,
+		"schema_version":    "1.0.0",
+		"previous_revision": 1,
+		"state":             candidate,
 	}
-	markerPath := statePath + ".fingerprint-pending.json"
+	markerPath := statePath + ".commit-pending.json"
 	writeJSONMapRuntimeTest(t, markerPath, marker)
 	markerBefore := mustRead(t, markerPath)
 
@@ -62,15 +60,12 @@ func TestPendingCandidateCannotSwitchAuthorityWithoutCurrentState(t *testing.T) 
 	writeState(t, statePath, 1)
 	candidate := readJSONMapRuntimeTest(t, statePath)
 	bindAuthorityWorkspaceTest(t, candidate, t.TempDir())
-	stateBytes := mustJSON(t, candidate)
 	marker := map[string]any{
-		"schema_version":        "1.0.0",
-		"previous_state_sha256": "",
-		"previous_revision":     0,
-		"state_sha256":          sha256HexForTest(stateBytes),
-		"state":                 candidate,
+		"schema_version":    "1.0.0",
+		"previous_revision": 0,
+		"state":             candidate,
 	}
-	markerPath := statePath + ".fingerprint-pending.json"
+	markerPath := statePath + ".commit-pending.json"
 	writeJSONMapRuntimeTest(t, markerPath, marker)
 	if err := os.Remove(statePath); err != nil {
 		t.Fatal(err)
@@ -165,11 +160,10 @@ func TestPendingCandidateRejectsRetiredRequirementPath(t *testing.T) {
 	writeState(t, statePath, 1)
 	candidate := readJSONMapRuntimeTest(t, statePath)
 	candidate["bound_req"] = map[string]any{"path": "docs/product/requirements/REQ-001.md"}
-	stateBytes := mustJSON(t, candidate)
-	markerPath := statePath + ".fingerprint-pending.json"
+	markerPath := statePath + ".commit-pending.json"
 	writeJSONMapRuntimeTest(t, markerPath, map[string]any{
-		"schema_version": "1.0.0", "previous_state_sha256": "", "previous_revision": 0,
-		"state_sha256": sha256HexForTest(stateBytes), "state": candidate,
+		"schema_version": "1.0.0", "previous_revision": 0,
+		"state": candidate,
 	})
 	before := mustRead(t, markerPath)
 	if err := os.Remove(statePath); err != nil {

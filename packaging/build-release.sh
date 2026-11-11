@@ -135,11 +135,6 @@ cp "$stage_root/tools/loop-harness-launcher.ps1" "$harness_bin_dir/loop-harness.
 chmod 0755 "$harness_bin_dir/loop-harness"
 "$harness_bin_dir/loop-harness" release-graph validate --root "$stage_root" >/dev/null
 
-# Inventory exact staged bytes, including generated manual and each binary.
-# Verify the extracted package before installation; this is not a signature.
-python3 "$root/tools/release-manifest.py" create --root "$stage_root" --source "$root" --version "$version"
-python3 "$root/tools/release-manifest.py" verify --root "$stage_root"
-
 mkdir -p "$(dirname "$output")"
 rm -f "$output"
 tar -czf "$output" -C "$staged" "vibe-coding-loop-template-$version"

@@ -43,10 +43,9 @@ func TestS7GovernanceReturnResetsReviewProjectionAndPreservesDecision(t *testing
 	state := map[string]any{
 		"review": map[string]any{
 			"round": 5, "clean_round": 5,
-			"plan":              map[string]any{"plan_id": "plan-r5"},
-			"claims":            map[string]any{"claim-1": map[string]any{}},
-			"assignments":       map[string]any{"assignment-1": map[string]any{}},
-			"observation_batch": map[string]any{"batch_id": "batch-r5"},
+			"plan":        map[string]any{"plan_id": "plan-r5"},
+			"claims":      map[string]any{"claim-1": map[string]any{}},
+			"assignments": map[string]any{"assignment-1": map[string]any{}},
 		},
 		"evidence": []any{
 			map[string]any{"id": "decision-1", "kind": "human_decision", "status": "valid"},
@@ -64,8 +63,8 @@ func TestS7GovernanceReturnResetsReviewProjectionAndPreservesDecision(t *testing
 		t.Fatalf("action status = %q, want committed", result.Status)
 	}
 	review := state["review"].(map[string]any)
-	if review["round"] != 0 || review["clean_round"] != nil || review["plan"] != nil || review["observation_batch"] != nil {
-		t.Fatalf("review projection was not reset: %#v", review)
+	if review["round"] != 5 || review["clean_round"] != nil || review["plan"] != nil {
+		t.Fatalf("review projection or unrelated historical extension changed: %#v", review)
 	}
 	if len(review["claims"].(map[string]any)) != 0 || len(review["assignments"].(map[string]any)) != 0 {
 		t.Fatalf("review work rows were not cleared: %#v", review)

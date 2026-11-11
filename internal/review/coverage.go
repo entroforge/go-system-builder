@@ -2,14 +2,10 @@ package review
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"sort"
-	"strings"
 )
 
-// CoverageItem is a frozen planning fact, not a new Runtime state. It names an
-// object S7 must account for before a ReviewPlan can be registered.
+// CoverageItem describes a possible planning input from current work materials.
 type CoverageItem struct {
 	ID        string `json:"id"`
 	Kind      string `json:"kind"`
@@ -120,134 +116,4 @@ func legacyBuildCoverageInventory(state map[string]any) []CoverageItem {
 		}
 	}
 	return sortedCoverageItems(items)
-}
-
-func validateCoverageInventory(root string, state map[string]any, plan *Plan, contexts ...context.Context) error {
-	ctx := baselineContext(contexts)
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if err := verifyProductBaselineDeclarationContext(ctx, root, state, plan); err != nil {
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return err
-		}
-		return s7GateError(
-			"S7_PRODUCT_BASELINE",
-			"ReviewPlan does not carry the current canonical S6 product baseline",
-			[]string{err.Error()},
-			[]string{"re-draft from the pinned original TR-003 source and current official Main HEAD; do not hand-edit ProductBaseline or frozen_subjects"},
-			"loop-harness s7 draft --out plan.json",
-		)
-	}
-	return validateVerifiedCoverageInventory(root, state, plan, ctx)
-}
-
-// validateVerifiedCoverageInventory consumes only the baseline declaration
-// freshly verified by this caller. Canonical registration invokes the complete
-// coverage gate inside its Writer, so coverage and live source proof share one CAS.
-func validateVerifiedCoverageInventory(root string, state map[string]any, plan *Plan, ctx context.Context) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	// Validation and the coverage denominator consume the same synchronous
-	// projection. No verified projection is retained across a Writer boundary.
-	var projection s7BaselineProjection
-	if plan.ProductBaseline != nil {
-		// The caller freshly reconstructed every original source and
-		// proved DeepEqual with this declaration. Its Paths are therefore the
-		// same verified denominator; do not reconstruct the whole source proof
-		// again within the same validation. Writer checks remain live.
-		for _, path := range plan.ProductBaseline.Paths {
-			projection.ChangedPaths = append(projection.ChangedPaths, path.Path)
-		}
-		sort.Strings(projection.ChangedPaths)
-	} else {
-		projection = buildS7BaselineProjection(root, state, ctx)
-	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if err := validateBuiltS7BaselineProjection(root, projection); err != nil {
-		return err
-	}
-	required := coverageInventoryForProjection(projection)
-	if len(required) == 0 {
-		return nil
-	}
-	if len(plan.CoverageInventory) == 0 {
-		missing := make([]string, 0, len(required))
-		for _, item := range required {
-			missing = append(missing, item.SourceRef+" has no Coverage Inventory item")
-		}
-		return s7GateError(
-			"S7_PLAN_SURFACE_COVERAGE",
-			"ReviewPlan does not declare the complete S6 changed-surface inventory",
-			missing,
-			[]string{"restore the machine-generated coverage_inventory through original S7 preparation, then add each source_ref to at least one focused Claim"},
-			"runtime review-plan --file plan.json",
-		)
-	}
-	bySource := make(map[string]CoverageItem, len(plan.CoverageInventory))
-	for _, item := range plan.CoverageInventory {
-		if err := validateCoverageItem(item); err != nil {
-			return s7GateError(
-				"S7_PLAN_SURFACE_COVERAGE",
-				"Coverage Inventory contains an invalid item",
-				[]string{err.Error()},
-				[]string{"complete id, kind, source_ref, target and lens for every coverage_inventory item"},
-				"runtime review-plan --file plan.json",
-			)
-		}
-		if item.SourceRef == "" {
-			return s7GateError(
-				"S7_PLAN_SURFACE_COVERAGE",
-				"Coverage Inventory contains an item without source_ref",
-				[]string{"coverage_inventory item " + item.ID},
-				[]string{"set source_ref to the exact changed path or authoritative surface id"},
-				"runtime review-plan --file plan.json",
-			)
-		}
-		bySource[item.SourceRef] = item
-	}
-	claimed := map[string]bool{}
-	for _, claim := range plan.Claims {
-		for _, sourceRef := range claim.SourceRefs {
-			claimed[sourceRef] = true
-		}
-	}
-	frozen := make(map[string]bool, len(plan.FrozenSubjects))
-	for _, subject := range plan.FrozenSubjects {
-		frozen[normalizeSurface(subject.Path)] = true
-	}
-	var missing []string
-	for _, item := range required {
-		if _, ok := bySource[item.SourceRef]; !ok {
-			missing = append(missing, item.SourceRef+" is absent from coverage_inventory")
-			continue
-		}
-		if !claimed[item.SourceRef] {
-			missing = append(missing, item.SourceRef+" has no Claim source_ref")
-		}
-		if item.Kind == "changed_surface" && !frozen[normalizeSurface(item.SourceRef)] {
-			missing = append(missing, item.SourceRef+" is a changed surface but is absent from frozen_subjects")
-		}
-	}
-	if len(missing) > 0 {
-		sort.Strings(missing)
-		return s7GateError(
-			"S7_PLAN_SURFACE_COVERAGE",
-			"ReviewPlan changed-surface coverage is incomplete",
-			missing,
-			[]string{"add each missing Claim source_ref to a focused QA or E2E Claim with a specific target and oracle; restore inconsistent machine projections through original S7 preparation, never hand-edit frozen_subjects or deletion preimage SHA-256"},
-			"runtime review-plan --file plan.json",
-		)
-	}
-	return nil
-}
-
-func validateCoverageItem(item CoverageItem) error {
-	if strings.TrimSpace(item.ID) == "" || strings.TrimSpace(item.Kind) == "" || strings.TrimSpace(item.SourceRef) == "" || strings.TrimSpace(item.Target) == "" || strings.TrimSpace(item.Lens) == "" {
-		return fmt.Errorf("coverage_inventory item must include id, kind, source_ref, target and lens")
-	}
-	return nil
 }

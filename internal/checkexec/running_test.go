@@ -12,7 +12,7 @@ import (
 
 func TestRunAttemptSerializesAndNeverPublishesPass(t *testing.T) {
 	base := t.TempDir()
-	key := Hash([]byte("same actual request"))
+	key := "same-actual-request"
 	binding := Binding{RuntimeID: "runtime", Generation: 1, AssignmentID: "assignment", Owner: "builder", ExecutionGeneration: 1, Responsibility: "owned_check"}
 	first, err := BeginRun(context.Background(), base, key, binding)
 	if err != nil {
@@ -47,7 +47,7 @@ func TestRunAttemptSerializesAndNeverPublishesPass(t *testing.T) {
 
 func TestReleasedUnfinishedAttemptIsArchivedAsInterrupted(t *testing.T) {
 	base := t.TempDir()
-	key := Hash([]byte("interrupted"))
+	key := "interrupted"
 	first, err := BeginRun(context.Background(), base, key, Binding{})
 	if err != nil {
 		t.Fatal(err)
@@ -72,7 +72,7 @@ func TestReleasedUnfinishedAttemptIsArchivedAsInterrupted(t *testing.T) {
 
 func TestRunLockProcessDeathDoesNotAcceptUnfinishedDiagnostic(t *testing.T) {
 	if base := os.Getenv("GSB_CHECK_RUN_CHILD"); base != "" {
-		attempt, err := BeginRun(context.Background(), base, Hash([]byte("killed child")), Binding{})
+		attempt, err := BeginRun(context.Background(), base, "killed-child", Binding{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -84,7 +84,7 @@ func TestRunLockProcessDeathDoesNotAcceptUnfinishedDiagnostic(t *testing.T) {
 		}
 	}
 	base := t.TempDir()
-	key := Hash([]byte("killed child"))
+	key := "killed-child"
 	executable, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)

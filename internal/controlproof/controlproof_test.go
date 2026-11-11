@@ -86,13 +86,11 @@ func TestS6MainStartRequiresOriginalTR003Receipt(t *testing.T) {
 		BaselineGeneration:      1,
 		ProjectRoot:             "/repo",
 		DevelopmentBranch:       "development",
-		StartCommit:             "1111111111111111111111111111111111111111",
 		TransitionEventID:       "evt-tr003",
 		TransitionAfterRevision: 1,
 		TransitionSequence:      1,
 		TaskSet: []productbaseline.Task{{
 			TaskID: "TASK-ONE", Path: "tasks/one.md", Version: "v1",
-			SHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 		}},
 	})
 	if err != nil {
@@ -103,7 +101,7 @@ func TestS6MainStartRequiresOriginalTR003Receipt(t *testing.T) {
 	event["to"] = map[string]any{"state": "building", "phase": nil}
 	event["action_results"] = []any{map[string]any{
 		"id": "register_execution_batch", "result": "committed",
-		"detail": "registered 1 complete task(s); s6_main_start_sha256=" + start.ReceiptSHA256,
+		"detail": "registered 1 complete task(s)",
 	}}
 	journal := controlProofJournal(t, event)
 	state := map[string]any{
@@ -140,15 +138,15 @@ func TestAssignmentRevisionReceiptHelpersKeepIntentPartitionAndDTO(t *testing.T)
 		t.Fatal("revision event/idempotency identity is not partitioned by intent")
 	}
 	receipt := AssignmentRevisionReceipt{
-		IntentKey: intent, RequestDigest: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		IntentKey: intent,
 		AssignmentRecord: assignmentrecord.RecordReference{
 			RuntimeID: ref.RuntimeID, BaselineGeneration: ref.BaselineGeneration,
 			AssignmentID: ref.AssignmentID, Revision: 2,
 		},
 		PreviousRecord: ref, RuntimeEventID: eventID, RuntimeCommitRevision: 14,
 		PreviousSourceSnapshots: []assignmentrecord.SourceSnapshot{{
-			SourceRef: "tasks/one.md", SourceKind: "task", SourceSHA256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-			Path: ".claude/evidence/records/task.json", SHA256: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+			SourceRef: "tasks/one.md", SourceKind: "task",
+			Path: ".claude/evidence/records/task.json",
 		}},
 	}
 	data, err := json.Marshal(receipt)

@@ -14,7 +14,6 @@ import (
 	"github.com/entroforge/go-system-builder/internal/filelock"
 	"github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/workpacket"
-	"github.com/entroforge/go-system-builder/internal/workspace"
 )
 
 // This bounded display record is an observation, never a receipt or authority
@@ -28,7 +27,16 @@ type nativeS9Attempt struct {
 	TypedInputRef     string `json:"typed_input_ref"`
 	FailureKind       string `json:"failure_kind"`
 	ObservedAt        string `json:"observed_at"`
+	// ConsumerBoundary records the structural fact that this attempt stopped
+	// at a consumer boundary. It is encoded as "1"/"" so the diagnostic record
+	// keeps one uniform string-valued shape. The stage name stays a
+	// diagnostic label and never decides the consumer boundary.
+	ConsumerBoundary string `json:"consumer_boundary"`
 }
+
+// The consumer boundary marker is a recorded fact, not a digest: "1" means the
+// attempt stopped at the consumer of the original volume, "" means it did not.
+const nativeS9ConsumerBoundaryMark = "1"
 
 type nativeS9AttemptCapture struct {
 	root, key string
@@ -54,16 +62,27 @@ func (a *nativeS9AttemptCapture) SetResponsibilityRef(ref string) {
 
 // Mark the actual adapter/domain consumer boundary at the call site. Successful
 // consumption clears this marker before later preparation can fail.
-func (a *nativeS9AttemptCapture) EnterConsumer(stage string) { a.consumer = true; a.SetStage(stage) }
+func (a *nativeS9AttemptCapture) EnterConsumer(stage string) {
+	a.consumer = true
+	a.value.Attempt.ConsumerBoundary = nativeS9ConsumerBoundaryMark
+	a.SetStage(stage)
+}
+
 func (a *nativeS9AttemptCapture) ConsumerSucceeded() {
 	a.consumer = false
+	a.value.Attempt.ConsumerBoundary = ""
 	// Later prerequisite failures cannot inherit a successful consumer marker.
 	a.SetStage("consumer_completed")
 }
 
+// The consumer boundary is a recorded structural fact. Historical records
+// predate that field, so their recorded consumer stage names stay readable.
 func nativeS9ConsumerAttempt(a *nativeS9Attempt) bool {
 	if a == nil {
 		return false
+	}
+	if a.ConsumerBoundary == nativeS9ConsumerBoundaryMark {
+		return true
 	}
 	switch a.Stage {
 	case "flat_result_consumer", "plan_report_consumer", "typed_result_consumer", "targeted_consumer", "typed_result_saved":
@@ -80,7 +99,7 @@ func (a *nativeS9AttemptCapture) ObserveInput(path string, data []byte) {
 		a.SetInput(path)
 	}
 	if len(a.value.Files) < 16 {
-		a.value.Files[path] = workpacket.Digest(data)
+		a.value.Files[path] = "readable"
 	}
 }
 
@@ -233,11 +252,7 @@ func nativeS9DiagnosticScopeContext(ctx context.Context, root string, state map[
 		return ""
 	}
 	pointer := repairPointerCLI(state)
-	source := map[string]any{}
-	for _, field := range []string{"case_id", "case_ref", "case_sha256", "contract_id", "contract_ref", "contract_sha256", "session_id", "session_ref", "session_sha256", "plan_id", "plan_ref", "plan_sha256"} {
-		source[field] = pointer[field]
-	}
-	var responsibility any
+	var responsibility []string
 	for _, row := range objectSliceAny(mapFieldCLI(state, "entities")["work_packets"]) {
 		if row["template_id"] != "s9-plan-report-v1" || row["packet_id"] != key {
 			continue
@@ -250,10 +265,10 @@ func nativeS9DiagnosticScopeContext(ctx context.Context, root string, state map[
 		if err != nil || json.Unmarshal(data, &binding) != nil {
 			return ""
 		}
-		if binding.RuntimeID != state["runtime_id"] || binding.BaselineGeneration != workspace.Generation(state) || binding.SessionID != pointer["session_id"] || binding.PlanRef != pointer["plan_ref"] || stringMapCLI(pointer["assignment_owners"])[binding.RepairAssignmentID] != binding.OwnerAgentID {
+		if binding.RuntimeID != state["runtime_id"] || binding.SessionID != pointer["session_id"] || binding.PlanRef != pointer["plan_ref"] || stringMapCLI(pointer["assignment_owners"])[binding.RepairAssignmentID] != binding.OwnerAgentID {
 			return ""
 		}
-		responsibility = []any{key, binding}
+		responsibility = []string{key, binding.RepairAssignmentID, binding.OwnerAgentID, stringValue(row["issuance_event_id"])}
 	}
 	if responsibility == nil {
 		for assignment, owner := range stringMapCLI(pointer["assignment_owners"]) {
@@ -261,17 +276,19 @@ func nativeS9DiagnosticScopeContext(ctx context.Context, root string, state map[
 				if responsibility != nil {
 					return ""
 				}
-				responsibility = []string{assignment, owner}
+				responsibility = []string{key, assignment, owner}
 			}
 		}
 		if responsibility == nil {
 			return ""
 		}
-		source["impact_ref"], source["impact_sha256"] = pointer["impact_ref"], pointer["impact_sha256"]
 	}
-	data, err := json.Marshal([]any{state["runtime_id"], workspace.Generation(state), nestedStateValue(state, "review", "round"), source, responsibility})
+	// The scope records existing identity coordinates as actual values.  It is
+	// only a display association, not a proof of file bytes or an eligibility gate.
+	coordinates := []any{state["runtime_id"], nestedStateValue(state, "baseline", "generation"), pointer["case_id"], pointer["case_ref"], pointer["contract_id"], pointer["contract_ref"], pointer["session_id"], pointer["session_ref"], pointer["plan_id"], pointer["plan_ref"], responsibility}
+	data, err := json.Marshal(coordinates)
 	if err != nil {
 		return ""
 	}
-	return workpacket.Digest(data)
+	return string(data)
 }

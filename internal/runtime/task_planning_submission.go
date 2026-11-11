@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"time"
 
@@ -33,31 +34,26 @@ func prepareTaskPlanningSubmission(root string, state map[string]any, req Eviden
 	if err := validateStoredTaskPlanningAnswer(answer); err != nil {
 		return SubmissionRecord{}, err
 	}
-	digest, err := workpacket.TaskPlanningAnswerDigest(answer)
-	if err != nil {
-		return SubmissionRecord{}, err
-	}
-	if s.ContentHash != "" && s.ContentHash != digest {
-		return SubmissionRecord{}, fmt.Errorf("S4 content digest differs")
-	}
 	prior, accepted, err := FindSubmission(state, p.ID)
 	if err != nil {
 		return SubmissionRecord{}, err
 	}
 	if accepted {
-		if prior.ContentHash != digest {
-			return prior, ErrSubmissionConflict
-		}
 		if prior.EvidenceID != req.ID {
 			return prior, fmt.Errorf("S4 replay original domain differs")
-		}
-		if err := ValidateTaskPlanningEnvelope(p, req.ID, answer, data); err != nil {
-			return prior, err
 		}
 		rows, _ := state["evidence"].([]any)
 		for _, raw := range rows {
 			row, _ := raw.(map[string]any)
-			if row["id"] == req.ID && row["kind"] == req.Kind && row["path"] == req.Path && row["sha256"] == workpacket.Digest(data) {
+			if row["id"] == req.ID && row["kind"] == req.Kind {
+				path, _ := row["path"].(string)
+				winner, err := ReadTaskPlanningReport(root, path)
+				if err != nil {
+					return prior, err
+				}
+				if err := ValidateTaskPlanningReplay(p, req.ID, answer, winner); err != nil {
+					return prior, err
+				}
 				return prior, errSubmissionAccepted
 			}
 		}
@@ -73,8 +69,31 @@ func prepareTaskPlanningSubmission(root string, state map[string]any, req Eviden
 	if err := ValidateTaskPlanningEnvelope(p, req.ID, answer, data); err != nil {
 		return SubmissionRecord{}, err
 	}
-	key := workpacket.Digest([]byte("submission:" + p.ID))
-	return SubmissionRecord{Key: key, PacketID: p.ID, Owner: p.Binding.Owner, ContentHash: digest, EvidenceID: req.ID, FollowupID: workpacket.Digest([]byte(key + ":after-domain")), ControlStatus: "pending", OriginState: "planning", OriginPhase: "tasks", OriginEntry: p.Binding.StageEntry}, nil
+	key := "submission:" + p.ID
+	return SubmissionRecord{Key: key, PacketID: p.ID, Owner: p.Binding.Owner, EvidenceID: req.ID, FollowupID: "followup:" + p.ID, ControlStatus: "pending", OriginState: "planning", OriginPhase: "tasks", OriginEntry: p.Binding.StageEntry}, nil
+}
+
+// ValidateTaskPlanningReplay first validates the accepted report against its
+// own answer and association. Only a valid report with a different professional
+// answer is a submission conflict; unreadable or malformed reports retain their
+// actual error.
+func ValidateTaskPlanningReplay(p workpacket.TaskPlanningPacket, id string, answer workpacket.TaskPlanningAnswer, data []byte) error {
+	var recorded struct {
+		Answer workpacket.TaskPlanningAnswer `json:"task_planning_answer"`
+	}
+	if err := json.Unmarshal(data, &recorded); err != nil {
+		return err
+	}
+	if err := ValidateTaskPlanningEnvelope(p, id, recorded.Answer, data); err != nil {
+		return err
+	}
+	if err := validateStoredTaskPlanningAnswer(answer); err != nil {
+		return err
+	}
+	if err := ValidateTaskPlanningEnvelope(p, id, answer, data); err != nil {
+		return ErrSubmissionConflict
+	}
+	return nil
 }
 
 // ValidateTaskPlanningEnvelope checks readable recorded facts, not historical source proof.
@@ -107,12 +126,14 @@ func ValidateTaskPlanningEnvelope(p workpacket.TaskPlanningPacket, id string, an
 	if value.Conclusion != *value.Answer.Conclusion {
 		return fmt.Errorf("S4 record conclusion differs from answer")
 	}
-	a, err := workpacket.TaskPlanningAnswerDigest(answer)
-	if err != nil {
+	if err := validateStoredTaskPlanningAnswer(answer); err != nil {
 		return err
 	}
-	h, err := workpacket.TaskPlanningAnswerDigest(value.Answer)
-	if err != nil || a != h {
+	want := append([]string(nil), answer.TaskPaths...)
+	got := append([]string(nil), value.Answer.TaskPaths...)
+	sort.Strings(want)
+	sort.Strings(got)
+	if !reflect.DeepEqual(want, got) || *answer.Conclusion != *value.Answer.Conclusion || *answer.IndexPath != *value.Answer.IndexPath {
 		return fmt.Errorf("S4 evidence differs from professional answer")
 	}
 	return nil

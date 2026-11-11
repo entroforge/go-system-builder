@@ -35,13 +35,12 @@ func TestBUG103BugEventCommitsSchemaValidRuntime(t *testing.T) {
 	assertBUG103RuntimeFilesValid(t, statePath, journalPath)
 }
 
-func TestBUG103TaskEventCommitsSchemaValidRuntime(t *testing.T) {
+func TestBUG103TaskEventCommitsWithoutDigest(t *testing.T) {
 	root, statePath, journalPath := writeBUG103Runtime(t, map[string]any{
 		"tasks": []any{map[string]any{
 			"id":              "TASK-103",
 			"state":           "candidate",
 			"path":            "docs/dev/tasks/TASK-103.md",
-			"sha256":          "0000000000000000000000000000000000000000000000000000000000000000",
 			"owner_agent_ids": []any{"agent-builder"},
 		}},
 	})

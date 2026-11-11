@@ -47,7 +47,7 @@ func TestS10OriginalRegistrationKeepsStatusGateAndTransitionConsistent(t *testin
 				writeS10QuestionnaireFile(t, root, manifestPath, data)
 				latestID = "ev-selection-" + token
 				latestPath = "s10/selection/" + token + ".json"
-				envelope := map[string]any{"schema_version": "1.0.0", "evidence_id": latestID, "kind": "acceptance", "runtime_id": report["runtime_id"], "baseline_generation": report["baseline_generation"], "review_round": report["review_round"], "producer_agent_id": "Main", "producer_responsibility": "Acceptance", "subject_refs": []string{}, "conclusion": outcome, "audit_manifest_path": manifestPath, "audit_manifest_sha256": sha256Hex(data)}
+				envelope := map[string]any{"schema_version": "1.0.0", "evidence_id": latestID, "kind": "acceptance", "runtime_id": report["runtime_id"], "baseline_generation": report["baseline_generation"], "review_plan_id": report["review_plan_id"], "producer_agent_id": "Main", "producer_responsibility": "Acceptance", "subject_refs": []string{}, "conclusion": outcome, "audit_manifest_path": manifestPath}
 				body, err := json.Marshal(envelope)
 				if err != nil {
 					t.Fatal(err)

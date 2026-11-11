@@ -39,7 +39,7 @@ func TestImportBuildsProjectionWithoutReadingActiveState(t *testing.T) {
 	}
 	writeRecoveryImportJSON(t, root, ".claude/evidence/ev-design-001.json", evidence)
 
-	result, err := Import(root, REQBinding{ID: "REQ-001", Path: "docs/requirements/REQ-001.md", Status: "locked", Version: "v1.0.0", SHA256: sha256RecoveryImportFile(t, root, "docs/requirements/REQ-001.md")})
+	result, err := Import(root, REQBinding{ID: "REQ-001", Path: "docs/requirements/REQ-001.md", Status: "locked", Version: "v1.0.0"})
 	if err != nil {
 		t.Fatalf("Import() error = %v", err)
 	}
@@ -71,7 +71,6 @@ func TestImportRecognizesChineseRelatedRequirementPath(t *testing.T) {
 
 	result, err := Import(root, REQBinding{
 		ID: "REQ-052", Path: "docs/requirements/REQ-052.md", Status: "locked", Version: "v1.0.3",
-		SHA256: sha256RecoveryImportFile(t, root, "docs/requirements/REQ-052.md"),
 	})
 	if err != nil {
 		t.Fatalf("Import() error = %v", err)
@@ -93,7 +92,7 @@ func TestImportFindingsAreDeterministicAndLateArtifactsDoNotAdvanceCursor(t *tes
 	writeRecoveryImportFile(t, root, "docs/reports/acceptance/ACC-002.md", "# ACC-002\n\nREQ: REQ-002\nStatus: passed\nVersion: v1.0.0\n")
 	writeRecoveryImportFile(t, root, ".claude/evidence/late.json", `{"schema_version":"1.0.0","evidence_id":"ev-late","kind":"acceptance","runtime_id":"loop-REQ-002","baseline_generation":1,"producer_responsibility":"release","subject_refs":[],"conclusion":"pass"}`)
 
-	result, err := Import(root, REQBinding{ID: "REQ-002", Path: "docs/requirements/REQ-002.md", Status: "locked", Version: "v2.0.0", SHA256: sha256RecoveryImportFile(t, root, "docs/requirements/REQ-002.md")})
+	result, err := Import(root, REQBinding{ID: "REQ-002", Path: "docs/requirements/REQ-002.md", Status: "locked", Version: "v2.0.0"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +106,7 @@ func TestImportFindingsAreDeterministicAndLateArtifactsDoNotAdvanceCursor(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	repeated, err := Import(root, REQBinding{ID: "REQ-002", Path: "docs/requirements/REQ-002.md", Status: "locked", Version: "v2.0.0", SHA256: sha256RecoveryImportFile(t, root, "docs/requirements/REQ-002.md")})
+	repeated, err := Import(root, REQBinding{ID: "REQ-002", Path: "docs/requirements/REQ-002.md", Status: "locked", Version: "v2.0.0"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,29 +119,38 @@ func TestImportFindingsAreDeterministicAndLateArtifactsDoNotAdvanceCursor(t *tes
 	}
 }
 
-func TestImportRejectsMaliciousPathDigestDriftAndCorruptEvidence(t *testing.T) {
+func TestImportRejectsMaliciousPathWithoutCheckingHistoricalDigest(t *testing.T) {
 	root := t.TempDir()
 	writeRecoveryImportFile(t, root, "docs/requirements/REQ-003.md", "# REQ-003\n\nStatus: locked\nVersion: v3.0.0\n")
 	writeRecoveryImportFile(t, root, "docs/design/DESIGN-003.md", "# Design\n\nREQ: REQ-003\nStatus: locked\nVersion: v1.0.0\nSHA256: deadbeef\n")
 	writeRecoveryImportFile(t, root, ".claude/evidence/bad.json", `{"schema_version":"1.0.0","evidence_id":"ev-bad","kind":"planning_design","runtime_id":"loop-REQ-003","baseline_generation":1,"producer_agent_id":"agent-architect","producer_responsibility":"architect","subject_refs":[{"path":"../../outside.md","version":"v1","sha256":"bad"}],"conclusion":"pass"}`)
 
-	result, err := Import(root, REQBinding{ID: "REQ-003", Path: "docs/requirements/REQ-003.md", Status: "locked", Version: "v3.0.0", SHA256: sha256RecoveryImportFile(t, root, "docs/requirements/REQ-003.md")})
+	result, err := Import(root, REQBinding{ID: "REQ-003", Path: "docs/requirements/REQ-003.md", Status: "locked", Version: "v3.0.0"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(result.Evidence) != 0 {
 		t.Fatalf("corrupt evidence entered trusted projection: %#v", result.Evidence)
 	}
-	if len(result.Findings) < 2 {
-		t.Fatalf("findings = %#v, want path and digest/schema findings", result.Findings)
+	if len(result.Findings) == 0 {
+		t.Fatalf("findings = %#v, want unsafe path finding", result.Findings)
 	}
 	joined := make([]string, 0, len(result.Findings))
 	for _, finding := range result.Findings {
 		joined = append(joined, finding.Code+":"+finding.Path+":"+finding.Reason)
 	}
 	text := strings.Join(joined, "\n")
-	if !strings.Contains(text, "outside") || !strings.Contains(strings.ToLower(text), "digest") {
-		t.Fatalf("findings do not explain untrusted inputs: %s", text)
+	if !strings.Contains(text, "outside") {
+		t.Fatalf("findings do not explain unsafe path: %s", text)
+	}
+	foundDesign := false
+	for _, doc := range result.Documents {
+		if doc["path"] == "docs/design/DESIGN-003.md" {
+			foundDesign = true
+		}
+	}
+	if !foundDesign {
+		t.Fatal("historical digest became a document qualification")
 	}
 }
 
@@ -207,9 +215,14 @@ func TestImportEvidenceValidationTable(t *testing.T) {
 			wantReason: "PATH_INVALID",
 		},
 		{
+			name:       "unrelated historical round object",
+			content:    `{"schema_version":"1.0.0","evidence_id":"ev-old-round","kind":"planning_design","runtime_id":"loop-REQ-005","baseline_generation":1,"producer_agent_id":"agent","producer_responsibility":"architect","review_round":{"old":true},"subject_refs":[],"conclusion":"pass"}`,
+			wantReason: "",
+		},
+		{
 			name:       "summary digest drift",
 			content:    `{"schema_version":"1.0.0","evidence_id":"ev-digest","kind":"planning_design","runtime_id":"loop-REQ-005","baseline_generation":1,"producer_agent_id":"agent","producer_responsibility":"architect","file_sha256":"0000000000000000000000000000000000000000000000000000000000000000","subject_refs":[],"conclusion":"pass"}`,
-			wantReason: "DIGEST_MISMATCH",
+			wantReason: "",
 		},
 	}
 	for _, test := range tests {
@@ -219,10 +232,24 @@ func TestImportEvidenceValidationTable(t *testing.T) {
 			writeRecoveryImportFile(t, root, ".claude/evidence/case.json", test.content)
 			result, err := Import(root, REQBinding{
 				ID: "REQ-005", Path: "docs/requirements/REQ-005.md", Status: "locked", Version: "v1.0.0",
-				SHA256: sha256RecoveryImportFile(t, root, "docs/requirements/REQ-005.md"),
 			})
 			if err != nil {
 				t.Fatal(err)
+			}
+			if test.wantReason == "" {
+				if len(result.Evidence) != 1 || len(result.Findings) != 0 {
+					t.Fatalf("historical digest should not reject evidence: %#v %#v", result.Evidence, result.Findings)
+				}
+				if _, exists := result.Evidence[0]["sha256"]; exists {
+					t.Fatal("historical digest copied into new projection")
+				}
+				if _, exists := result.Evidence[0]["review_round"]; exists {
+					t.Fatal("historical round copied into new projection")
+				}
+				if original, err := os.ReadFile(filepath.Join(root, ".claude/evidence/case.json")); err != nil || string(original) != test.content {
+					t.Fatalf("original professional evidence changed: %v", err)
+				}
+				return
 			}
 			if len(result.Evidence) != 0 || len(result.Findings) == 0 {
 				t.Fatalf("evidence=%#v findings=%#v; untrusted evidence must be rejected", result.Evidence, result.Findings)
@@ -258,7 +285,6 @@ func TestImportRejectsSymlinkedExternalEvidence(t *testing.T) {
 	}
 	result, err := Import(root, REQBinding{
 		ID: "REQ-006", Path: "docs/requirements/REQ-006.md", Status: "locked", Version: "v1.0.0",
-		SHA256: sha256RecoveryImportFile(t, root, "docs/requirements/REQ-006.md"),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -284,7 +310,6 @@ func TestImportAcceptsExactlyCatalogImportableKinds(t *testing.T) {
 			writeRecoveryImportFile(t, root, ".claude/evidence/catalog-kind.json", `{"schema_version":"1.0.0","evidence_id":"ev-catalog-kind","kind":"`+kind+`","runtime_id":"loop-REQ-007","baseline_generation":1,"producer_agent_id":"agent","producer_responsibility":"architect","subject_refs":[],"conclusion":"pass"}`)
 			result, err := Import(root, REQBinding{
 				ID: "REQ-007", Path: "docs/requirements/REQ-007.md", Status: "locked", Version: "v1.0.0",
-				SHA256: sha256RecoveryImportFile(t, root, "docs/requirements/REQ-007.md"),
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -302,7 +327,6 @@ func TestImportRejectsUnknownEvidenceKind(t *testing.T) {
 	writeRecoveryImportFile(t, root, ".claude/evidence/unknown.json", `{"schema_version":"1.0.0","evidence_id":"ev-unknown","kind":"unknown_kind","runtime_id":"loop-REQ-008","baseline_generation":1,"producer_agent_id":"agent","producer_responsibility":"architect","subject_refs":[],"conclusion":"pass"}`)
 	result, err := Import(root, REQBinding{
 		ID: "REQ-008", Path: "docs/requirements/REQ-008.md", Status: "locked", Version: "v1.0.0",
-		SHA256: sha256RecoveryImportFile(t, root, "docs/requirements/REQ-008.md"),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -323,7 +347,6 @@ func TestImportRejectsProcessBoundEvidenceFromOldEpoch(t *testing.T) {
 			writeRecoveryImportFile(t, root, ".claude/evidence/process-bound.json", `{"schema_version":"1.0.0","evidence_id":"ev-process-bound","kind":"`+kind+`","runtime_id":"loop-REQ-010","baseline_generation":1,"producer_agent_id":"stale-agent","producer_responsibility":"builder","subject_refs":[],"conclusion":"pass"}`)
 			result, err := Import(root, REQBinding{
 				ID: "REQ-010", Path: "docs/requirements/REQ-010.md", Status: "locked", Version: "v1.0.0",
-				SHA256: sha256RecoveryImportFile(t, root, "docs/requirements/REQ-010.md"),
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -374,7 +397,6 @@ func TestImportRejectsInvalidEvidenceEnvelopeSemantics(t *testing.T) {
 
 			result, err := Import(root, REQBinding{
 				ID: "REQ-009", Path: "docs/requirements/REQ-009.md", Status: "locked", Version: "v1.0.0",
-				SHA256: sha256RecoveryImportFile(t, root, "docs/requirements/REQ-009.md"),
 			})
 			if err != nil {
 				t.Fatal(err)

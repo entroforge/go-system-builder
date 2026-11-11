@@ -48,5 +48,5 @@ Project-instance files such as `AGENTS.md`, `docs/project-map.md`, `docs/require
 - Implementation requires the accepted document-verification baseline; explicit domain approvals and frozen legacy recovery retain their own conditions.
 - No Delivery Verifier, QA, and E2E Browser evidence, no loop completion.
 - No clean full-depth Delivery + QA + E2E review round, no release audit.
-- A sealed S7 ObservationBatch enters S8 investigation; an InvestigationCase and an approved repair Contract establish the subsequent S9 repair responsibility.
+- An accepted S7 Finding enters S8 investigation directly; an InvestigationCase and an approved repair Contract establish the subsequent S9 repair responsibility.
 - No human release approval, no squash merge to `master/main`.

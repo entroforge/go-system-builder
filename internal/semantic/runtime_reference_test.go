@@ -1,13 +1,13 @@
 package semantic_test
 
 import (
-	"crypto/sha256"
+	"bytes"
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/entroforge/go-system-builder/internal/cli"
 	"github.com/entroforge/go-system-builder/internal/schema"
 	"github.com/entroforge/go-system-builder/internal/semantic"
 )
@@ -23,7 +23,6 @@ type semanticReferenceDocument struct {
 	Kind    string
 	Path    string
 	Version string
-	SHA256  string
 }
 
 // TestValidateRuntimeReferencesChecksNonEmptyFiles keeps the semantic
@@ -69,6 +68,85 @@ func TestValidateRuntimeReferencesChecksNonEmptyFiles(t *testing.T) {
 			t.Fatal("missing referenced Agent message was reachable")
 		}
 	})
+}
+
+func TestDoctorIgnoresHistoricalManifestDigests(t *testing.T) {
+	fixture := writeSemanticReferenceFixture(t)
+	manifestPath := filepath.Join(fixture.root, fixture.manifestPath)
+	runtimePath := filepath.Join(fixture.root, ".claude", "loop-state.json")
+	runtimeData, err := os.ReadFile(runtimePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var runtimeState map[string]any
+	if err := json.Unmarshal(runtimeData, &runtimeState); err != nil {
+		t.Fatal(err)
+	}
+	example, err := schema.ReadAsset("loop-state.example.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var exampleState map[string]any
+	if err := json.Unmarshal(example, &exampleState); err != nil {
+		t.Fatal(err)
+	}
+	bound := exampleState["bound_req"].(map[string]any)
+	bound["path"] = "docs/requirements/REQ-002-reference-test.md"
+	runtimeState["bound_req"] = bound
+	data, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifest map[string]any
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name    string
+		value   any
+		omitted bool
+	}{{"omitted", nil, true}, {"null", nil, false}, {"nonstandard", "old-nonstandard", false}, {"number", 42, false}, {"object", map[string]any{"old": true}, false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			machineRefs := []map[string]any{runtimeState["definition"].(map[string]any), runtimeState["hook_control"].(map[string]any)["policy_ref"].(map[string]any), bound}
+			for _, ref := range machineRefs {
+				if tc.omitted {
+					delete(ref, "sha256")
+				} else {
+					ref["sha256"] = tc.value
+				}
+			}
+			writeSemanticJSON(t, fixture.root, ".claude/loop-state.json", runtimeState)
+			for _, value := range manifest["documents"].([]any) {
+				doc := value.(map[string]any)
+				if tc.omitted {
+					delete(doc, "sha256")
+				} else {
+					doc["sha256"] = tc.value
+				}
+			}
+			writeSemanticJSON(t, fixture.root, fixture.manifestPath, manifest)
+			before, err := os.ReadFile(manifestPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			runtimeBefore, err := os.ReadFile(runtimePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var out, stderr bytes.Buffer
+			if code := cli.Run([]string{"doctor", "--root", fixture.root}, nil, &out, &stderr); code != 0 {
+				t.Fatalf("doctor rejected historical manifest digest: code=%d stderr=%s", code, stderr.String())
+			}
+			after, err := os.ReadFile(manifestPath)
+			if err != nil || !bytes.Equal(before, after) {
+				t.Fatalf("doctor rewrote original manifest: %v", err)
+			}
+			runtimeAfter, err := os.ReadFile(runtimePath)
+			if err != nil || !bytes.Equal(runtimeBefore, runtimeAfter) {
+				t.Fatalf("doctor rewrote original Runtime: %v", err)
+			}
+		})
+	}
 }
 
 func TestValidateAgentMessagesDistinguishesStagedEnvelopeFromActivation(t *testing.T) {
@@ -192,10 +270,16 @@ func writeSemanticReferenceFixture(t *testing.T) semanticReferenceFixture {
 	if err := json.Unmarshal(messageExamples, &messages); err != nil {
 		t.Fatal(err)
 	}
-	if len(messages) == 0 {
-		t.Fatal("agent-message examples are empty")
+	var message map[string]any
+	for _, candidate := range messages {
+		if candidate["message_type"] == "readback_response" {
+			message = candidate
+			break
+		}
 	}
-	message := messages[0]
+	if message == nil {
+		t.Fatal("agent-message example lacks readback_response")
+	}
 	message["message_id"] = "msg-reference-test"
 	message["correlation_id"] = "corr-reference-test"
 	message["runtime_id"] = runtimeID
@@ -203,7 +287,6 @@ func writeSemanticReferenceFixture(t *testing.T) semanticReferenceFixture {
 	message["agent_definition_ref"] = "agents/backend-builder.md"
 	message["task_id"] = "TASK-001"
 	message["team_id"] = "team-reference-test"
-	message["documents"] = semanticMessageDocuments(documents)
 	messagePath := "docs/teams/reference/readback.json"
 	writeSemanticJSON(t, root, messagePath, message)
 
@@ -267,7 +350,6 @@ func writeSemanticReferenceDocument(t *testing.T, root, id, kind, path, content 
 		Kind:    kind,
 		Path:    path,
 		Version: "v1.0.0",
-		SHA256:  semanticSHA256([]byte(content)),
 	}
 }
 
@@ -278,22 +360,6 @@ func semanticManifestDocuments(documents []semanticReferenceDocument) []any {
 			"id":      document.ID,
 			"path":    document.Path,
 			"version": document.Version,
-			"sha256":  document.SHA256,
-		})
-	}
-	return items
-}
-
-func semanticMessageDocuments(documents []semanticReferenceDocument) []any {
-	items := make([]any, 0, len(documents))
-	for index, document := range documents {
-		items = append(items, map[string]any{
-			"id":         document.ID,
-			"kind":       document.Kind,
-			"path":       document.Path,
-			"version":    document.Version,
-			"sha256":     document.SHA256,
-			"read_order": index + 1,
 		})
 	}
 	return items
@@ -312,8 +378,4 @@ func writeSemanticJSON(t *testing.T, root, path string, value any) {
 	if err := os.WriteFile(absolute, append(data, '\n'), 0o644); err != nil {
 		t.Fatal(err)
 	}
-}
-
-func semanticSHA256(data []byte) string {
-	return fmt.Sprintf("%x", sha256.Sum256(data))
 }

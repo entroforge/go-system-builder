@@ -11,20 +11,17 @@
 package transition
 
 import (
-	"crypto/sha256"
 	"fmt"
 	"github.com/entroforge/go-system-builder/internal/fileview"
 
 	"github.com/entroforge/go-system-builder/internal/acceptance"
 	"github.com/entroforge/go-system-builder/internal/scenario"
 	"github.com/entroforge/go-system-builder/internal/semantic"
-	"path/filepath"
 	"strings"
 	"sync"
 
 	"github.com/entroforge/go-system-builder/internal/review"
 	loopruntime "github.com/entroforge/go-system-builder/internal/runtime"
-	"github.com/entroforge/go-system-builder/internal/verification"
 )
 
 // GuardFn evaluates whether the supplied runtime state satisfies a declared
@@ -106,8 +103,7 @@ func GuardNames() []string {
 // TODO(BUG-GUARDS-OVER-ENGINEERED step 1): most guards below remain
 // `evidenceBackedGuard(name)` stubs that reject only on empty evidence
 // map. Their names promise semantic checks that the body does not perform —
-// real semantic verification lives in `validateCurrentEvidence`
-// (`engine.go:317-364`) and `verification.EvaluateCleanRound`. After
+// real semantic verification lives in the current evidence consumers. After
 // BUG-PLANNING-SUBSTATE collapsed the planning guards into one
 // planning_complete direct-check, the remaining stub population is the
 // concern of BUG-GUARDS-OVER-ENGINEERED. Adding new stub entries here is
@@ -129,38 +125,21 @@ func InitGuardRegistry() {
 		"planning_complete":         guardPlanningCompleteFn,
 		"joint_document_pass":       evidenceBackedGuard("joint_document_pass"),
 		"verified_versions_current": evidenceBackedGuard("verified_versions_current"),
-		// L3-S6 P0-4: req_baseline_unchanged now compares the bound REQ's
-		// registered sha256 against the on-disk file (real body below) —
-		// TR-004/TR-007 previously accepted any non-empty evidence map.
+		// Reuse the bound REQ's original identity without digest authentication.
 		"req_baseline_unchanged": guardReqBaselineUnchangedFn,
 		// L3-S6 P0-4: the three former evidenceBackedGuard stubs on TR-006
 		// are deleted — their names promised batch semantics the bodies
 		// never computed. The real evaluation lives in
 		// GATE-BUILDER-BATCH-READY's applyBuilderBatchCompleteness (exact
 		// TR-003 set, per-task completion + verified integration).
-		// RC-06 (S7-4): the six clean-round-shaped stub names below were
-		// registered but never declared by any transition in
-		// docs/control/loop-definition.json — guard-theater inventory. Their real
-		// semantics live in `verification.EvaluateCleanRound`, which the
-		// DECLARED clean-round guards (clean_round_valid on TR-009,
-		// clean_round_still_valid on TR-015/TR-017) already delegate to:
-		//   all_required_dimensions_passed / same_review_round /
-		//   no_invalidated_pass_evidence / no_open_blocking_bugs /
-		//   verification_phase_clean_round_passed
-		// The five ReviewPlan-finding-shaped stubs (blocking_findings_present
-		// among them) had no declared consumer either; the S7 exit contract
-		// is observation_batch_sealed (TR-008) + clean_round_valid (TR-009).
-		// L3-S7 P0: the S7 exit guards are real semantic checks over the
-		// ReviewPlan projection — TR-008 requires the sealed ObservationBatch
-		// carrying the exact Finding set; TR-009 recomputes the machine
-		// CleanRound over the exact Claim set.
-		"observation_batch_sealed": guardObservationBatchSealedFn,
+		// S7 exits consume an accepted Finding or completed original reviewer
+		// responsibilities. No separate batch or clean snapshot is required.
+		"accepted_finding_present": guardAcceptedFindingPresentFn,
 		"clean_round_valid":        guardCleanRoundValidFn,
 		// L3-S7 P1: the angle_complete guards are retired with the whole
 		// angle lifecycle — their intent lives in ReviewPlan Claims
 		// (claim.source_refs), enforced by the plan validator.
-		"acc_complete":            guardACCCurrentFn,
-		"clean_round_still_valid": evidenceBackedGuard("clean_round_still_valid"),
+		"acc_complete": guardACCCurrentFn,
 		// L3-S7: TR-010/TR-011 no longer capture the checkpoint themselves —
 		// the review verdict transaction did. This guard proves the single
 		// authoritative checkpoint exists before the cursor moves.
@@ -232,7 +211,6 @@ func InitGuardRegistry() {
 	semanticChecks := map[string]bool{
 		"no_other_active_loop": true, "resume_checkpoint_valid": true,
 		"contracts_checked": true, "tasks_checked": true,
-		"clean_round_still_valid":   true,
 		"pause_checkpoint_recorded": true,
 		// RC-06 (S10-14): both guards now resolve + re-hash their evidence
 		// artifact on disk, so they are honest semantic checks.
@@ -241,7 +219,7 @@ func InitGuardRegistry() {
 		"planning_complete":      true, "all_targeted_reverification_passed": true,
 		"ui_impact_resolved": true, "scenario_bridge_checked": true,
 		"req_baseline_unchanged":   true,
-		"observation_batch_sealed": true, "clean_round_valid": true,
+		"accepted_finding_present": true, "clean_round_valid": true,
 	}
 	newReg := make(map[string]GuardRegistration, len(newFns))
 	for name, fn := range newFns {
@@ -266,8 +244,7 @@ func InitGuardRegistry() {
 // TODO(BUG-GUARDS-OVER-ENGINEERED step 1): this helper is the source
 // of the guard-theater pattern. New transitions MUST NOT wire through it
 // without a semantic body of their own. Real semantic bodies live both in
-// this switch (`no_other_active_loop`, `resume_checkpoint_valid`, plus the
-// clean-round names delegated to `verification.EvaluateCleanRound`) and in
+// this switch (`no_other_active_loop`, `resume_checkpoint_valid`) and in
 // the dedicated guard*Fn functions registered outside it (contracts/tasks/
 // planning/bridge/UI-impact/reverification, and the transition-layer
 // human_decision scope validation in validateRequest);
@@ -284,14 +261,6 @@ func evidenceBackedGuard(name string) GuardFn {
 			if pause, ok := state["pause"].(map[string]any); !ok || pause == nil {
 				return fmt.Errorf("%s: pause checkpoint missing", name)
 			}
-		case "clean_round_still_valid":
-			// RC-06 (S7-4): the only DECLARED clean-round delegate left in
-			// the switch. The five undeclared clean-round-shaped stub names
-			// were removed from the registry (see InitGuardRegistry).
-			result := verification.EvaluateCleanRound(state)
-			if !result.Passed {
-				return fmt.Errorf("%s: clean-round evaluation failed: %v", name, result.Reasons)
-			}
 		}
 		if len(evidence) == 0 {
 			return fmt.Errorf("%s: resolved evidence context is empty", name)
@@ -307,14 +276,11 @@ func requireFreshInactiveRuntime(state map[string]any) error {
 	return nil
 }
 
-// guardCleanRoundValidFn is the real body behind TR-009's clean_round_valid
-// guard (L3-S7 §10): the machine CleanRound is recomputed over the current
-// ReviewPlan's exact Claim set by verification.EvaluateCleanRound — an
-// agent hand-written aggregate PASS is not a substitute.
+// guardCleanRoundValidFn retains the catalog's legacy guard name while
+// reading original conclusions and required responsibility progress for S10.
 func guardCleanRoundValidFn(state map[string]any, _ map[string]string) error {
-	result := verification.EvaluateCleanRound(state)
-	if !result.Passed {
-		return fmt.Errorf("clean_round_valid: %v", result.Reasons)
+	if review.PlanPointerFromState(state) == nil || !review.RequiredResponsibilitiesComplete(state) || len(review.RoundFindings(state)) > 0 {
+		return fmt.Errorf("review responsibilities are unfinished or report a Finding")
 	}
 	return nil
 }
@@ -344,61 +310,6 @@ func guardReleaseAuditCurrentFn(state map[string]any, _ map[string]string) error
 	return nil
 }
 
-// requireCurrentEvidenceKind scans runtime.evidence[] for a valid entry of
-// the supplied kind registered against the current baseline generation and
-// review round, then re-hashes the artifact on disk. Returns a descriptive
-// error when no such entry exists (fail-closed: an empty evidence list is a
-// rejection, not a pass).
-func requireCurrentEvidenceKind(state map[string]any, kind string) error {
-	items, _ := state["evidence"].([]any)
-	baseline, _ := state["baseline"].(map[string]any)
-	review, _ := state["review"].(map[string]any)
-	// RC-15 (S10-H2): the evidence ledger is append-only; the newest
-	// registration supersedes earlier ones (drift recovery via fresh id),
-	// and first-match would wedge acc_complete / release_audit_approved on
-	// a stale row whose envelope has been regenerated since.
-	var found map[string]any
-	for _, raw := range items {
-		item, ok := raw.(map[string]any)
-		if !ok || item["status"] != "valid" {
-			continue
-		}
-		if itemKind, _ := item["kind"].(string); itemKind != kind {
-			continue
-		}
-		if integer(item["baseline_generation"]) != integer(baseline["generation"]) {
-			continue
-		}
-		if evidenceRound := integer(item["review_round"]); evidenceRound > 0 && evidenceRound != integer(review["round"]) {
-			continue
-		}
-		found = item
-	}
-	if found == nil {
-		return fmt.Errorf("no valid %s evidence entry for the current baseline/round — record the artifact before advancing", kind)
-	}
-	rel, _ := found["path"].(string)
-	clean := filepath.Clean(rel)
-	if rel == "" || filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
-		return fmt.Errorf("%s evidence %v carries unsafe path %q", kind, found["id"], rel)
-	}
-	root, _ := state["root"].(string)
-	if root == "" {
-		root = "."
-	}
-	data, err := guardFiles(state, root).ReadFile(clean)
-	if err != nil {
-		return fmt.Errorf("%s evidence %v unreadable at %s: %w", kind, found["id"], rel, err)
-	}
-	sum := sha256.Sum256(data)
-	actual := fmt.Sprintf("%x", sum[:])
-	want, _ := found["sha256"].(string)
-	if want == "" || actual != want {
-		return fmt.Errorf("%s evidence %v fingerprint drifted (registered %s…, on disk %s…) — re-record the artifact", kind, found["id"], want[:min(12, len(want))], actual[:12])
-	}
-	return nil
-}
-
 func min(a, b int) int {
 	if a < b {
 		return a
@@ -406,73 +317,14 @@ func min(a, b int) int {
 	return b
 }
 
-// guardObservationBatchSealedFn is the real body behind TR-008's
-// observation_batch_sealed guard (L3-S7 §3.7): the sealed ObservationBatch
-// must exist for the current round, its finding_ids must equal the exact
-// current-round Finding set, and an ordinary batch (complete_required_claims)
-// must seal with every required Claim dispositioned — unobserved Claims are
-// only legal on a critical immediate-stop batch.
-func guardObservationBatchSealedFn(state map[string]any, _ map[string]string) error {
-	reviewMap, _ := state["review"].(map[string]any)
-	if reviewMap == nil {
-		return fmt.Errorf("observation_batch_sealed: runtime review section missing")
-	}
-	plan, _ := reviewMap["plan"].(map[string]any)
-	if plan == nil {
-		return fmt.Errorf("observation_batch_sealed: no ReviewPlan registered for this round")
-	}
-	if status, _ := plan["status"].(string); status != "observation_sealed" {
-		return fmt.Errorf("observation_batch_sealed: ReviewPlan status is %s; the batch seals automatically when the final required Claim disposition lands", status)
-	}
-	batch, _ := reviewMap["observation_batch"].(map[string]any)
-	if batch == nil {
-		return fmt.Errorf("observation_batch_sealed: no sealed ObservationBatch in the runtime")
-	}
-	batchRound := currentRoundOf(reviewMap)
-	if round := intFrom(batch["review_round"]); round != 0 && round != batchRound {
-		return fmt.Errorf("observation_batch_sealed: batch belongs to round %d, current round is %d", round, batchRound)
-	}
-	batchIDs := map[string]bool{}
-	if raw, ok := batch["finding_ids"].([]any); ok {
-		for _, value := range raw {
-			if id, _ := value.(string); id != "" {
-				batchIDs[id] = true
-			}
-		}
-	}
-	if len(batchIDs) == 0 {
-		// The state pointer only carries ids; fall back to the schema-level
-		// invariant that a sealed batch never has an empty exact set.
-		return fmt.Errorf("observation_batch_sealed: sealed batch carries no finding ids")
-	}
-	// Exact-set check: batch finding_ids == current-round Finding entities.
-	roundFindings := review.RoundFindings(state)
-	actual := map[string]bool{}
-	for _, row := range roundFindings {
-		if id, ok := row["finding_id"].(string); ok {
-			actual[id] = true
-		}
-	}
-	for id := range batchIDs {
-		if !actual[id] {
-			return fmt.Errorf("observation_batch_sealed: batch references finding %s which is not a current-round Finding entity", id)
-		}
-	}
-	for id := range actual {
-		if !batchIDs[id] {
-			return fmt.Errorf("observation_batch_sealed: current-round finding %s is missing from the sealed batch; the handoff must carry the exact set (L3-S7 §3.7)", id)
-		}
-	}
-	if policy, _ := batch["drain_policy"].(string); policy != "immediate_stop" {
-		if pending := review.UndispositionedRequired(state); len(pending) > 0 {
-			return fmt.Errorf("observation_batch_sealed: ordinary batch sealed with unobserved required claims %v; only a critical immediate-stop batch may carry safety gaps", pending)
-		}
+// guardAcceptedFindingPresentFn reads the accepted Finding.
+// TR-008 consumes accepted current-round Findings without requiring a sealed
+// batch or completion of still-dispatched responsibilities (L3-S7 §11.1).
+func guardAcceptedFindingPresentFn(state map[string]any, _ map[string]string) error {
+	if len(review.RoundFindings(state)) == 0 {
+		return fmt.Errorf("S7 has no accepted Finding to hand to Main")
 	}
 	return nil
-}
-
-func currentRoundOf(reviewMap map[string]any) int {
-	return intFrom(reviewMap["round"])
 }
 
 func intFrom(value any) int {
@@ -498,25 +350,11 @@ func guardReqBaselineUnchangedFn(state map[string]any, _ map[string]string) erro
 	if !ok || bound == nil {
 		return fmt.Errorf("req_baseline_unchanged: runtime has no bound REQ — rebind before transitioning")
 	}
-	reqPath, _ := bound["path"].(string)
-	registeredSHA, _ := bound["sha256"].(string)
-	if reqPath == "" || registeredSHA == "" {
-		return fmt.Errorf("req_baseline_unchanged: bound REQ records no path/sha256 fingerprint")
+	if reqPath, _ := bound["path"].(string); reqPath == "" {
+		return fmt.Errorf("bound REQ path is unavailable")
 	}
-	root, _ := state["root"].(string)
-	if root == "" {
-		root = "."
-	}
-	data, err := guardFiles(state, root).ReadFile(reqPath)
-	if err != nil {
-		return fmt.Errorf("req_baseline_unchanged: bound REQ %s unreadable: %w", reqPath, err)
-	}
-	actual := REQSHA256(data)
-	if actual != registeredSHA {
-		return fmt.Errorf(
-			"req_baseline_unchanged: bound REQ %s drifted (registered %s…, on disk %s…) — the REQ baseline changed since bind; REQ-affecting findings must go through the human amendment boundary, not TR-004/TR-007",
-			reqPath, registeredSHA[:12], actual[:12])
-	}
+	// Main determines the professional effect of actual requirement changes;
+	// an old path or revision cannot prove unchanged bytes.
 	return nil
 }
 
@@ -626,7 +464,7 @@ func guardAcceptedS3(state map[string]any) error {
 		if err != nil {
 			return err
 		}
-		if !found || packet.Binding.Requirement.ID != bound["id"] || packet.Binding.Requirement.Version != bound["version"] || packet.Binding.Requirement.SHA256 != bound["sha256"] {
+		if !found || packet.Binding.Requirement.ID != bound["id"] || packet.Binding.Requirement.Version != bound["version"] {
 			continue
 		}
 		if _, err := loopruntime.SubmissionFollowup(state, fmt.Sprint(row["followup_event_id"])); err == nil {

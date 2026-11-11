@@ -36,7 +36,10 @@
       "const": "1.0.0"
     },
     "contract": {
-      "enum": ["s6-v1.2", "s6-native-v1"]
+      "enum": [
+        "s6-v1.2",
+        "s6-native-v1"
+      ]
     },
     "runtime_id": {
       "type": "string",
@@ -78,8 +81,7 @@
         "kind",
         "id",
         "version",
-        "ref",
-        "sha256"
+        "ref"
       ]
     },
     "manifest": {
@@ -101,8 +103,7 @@
         "kind",
         "id",
         "version",
-        "ref",
-        "sha256"
+        "ref"
       ]
     },
     "agent_definition": {
@@ -119,8 +120,7 @@
       "required": [
         "kind",
         "id",
-        "ref",
-        "sha256"
+        "ref"
       ]
     },
     "team_id": {
@@ -210,7 +210,7 @@
       "items": {
         "$ref": "#/$defs/contextSource"
       },
-      "description": "Original hash-bound manifest/TASK/role inputs, declared document sources, authorized Skills and CheckProfile dependencies, plus actual frozen context sources resolved by the caller."
+      "description": "Original assignment material references, authorized Skills and CheckProfile dependencies."
     },
     "source_snapshots": {
       "type": "array",
@@ -248,8 +248,7 @@
       "additionalProperties": false,
       "required": [
         "kind",
-        "ref",
-        "sha256"
+        "ref"
       ],
       "properties": {
         "kind": {
@@ -267,10 +266,6 @@
         "version": {
           "type": "string",
           "minLength": 1
-        },
-        "sha256": {
-          "type": "string",
-          "pattern": "^[a-f0-9]{64}$"
         }
       }
     },
@@ -308,9 +303,7 @@
       "required": [
         "source_ref",
         "source_kind",
-        "source_sha256",
-        "path",
-        "sha256"
+        "path"
       ],
       "properties": {
         "source_ref": {
@@ -333,17 +326,9 @@
             "embedded_context_profile"
           ]
         },
-        "source_sha256": {
-          "type": "string",
-          "pattern": "^[a-f0-9]{64}$"
-        },
         "path": {
           "type": "string",
           "minLength": 1
-        },
-        "sha256": {
-          "type": "string",
-          "pattern": "^[a-f0-9]{64}$"
         }
       }
     },
@@ -352,9 +337,7 @@
       "additionalProperties": false,
       "required": [
         "intent_key",
-        "request_digest",
-        "previous_record",
-        "previous_record_sha256"
+        "previous_record"
       ],
       "properties": {
         "intent_key": {
@@ -362,16 +345,8 @@
           "minLength": 1,
           "maxLength": 1024
         },
-        "request_digest": {
-          "type": "string",
-          "pattern": "^[a-f0-9]{64}$"
-        },
         "previous_record": {
           "$ref": "#/$defs/recordReference"
-        },
-        "previous_record_sha256": {
-          "type": "string",
-          "pattern": "^[a-f0-9]{64}$"
         }
       }
     },
@@ -401,17 +376,12 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "path",
-        "sha256"
+        "path"
       ],
       "properties": {
         "path": {
           "type": "string",
           "minLength": 1
-        },
-        "sha256": {
-          "type": "string",
-          "pattern": "^[a-f0-9]{64}$"
         }
       }
     },

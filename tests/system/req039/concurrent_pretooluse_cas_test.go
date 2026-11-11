@@ -4,7 +4,10 @@
 package req039_test
 
 import (
+	"bufio"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 
@@ -22,7 +25,7 @@ func TestCT03903_ConcurrentHookCLI_OneCommit(t *testing.T) {
 	req039fixtures.EnsureStateRoot(state, root)
 	writeSystemState(t, root, state)
 
-	body := req039fixtures.HookBody("PreToolUse", "session-ct-039-03", "Edit", map[string]any{
+	body := req039fixtures.MainHookBody(root, "PreToolUse", "session-ct-039-03", "Edit", map[string]any{
 		"file_path": "docs/architecture/ARCHITECTURE-039-loop-control-plane.md",
 	})
 
@@ -71,6 +74,39 @@ func TestCT03903_ConcurrentHookCLI_OneCommit(t *testing.T) {
 	req039fixtures.AssertLastTransition(t, after, "PTR-PLAN-01")
 	if rev := req039fixtures.Revision(after); rev <= 1 {
 		t.Fatalf("revision must advance after single commit, got %v", rev)
+	}
+	// Output alone cannot prove CAS: inspect the durable journal for duplicate
+	// transitions and verify its tail agrees with the persisted state.
+	journal, err := os.Open(filepath.Join(root, ".claude", "loop-events.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer journal.Close()
+	scanner := bufio.NewScanner(journal)
+	transitionCount := 0
+	var tail map[string]any
+	for scanner.Scan() {
+		var event map[string]any
+		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
+			t.Fatalf("invalid committed journal record: %v", err)
+		}
+		if event["transition_id"] == "PTR-PLAN-01" {
+			transitionCount++
+			if event["before_revision"] != float64(1) || event["after_revision"] != float64(2) {
+				t.Fatalf("design CAS must commit revision 1→2 once: %v", event)
+			}
+		}
+		tail = event
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if transitionCount != 1 {
+		t.Fatalf("durable journal must contain one PTR-PLAN-01, got %d", transitionCount)
+	}
+	cursor, _ := after["journal"].(map[string]any)
+	if tail["after_revision"] != float64(req039fixtures.Revision(after)) || tail["event_id"] != cursor["last_event_id"] || tail["sequence"] != cursor["last_sequence"] {
+		t.Fatalf("journal tail and Runtime must agree: tail=%v revision=%v cursor=%v", tail, after["revision"], cursor)
 	}
 }
 

@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -14,7 +13,6 @@ import (
 	"github.com/entroforge/go-system-builder/internal/filelock"
 	"github.com/entroforge/go-system-builder/internal/hookctx"
 	"github.com/entroforge/go-system-builder/internal/integration"
-	"github.com/entroforge/go-system-builder/internal/repair"
 	"github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/semantic"
 	"github.com/entroforge/go-system-builder/internal/workspace"
@@ -83,16 +81,7 @@ func runWorkspaceRecovery(args []string, stdout, stderr io.Writer) int {
 		return fail(fmt.Errorf("reported delivery requires integration/domain recovery, not Worker replacement"))
 	}
 	lifecycle, _ := snap.State["lifecycle"].(map[string]any)
-	if lifecycle["state"] == "bug_resolution" {
-		authority, err := repair.ResolveWorkspaceAuthority(*root, snap.State, *id, *owner)
-		if err != nil {
-			return fail(err)
-		}
-		a.WritePaths = authority.Assignment.Scope
-		if len(a.RequiredChecks) == 0 {
-			fmt.Fprintln(stderr, "S9 Main checks remain pending: Main must select and execute necessary checks during integration; preparing this Worker does not mark checks passed")
-		}
-	} else if lifecycle["state"] == "document_verification" && verb == "replace" {
+	if lifecycle["state"] == "document_verification" && verb == "replace" {
 		old, ok := b.Execution(*id, workspace.RuntimeID(snap.State), workspace.Generation(snap.State))
 		if !ok || old.AgentID != *owner || old.Purpose != workspace.DocumentReviewPurpose {
 			return fail(fmt.Errorf("S5 replacement requires the original registered document-review execution"))
@@ -112,15 +101,19 @@ func runWorkspaceRecovery(args []string, stdout, stderr io.Writer) int {
 	} else if found {
 		return fail(fmt.Errorf("preserve existing integration checkpoint; recover it before changing execution identity"))
 	}
+	var e workspace.Execution
 	persist := func(message string) error {
-		key := fmt.Sprintf("workspace-recovery-r%d", snap.Revision+1)
-		next, err := writer.Update(snap.Revision, runtime.Mutation{EventID: key, TransitionID: "WORKSPACE", Event: "workspace_updated", Actor: "main", RuntimeID: workspace.RuntimeID(snap.State), IdempotencyKey: key, RetainLastTransition: true, OccurredAt: time.Now().UTC(), Message: message + ": " + *reason, Apply: func(state map[string]any) error { state["workspace"] = workspace.Encode(b); return nil }})
+		// The responsibility is the Worker slot; the intent is the execution
+		// status this recovery step reaches ("preparing" then "ready"). The
+		// execution generation separates two recovery rounds of the same
+		// assignment, and no Runtime write count is encoded (G18 §1.3).
+		eventID, idempotencyKey := workspaceEventIdentity(workspace.RuntimeID(snap.State), "recovery", e.AssignmentID, e.AgentID, e.Generation, e.Status, "")
+		next, err := writer.Update(snap.Revision, runtime.Mutation{EventID: eventID, TransitionID: "WORKSPACE", Event: "workspace_updated", Actor: "main", RuntimeID: workspace.RuntimeID(snap.State), IdempotencyKey: idempotencyKey, RetainLastTransition: true, OccurredAt: time.Now().UTC(), Message: message + ": " + *reason, Apply: func(state map[string]any) error { state["workspace"] = workspace.Encode(b); return nil }})
 		if err == nil {
 			snap = next
 		}
 		return err
 	}
-	var e workspace.Execution
 	if verb == "replace" {
 		old, ok := b.Execution(*id, workspace.RuntimeID(snap.State), workspace.Generation(snap.State))
 		if !ok {
@@ -162,14 +155,14 @@ func runWorkspaceRecovery(args []string, stdout, stderr io.Writer) int {
 		if err != nil {
 			return fail(err)
 		}
-		if err = json.Unmarshal(data, &e); err != nil {
+		if e, err = workspace.DecodeExecution(data); err != nil {
 			return fail(err)
 		}
 		if e.AssignmentID != *id || e.AgentID != *owner || !reflect.DeepEqual(e.WritePaths, a.WritePaths) || !reflect.DeepEqual(e.Checks, a.RequiredChecks) {
 			return fail(fmt.Errorf("historical request differs from registered assignment scope/checks"))
 		}
 		if existing, ok := b.Execution(*id, workspace.RuntimeID(snap.State), workspace.Generation(snap.State)); ok {
-			if existing.Status != "preparing" || existing.Path != e.Path || existing.Branch != e.Branch || existing.BaseCommit != e.BaseCommit || existing.Generation != e.Generation || !reflect.DeepEqual(existing.Inputs, e.Inputs) {
+			if existing.Status != "preparing" || existing.Path != e.Path || existing.Branch != e.Branch || existing.Generation != e.Generation || !sameWorkspaceInputPaths(existing.Inputs, e.Inputs) {
 				return fail(fmt.Errorf("adoption retry differs from persisted intent"))
 			}
 			e = existing
@@ -197,14 +190,22 @@ func runWorkspaceRecovery(args []string, stdout, stderr io.Writer) int {
 	if err = b.Bootstrap(e, executable); err != nil {
 		return fail(err)
 	}
-	e.BootstrapSHA256, err = workspace.BootstrapDigest(e)
-	if err != nil {
-		return fail(err)
-	}
 	e.Status = "ready"
 	b.Executions[*id] = e
 	if err = persist("recovered Worker ready"); err != nil {
 		return fail(err)
 	}
 	return encodeJSON(stdout, e)
+}
+
+func sameWorkspaceInputPaths(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for path := range a {
+		if _, ok := b[path]; !ok {
+			return false
+		}
+	}
+	return true
 }

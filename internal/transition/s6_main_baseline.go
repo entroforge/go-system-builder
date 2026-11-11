@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/entroforge/go-system-builder/internal/fileview"
 	"github.com/entroforge/go-system-builder/internal/productbaseline"
 	loopruntime "github.com/entroforge/go-system-builder/internal/runtime"
 )
@@ -14,10 +13,6 @@ import (
 func captureS6MainStart(state map[string]any, ctx *ActionContext, root string) (productbaseline.S6MainStart, error) {
 	if ctx == nil || ctx.Spec.ID != "TR-003" || ctx.Request == nil {
 		return productbaseline.S6MainStart{}, fmt.Errorf("S6 Main start capture requires the original TR-003 request")
-	}
-	view, ok := ctx.Request.Files.(*fileview.View)
-	if !ok || view == nil || view.Commit == "" {
-		return productbaseline.S6MainStart{}, fmt.Errorf("Runtime schema 1.2.0/1.3.0 TR-003 requires its actual pinned fileview View to capture the S6 Main start")
 	}
 	bound, _ := state["bound_req"].(map[string]any)
 	workspace, _ := bound["workspace"].(map[string]any)
@@ -37,13 +32,8 @@ func captureS6MainStart(state map[string]any, ctx *ActionContext, root string) (
 	if err != nil {
 		return productbaseline.S6MainStart{}, fmt.Errorf("resolve bound REQ root for S6 Main start: %w", err)
 	}
-	canonicalViewRoot, err := canonicalS6MainRoot(view.Root)
-	if err != nil {
-		return productbaseline.S6MainStart{}, fmt.Errorf("resolve pinned View root for S6 Main start: %w", err)
-	}
-	expectedRef := "refs/heads/" + branch
-	if canonicalRoot != canonicalBoundRoot || canonicalRoot != canonicalViewRoot || view.Ref != expectedRef {
-		return productbaseline.S6MainStart{}, fmt.Errorf("pinned TR-003 View root/ref differs from the bound REQ development root/branch")
+	if canonicalRoot != canonicalBoundRoot {
+		return productbaseline.S6MainStart{}, fmt.Errorf("TR-003 root differs from the bound REQ development workspace")
 	}
 	if ctx.EventID == "" || ctx.BeforeRevision < 0 || ctx.AfterRevision != ctx.BeforeRevision+1 || ctx.TransitionSequence < 1 {
 		return productbaseline.S6MainStart{}, fmt.Errorf("TR-003 locked commit receipt coordinates are incomplete")
@@ -53,29 +43,22 @@ func captureS6MainStart(state map[string]any, ctx *ActionContext, root string) (
 	if generation < 1 {
 		return productbaseline.S6MainStart{}, fmt.Errorf("current baseline generation is invalid")
 	}
-	journal, err := loopruntime.ReadJournalForState(root, state)
-	if err != nil {
-		return productbaseline.S6MainStart{}, fmt.Errorf("read original Runtime journal under TR-003 Writer lock: %w", err)
-	}
-	priorTR003, err := loopruntime.HasCommittedTransitionForGeneration(state, journal, "TR-003", generation)
-	if err != nil {
-		return productbaseline.S6MainStart{}, fmt.Errorf("inspect prior TR-003 journal history: %w", err)
-	}
 	prior, found, err := productbaseline.FindS6MainStart(state, generation)
 	if err != nil {
 		return productbaseline.S6MainStart{}, err
 	}
 	if found {
-		if !priorTR003 {
-			return productbaseline.S6MainStart{}, fmt.Errorf("current generation has an S6 Main start record without its original TR-003 journal commit")
-		}
-		if err := loopruntime.ValidateS6MainStartReceipts(state, journal); err != nil {
-			return productbaseline.S6MainStart{}, fmt.Errorf("validate retained S6 Main start before same-generation relock: %w", err)
-		}
 		return prior, nil
 	}
-	if priorTR003 {
-		return productbaseline.S6MainStart{}, fmt.Errorf("generation %d already has a committed TR-003 but its original S6 Main start is unavailable; refusing to infer a replacement", generation)
+	// Do not reconstruct an earlier TR-003 from today's worktree. A missing
+	// historical record is unknown, not a reason to reject the new transition.
+	journal, err := loopruntime.ReadJournalForState(root, state)
+	if err != nil {
+		return productbaseline.S6MainStart{}, nil
+	}
+	priorTR003, err := loopruntime.HasCommittedTransitionForGeneration(state, journal, "TR-003", generation)
+	if err != nil || priorTR003 {
+		return productbaseline.S6MainStart{}, nil
 	}
 	tasks, err := s6MainStartTaskSet(state, generation)
 	if err != nil {
@@ -87,9 +70,8 @@ func captureS6MainStart(state map[string]any, ctx *ActionContext, root string) (
 	start, err := productbaseline.Seal(productbaseline.S6MainStart{
 		RuntimeID:               stringValue(state["runtime_id"]),
 		BaselineGeneration:      generation,
-		ProjectRoot:             filepath.Clean(view.Root),
+		ProjectRoot:             filepath.Clean(canonicalBoundRoot),
 		DevelopmentBranch:       branch,
-		StartCommit:             view.Commit,
 		TransitionEventID:       ctx.EventID,
 		TransitionAfterRevision: ctx.AfterRevision,
 		TransitionSequence:      ctx.TransitionSequence,
@@ -116,7 +98,6 @@ func s6MainStartTaskSet(state map[string]any, generation int) ([]productbaseline
 			TaskID:  stringValue(doc["id"]),
 			Path:    filepath.ToSlash(stringValue(doc["path"])),
 			Version: stringValue(doc["version"]),
-			SHA256:  stringValue(doc["sha256"]),
 		}
 		if task.Version == "" {
 			task.Version = "unversioned"

@@ -1,7 +1,6 @@
 package runtime
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -30,9 +29,7 @@ var (
 
 // ResolveContractInputs closes the original S3 source set from the bound REQ,
 // current-generation registered designs, and the same module-package root
-// enumerated by the S2 scenario bridge. It reads source bytes only through the
-// caller's file view, and requires those bytes to match the live authority
-// checkout before returning an issuable set.
+// enumerated by the S2 scenario bridge. It reads the selected source view.
 func ResolveContractInputs(root string, state map[string]any, files fileview.Reader) (workpacket.ContractInputs, error) {
 	if files == nil {
 		return workpacket.ContractInputs{}, fmt.Errorf("S3 requires original authoritative file view")
@@ -61,7 +58,7 @@ func ResolveContractInputs(root string, state map[string]any, files fileview.Rea
 		known[design.Path] = true
 	}
 	loaded := map[string][]byte{}
-	readFrozen := func(path, expectedSHA string) ([]byte, error) {
+	readFrozen := func(path string) ([]byte, error) {
 		if !safeContractPath(path) {
 			return nil, fmt.Errorf("S3 source path is not repository-relative: %s", path)
 		}
@@ -69,33 +66,25 @@ func ResolveContractInputs(root string, state map[string]any, files fileview.Rea
 		if err != nil {
 			return nil, fmt.Errorf("read S3 source through original file view %s: %w", path, err)
 		}
-		diskBytes, err := workpacket.ReadFile(absoluteRoot, path, 4<<20)
-		if err != nil {
-			return nil, fmt.Errorf("read S3 source from authority checkout %s: %w", path, err)
-		}
-		if (expectedSHA != "" && (workpacket.Digest(viewBytes) != expectedSHA || workpacket.Digest(diskBytes) != expectedSHA)) || !bytes.Equal(viewBytes, diskBytes) {
-			return nil, fmt.Errorf("S3 frozen input differs from original checkout SHA: %s", path)
-		}
 		loaded[path] = append([]byte(nil), viewBytes...)
 		return viewBytes, nil
 	}
-	if _, err := readFrozen(binding.Requirement.Path, binding.Requirement.SHA256); err != nil {
+	if _, err := readFrozen(binding.Requirement.Path); err != nil {
 		return workpacket.ContractInputs{}, err
 	}
 	// S2 records which design was actually reviewed. Its historical bytes do
 	// not freeze a later committed explanation before S3 has been issued.
-	for i, design := range designs {
-		data, err := readFrozen(design.Path, "")
+	for _, design := range designs {
+		_, err := readFrozen(design.Path)
 		if err != nil {
 			return workpacket.ContractInputs{}, err
 		}
-		inputs.Designs[i].SHA256 = workpacket.Digest(data)
 	}
 
 	// The bridge's actual source rule is project-wide: it enumerates every
 	// module directory directly under docs/design/prototypes. Freeze that
 	// membership first, then each package's recursive file and directory set.
-	modules, err := contractModuleDirectories(absoluteRoot, files, inputs.Directories)
+	modules, err := contractModuleDirectories(files, inputs.Directories)
 	if err != nil {
 		return workpacket.ContractInputs{}, err
 	}
@@ -105,18 +94,18 @@ func ResolveContractInputs(root string, state map[string]any, files fileview.Rea
 		}
 	}
 	for _, module := range modules {
-		if err := collectContractPackage(absoluteRoot, files, module, &inputs, known, loaded); err != nil {
+		if err := collectContractPackage(files, module, &inputs, known, loaded); err != nil {
 			return workpacket.ContractInputs{}, err
 		}
 	}
-	adrs, err := contractADRsForRequirement(absoluteRoot, files, binding.Requirement)
+	adrs, err := contractADRsForRequirement(files, binding.Requirement)
 	if err != nil {
 		return workpacket.ContractInputs{}, err
 	}
 	for path, data := range adrs {
 		if !known[path] {
 			known[path] = true
-			inputs.Sources = append(inputs.Sources, workpacket.Subject{Path: path, SHA256: workpacket.Digest(data)})
+			inputs.Sources = append(inputs.Sources, workpacket.Subject{Path: path})
 		}
 		loaded[path] = data
 	}
@@ -154,11 +143,11 @@ func ResolveContractInputs(root string, state map[string]any, files fileview.Rea
 			continue
 		}
 		known[path] = true
-		data, err := readConditionalSource(absoluteRoot, files, path)
+		data, err := readConditionalSource(files, path)
 		if err != nil {
 			return workpacket.ContractInputs{}, err
 		}
-		inputs.Sources = append(inputs.Sources, workpacket.Subject{Path: path, SHA256: workpacket.Digest(data)})
+		inputs.Sources = append(inputs.Sources, workpacket.Subject{Path: path})
 		loaded[path] = data
 		for _, dependency := range contractTransitiveDependencies(path, data, schemaSources) {
 			if !queued[dependency] {
@@ -183,7 +172,7 @@ func ResolveContractInputs(root string, state map[string]any, files fileview.Rea
 // contractModuleDirectories mirrors scenario's module source enumeration.
 // If the prototypes root is absent, the docs/design manifest records
 // that absence without requiring a schema field for missing paths.
-func contractModuleDirectories(root string, files fileview.Reader, manifests map[string][]string) ([]string, error) {
+func contractModuleDirectories(files fileview.Reader, manifests map[string][]string) ([]string, error) {
 	entries, err := files.ReadDir(contractScenarioRoot)
 	if err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
@@ -194,12 +183,12 @@ func contractModuleDirectories(root string, files fileview.Reader, manifests map
 		if parentErr != nil {
 			return nil, fmt.Errorf("cannot prove absence of S2 module source root without docs/design manifest: %w", parentErr)
 		}
-		if err := recordContractDirectory(root, files, parent, parentEntries, manifests); err != nil {
+		if err := recordContractDirectory(parent, parentEntries, manifests); err != nil {
 			return nil, err
 		}
 		return []string{}, nil
 	}
-	if err := recordContractDirectory(root, files, contractScenarioRoot, entries, manifests); err != nil {
+	if err := recordContractDirectory(contractScenarioRoot, entries, manifests); err != nil {
 		return nil, err
 	}
 	return ContractModulePaths(entries)
@@ -226,14 +215,14 @@ func ContractModulePaths(entries []os.DirEntry) ([]string, error) {
 	return modules, nil
 }
 
-func collectContractPackage(root string, files fileview.Reader, modulePath string, inputs *workpacket.ContractInputs, known map[string]bool, loaded map[string][]byte) error {
+func collectContractPackage(files fileview.Reader, modulePath string, inputs *workpacket.ContractInputs, known map[string]bool, loaded map[string][]byte) error {
 	var walk func(string) error
 	walk = func(dir string) error {
 		entries, err := files.ReadDir(dir)
 		if err != nil {
 			return fmt.Errorf("enumerate S2 scenario package %s: %w", dir, err)
 		}
-		if err := recordContractDirectory(root, files, dir, entries, inputs.Directories); err != nil {
+		if err := recordContractDirectory(dir, entries, inputs.Directories); err != nil {
 			return err
 		}
 		for _, entry := range entries {
@@ -253,20 +242,20 @@ func collectContractPackage(root string, files fileview.Reader, modulePath strin
 			if known[path] {
 				return fmt.Errorf("S3 scenario package repeats a registered source: %s", path)
 			}
-			data, err := readConditionalSource(root, files, path)
+			data, err := readConditionalSource(files, path)
 			if err != nil {
 				return err
 			}
 			known[path] = true
 			loaded[path] = data
-			inputs.Sources = append(inputs.Sources, workpacket.Subject{Path: path, SHA256: workpacket.Digest(data)})
+			inputs.Sources = append(inputs.Sources, workpacket.Subject{Path: path})
 		}
 		return nil
 	}
 	return walk(modulePath)
 }
 
-func recordContractDirectory(root string, files fileview.Reader, path string, entries []os.DirEntry, manifests map[string][]string) error {
+func recordContractDirectory(path string, entries []os.DirEntry, manifests map[string][]string) error {
 	if previous, ok := manifests[path]; ok {
 		return fmt.Errorf("S3 source directory was selected more than once: %s (%d existing members)", path, len(previous))
 	}
@@ -275,85 +264,19 @@ func recordContractDirectory(root string, files fileview.Reader, path string, en
 		names = append(names, entry.Name())
 	}
 	sort.Strings(names)
-	liveEntries, err := liveContractDirectoryEntries(root, path)
-	if err != nil {
-		return fmt.Errorf("inspect S3 source directory in authority checkout %s: %w", path, err)
-	}
-	if !sameDirectoryEntries(entries, liveEntries) {
-		return fmt.Errorf("S3 source directory differs between original file view and authority checkout: %s", path)
-	}
 	manifests[path] = names
 	return nil
 }
 
-func liveContractDirectoryEntries(root, path string) ([]os.DirEntry, error) {
-	clean := filepath.Clean(filepath.FromSlash(path))
-	if filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
-		return nil, fmt.Errorf("directory escapes authority root")
-	}
-	current := root
-	if clean == "." {
-		info, err := os.Lstat(current)
-		if err != nil {
-			return nil, err
-		}
-		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-			return nil, fmt.Errorf("authority root is a symlink or non-directory")
-		}
-	} else {
-		for _, part := range strings.Split(filepath.ToSlash(clean), "/") {
-			current = filepath.Join(current, filepath.FromSlash(part))
-			info, err := os.Lstat(current)
-			if err != nil {
-				return nil, err
-			}
-			if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-				return nil, fmt.Errorf("directory path contains a symlink or non-directory component")
-			}
-		}
-	}
-	entries, err := os.ReadDir(current)
-	if err != nil {
-		return nil, err
-	}
-	return entries, nil
-}
-
-func sameDirectoryEntries(a, b []os.DirEntry) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	copyEntries := func(entries []os.DirEntry) []os.DirEntry {
-		copy := append([]os.DirEntry(nil), entries...)
-		sort.Slice(copy, func(i, j int) bool { return copy[i].Name() < copy[j].Name() })
-		return copy
-	}
-	a = copyEntries(a)
-	b = copyEntries(b)
-	for i := range a {
-		if a[i].Name() != b[i].Name() || a[i].IsDir() != b[i].IsDir() || a[i].Type() != b[i].Type() {
-			return false
-		}
-	}
-	return true
-}
-
-func readConditionalSource(root string, files fileview.Reader, path string) ([]byte, error) {
+func readConditionalSource(files fileview.Reader, path string) ([]byte, error) {
 	if !safeContractPath(path) {
 		return nil, fmt.Errorf("S3 conditional source path escapes authority: %s", path)
 	}
-	viewBytes, err := files.ReadFile(path)
+	data, err := files.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read S3 conditional source through original file view %s: %w", path, err)
 	}
-	diskBytes, err := workpacket.ReadFile(root, path, 4<<20)
-	if err != nil {
-		return nil, fmt.Errorf("read S3 conditional source from authority checkout %s: %w", path, err)
-	}
-	if !bytes.Equal(viewBytes, diskBytes) {
-		return nil, fmt.Errorf("S3 conditional source differs from original checkout: %s", path)
-	}
-	return viewBytes, nil
+	return data, nil
 }
 
 // contractReferenceText excludes Markdown examples, not natural-language claims.
@@ -595,7 +518,7 @@ func contractLinkNamesSchema(label, path string) bool {
 // ADRs declare their REQ relation in the source itself. Select accepted ADRs
 // for this exact REQ even when the architecture document does not link back to
 // them; a still-proposed related ADR means the S2 decision source is unresolved.
-func contractADRsForRequirement(root string, files fileview.Reader, req workpacket.Reference) (map[string][]byte, error) {
+func contractADRsForRequirement(files fileview.Reader, req workpacket.Reference) (map[string][]byte, error) {
 	result := map[string][]byte{}
 	entries, err := files.ReadDir("docs/design/decisions")
 	if err != nil {
@@ -635,7 +558,7 @@ func contractADRsForRequirement(root string, files fileview.Reader, req workpack
 		}
 		switch strings.ToLower(strings.TrimSpace(status[1])) {
 		case "accepted":
-			checked, err := readConditionalSource(root, files, path)
+			checked, err := readConditionalSource(files, path)
 			if err != nil {
 				return nil, err
 			}

@@ -1,8 +1,6 @@
 package hookctx_test
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -13,11 +11,6 @@ import (
 	"github.com/entroforge/go-system-builder/internal/hookctx"
 	"github.com/entroforge/go-system-builder/internal/policy"
 )
-
-func hookSHA(data []byte) string {
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:])
-}
 
 // writeJSONL writes a JSON file to disk for tests.
 func writeJSONL(t *testing.T, path, content string) {
@@ -53,8 +46,8 @@ func TestLoadFullBindsS9AssignmentScopeFromPlanReport(t *testing.T) {
 		"lifecycle": map[string]any{"state": "bug_resolution", "phase": "fixing"},
 		"review": map[string]any{"repair": map[string]any{
 			"status": "repairing", "session_id": "repair-session-1",
-			"plan_ref": ".claude/review/repair/plans/repair-plan-1.json", "plan_sha256": hookSHA(plan),
-			"plan_report_refs": []any{map[string]any{"path": ".claude/review/repair/plan-reports/repair-plan-report-1.json", "sha256": hookSHA(report)}},
+			"plan_ref":         ".claude/review/repair/plans/repair-plan-1.json",
+			"plan_report_refs": []any{map[string]any{"path": ".claude/review/repair/plan-reports/repair-plan-report-1.json"}},
 		}},
 		"entities": map[string]any{"agents": []any{map[string]any{"id": "builder-s9", "state": "working"}}},
 	}
@@ -151,7 +144,7 @@ func TestLoadFullSurfacesLockedArtifactsAtS2(t *testing.T) {
 	// policy internal method; we just verify the surface inputs.
 	for _, art := range loaded.PolicyContext.LockedArtifacts {
 		if art.ID == "" || art.Kind == "" || art.Path == "" ||
-			art.Version == "" || art.SHA256 == "" ||
+			art.Version == "" ||
 			art.LockedFromStage == "" || art.BaselineGeneration == 0 {
 			t.Fatalf("LockedArtifact missing required fields: %+v", art)
 		}

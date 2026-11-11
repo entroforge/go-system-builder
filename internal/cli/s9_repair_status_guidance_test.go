@@ -58,7 +58,7 @@ func TestS9PlanningGuidanceUsesOriginalDivisionAndIssuedOwner(t *testing.T) {
 	if err != nil || len(packets) != 1 {
 		t.Fatalf("one actual original PlanReport must be issued: %v %v", packets, err)
 	}
-	brief, _, _ := nativeS9Paths(packets[0])
+	brief := nativeS9BriefPath(packets[0])
 	for _, want := range []string{firstID, packets[0].Binding.OwnerAgentID, filepath.Join(root, brief), "initial native Agent/worktree dispatch", "same actor", "unselected"} {
 		if !strings.Contains(next, want) {
 			t.Fatalf("selected/issued guidance lacks %q: %s", want, next)

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/entroforge/go-system-builder/internal/review"
 	"github.com/entroforge/go-system-builder/internal/workpacket"
 	"github.com/entroforge/go-system-builder/internal/workstate"
 	fixtures "github.com/entroforge/go-system-builder/tests/fixtures/req039"
@@ -22,10 +23,27 @@ func TestS7LastNativeResultHandsMainS10WithoutAnotherTool(t *testing.T) {
 			state := fixtures.BaseState(t, root, "verification", "planned", 1)
 			state["schema_version"] = version
 			state["configuration"].(map[string]any)["optimization"] = map[string]any{"packet": true}
+			// The plan reaches the original consumer through the natural save
+			// event. There is no separate plan registration or submission command.
+			state["review"].(map[string]any)["round_entry"] = map[string]any{"plan_id": "review-plan-native-clean-outlet", "transition_id": "TR-006", "baseline_generation": 1, "change_impact_ref": nil}
 			plan := minimalReviewPlan(t, root, "review-plan-native-clean-outlet")
 			fixtures.WriteState(t, root, state)
 			stageCLI(t, "runtime", "workspace", "bind", "--root", root)
-			stageCLI(t, "runtime", "review-plan", "--root", root, "--file", plan)
+			planPath := review.PlanQuestionnairePath(root, stageSnapshot(t, root).State)
+			if planPath == "" {
+				t.Fatal("no original ReviewPlan questionnaire path")
+			}
+			entryQuestionnaireHook(t, root, "PreToolUse", planPath)
+			planBytes, err := os.ReadFile(plan)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(planPath, planBytes, 0600); err != nil {
+				t.Fatal(err)
+			}
+			if out := entryQuestionnaireHook(t, root, "PostToolUse", planPath); !strings.Contains(out, "review-plan: registered") {
+				t.Fatalf("original Main plan not received: %s", out)
+			}
 			for _, id := range []string{"assignment-dv-1", "assignment-qa-1"} {
 				markAssignmentDispatched(t, root, id, "reviewer-"+id)
 			}
@@ -59,9 +77,12 @@ func TestS7LastNativeResultHandsMainS10WithoutAnotherTool(t *testing.T) {
 				packet.Draft.Answer, _ = json.Marshal(map[string]any{"claim_results": claims, "blocked_claims": []any{}, "checks": []any{}, "findings": []any{}, "deviations": []string{}, "site_lost": []any{}, "verification_artifact_digest": nil, "verdict": "pass"})
 				stageJSON(t, root, packet.AnswerPath, packet.Draft)
 				ref := filepath.Join(root, packet.ViewPath)
-				code, _, diagnostic := nativeReviewEvent(t, root, "SubagentStop", "opaque-"+packet.Binding.OwnerAgentID, ref)
-				if code != 0 || !strings.Contains(diagnostic, "original consumer") {
-					t.Fatalf("native reception: %d %s", code, diagnostic)
+				// The original consumer observes the saved answer on the natural
+				// successful tool event. SubagentStop stays the final fallback.
+				payload := s7ListenerPayload(t, "opaque-"+packet.Binding.OwnerAgentID, "Review "+ref)
+				_, diagnostic := s7ListenerEvent(t, root, "PostToolUse", payload)
+				if !strings.Contains(diagnostic, "original consumer") {
+					t.Fatalf("native reception: %s", diagnostic)
 				}
 				after := stageSnapshot(t, root)
 				if i < len(packets)-1 {
@@ -96,7 +117,18 @@ func TestS7LastNativeResultHandsMainS10WithoutAnotherTool(t *testing.T) {
 				if after.State["lifecycle"].(map[string]any)["state"] != "acceptance" {
 					t.Fatalf("last Result did not enter S10: %s", diagnostic)
 				}
-				path := filepath.Join(root, "s10", after.State["runtime_id"].(string), "g1", "r1", "acceptance-manifest.json")
+				// The original exit names the real S10 answer path. Main's own
+				// next natural observation prepares that same file.
+				const marker = "S10 acceptance answer: "
+				index := strings.Index(diagnostic, marker)
+				if index < 0 {
+					t.Fatalf("original exit did not name the S10 answer: %s", diagnostic)
+				}
+				fields := strings.Fields(diagnostic[index+len(marker):])
+				if len(fields) == 0 {
+					t.Fatalf("original exit named no S10 answer: %s", diagnostic)
+				}
+				path := strings.TrimSuffix(fields[0], ".")
 				if _, err := os.Stat(path); err != nil {
 					t.Fatalf("same outlet did not prepare S10: %v; %s", err, diagnostic)
 				}
@@ -118,5 +150,84 @@ func TestS7LastNativeResultHandsMainS10WithoutAnotherTool(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// The last professional decision may arrive in Main's existing Plan after all
+// Reviewers have already answered. That same natural observation owns exit.
+func TestS7MainFinalPlanDecisionContinuesOriginalS10Outlet(t *testing.T) {
+	root := fixtures.FreshRoot(t)
+	state := fixtures.BaseState(t, root, "verification", "planned", 1)
+	state["schema_version"] = "1.2.0"
+	state["configuration"].(map[string]any)["optimization"] = map[string]any{"packet": true}
+	state["review"].(map[string]any)["round_entry"] = map[string]any{"plan_id": "review-plan-final-main-decision", "transition_id": "TR-006", "baseline_generation": 1, "change_impact_ref": nil}
+	fixtures.WriteState(t, root, state)
+	stageCLI(t, "runtime", "workspace", "bind", "--root", root)
+	path := review.PlanQuestionnairePath(root, stageSnapshot(t, root).State)
+	entryQuestionnaireHook(t, root, "PreToolUse", path)
+	planPath := minimalReviewPlan(t, t.TempDir(), "review-plan-final-main-decision")
+	data, err := os.ReadFile(planPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var plan map[string]any
+	if err := json.Unmarshal(data, &plan); err != nil {
+		t.Fatal(err)
+	}
+	plan["assignments"] = plan["assignments"].([]any)[:1]
+	data, _ = json.Marshal(plan)
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if out := entryQuestionnaireHook(t, root, "PostToolUse", path); !strings.Contains(out, "review-plan: registered") {
+		t.Fatalf("partial plan was not received: %s", out)
+	}
+	for _, id := range []string{"assignment-dv-1"} {
+		markAssignmentDispatched(t, root, id, "reviewer-"+id)
+	}
+	current := stageSnapshot(t, root)
+	for _, raw := range current.State["entities"].(map[string]any)["agents"].([]any) {
+		raw.(map[string]any)["dispatch_mode"] = "plan_checkpoint"
+	}
+	stageJSON(t, root, ".claude/loop-state.json", current.State)
+	var packets []workpacket.ReviewResultPacket
+	if err := json.Unmarshal([]byte(stageCLI(t, "runtime", "stage-answer", "issue", "--root", root, "--agent", "Main")), &packets); err != nil || len(packets) != 1 {
+		t.Fatalf("packets: %v %d", err, len(packets))
+	}
+	for _, packet := range packets {
+		var claims []any
+		for _, id := range packet.Binding.ClaimIDs {
+			claims = append(claims, map[string]any{"claim_id": id, "conclusion": "pass", "method": "review", "observed": "observed result", "evidence_refs": []string{}})
+		}
+		packet.Draft.Answer, _ = json.Marshal(map[string]any{"claim_results": claims, "blocked_claims": []any{}, "checks": []any{}, "findings": []any{}, "deviations": []string{}, "site_lost": []any{}, "verdict": "pass"})
+		stageJSON(t, root, packet.AnswerPath, packet.Draft)
+		// The original consumer observes the saved answer on the natural
+		// successful tool event. SubagentStop stays the final fallback.
+		payload := s7ListenerPayload(t, "opaque-"+packet.Binding.OwnerAgentID, "Review "+filepath.Join(root, packet.ViewPath))
+		_, diag := s7ListenerEvent(t, root, "PostToolUse", payload)
+		if !strings.Contains(diag, "original consumer") {
+			t.Fatalf("review reception: %s", diag)
+		}
+	}
+	if got := stageSnapshot(t, root).State["lifecycle"].(map[string]any)["state"]; got != "verification" {
+		t.Fatalf("unassigned required Claim advanced prematurely: %v", got)
+	}
+	qa := plan["claims"].([]any)[1].(map[string]any)
+	qa["applicability"] = "not_applicable"
+	data, _ = json.Marshal(plan)
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	out := s7MainNaturalPre(t, root)
+	if !strings.Contains(out, "review-plan: revised") || !strings.Contains(out, "TR-009") {
+		t.Fatalf("Main decision did not continue original exit: %s", out)
+	}
+	after := stageSnapshot(t, root)
+	if got := after.State["lifecycle"].(map[string]any)["state"]; got != "acceptance" {
+		t.Fatalf("original S10 outlet did not run: %v %s", got, out)
+	}
+	s7MainNaturalPre(t, root)
+	if got := stageSnapshot(t, root).Revision; got != after.Revision {
+		t.Fatalf("subsequent natural event repeated reception: %d -> %d", after.Revision, got)
 	}
 }

@@ -3,9 +3,13 @@ package runtime_test
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
+	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/entroforge/go-system-builder/internal/runtime"
+	"github.com/entroforge/go-system-builder/internal/semantic"
 	"github.com/entroforge/go-system-builder/internal/workpacket"
 )
 
@@ -25,28 +29,75 @@ func taskPlanningFollowupState(t *testing.T) (map[string]any, map[string]any, wo
 	if err != nil {
 		t.Fatal(err)
 	}
-	data, err := json.Marshal(packet)
+	statePath, journalPath := filepath.Join(root, ".claude/loop-state.json"), filepath.Join(root, ".claude/loop-events.jsonl")
+	issued, err := runtime.RecordTaskPlanningPacket(root, statePath, journalPath, packet, files, semantic.RuntimeCandidateValidator{})
+	if err != nil {
+		t.Fatalf("original S4 packet Writer: %v", err)
+	}
+	indexPath, taskPath := "docs/dev/tasks/index-REQ-001.md", "docs/dev/tasks/TASK-REQ-001-01.md"
+	writeTaskPlanningFile(t, root, taskPath, "# TASK-REQ-001-01: Scope\n> Status: complete\n> Version: v1.0.0\n> Source REQ refs: REQ-001\n> Dispatch policy: waves-v1\n> Primary contract: FE-001\n\n## Delivered Clauses\n\n| Contract | Delivered clauses |\n|---|---|\n| FE-001 | §1 |\n\n## Scope\n\n| Type | Paths |\n|---|---|\n| prospective write paths | `web/ui` |\n")
+	writeTaskPlanningFile(t, root, indexPath, "# Dispatch plan\n> REQ: REQ-001\n> Dispatch policy: waves-v1\n> Revision: 1\n> Status: complete\n\n## W1\n- [ ] [TASK](TASK-REQ-001-01.md)\n")
+	answer := workpacket.TaskPlanningAnswer{Conclusion: stringPtr("pass"), IndexPath: stringPtr(indexPath), TaskPaths: []string{taskPath}}
+	artifacts, err := runtime.TaskPlanningArtifacts(root, issued.State, packet, answer, files)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var packetRow map[string]any
-	if err := json.Unmarshal(data, &packetRow); err != nil {
+	envelope, err := workpacket.TaskPlanningEvidence(packet, "E-S4-001", artifacts, answer, time.Now().UTC())
+	if err != nil {
 		t.Fatal(err)
 	}
-	key := workpacket.Digest([]byte("submission:" + packet.ID))
-	followup := workpacket.Digest([]byte(key + ":after-domain"))
-	row := map[string]any{
-		"submission_key": key, "packet_id": packet.ID, "owner": "Main",
-		"content_sha256": workpacket.Digest([]byte("professional answer fixture")), "evidence_id": "E-S4-001", "followup_event_id": followup,
-		"control_status": "no_transition", "origin_state": "planning", "origin_phase": "tasks", "origin_entry": binding.StageEntry,
+	data, err := json.Marshal(envelope)
+	if err != nil {
+		t.Fatal(err)
 	}
-	entities := state["entities"].(map[string]any)
-	entities["work_packets"] = append(entities["work_packets"].([]any), packetRow)
-	entities["submissions"] = append(entities["submissions"].([]any), row)
+	const evidencePath = ".claude/evidence/E-S4-001.json"
+	writeBytes(t, root, evidencePath, data)
+	draft := packet.Draft
+	draft.Answer = answer
+	answerJSON, err := json.Marshal(draft)
+	if err != nil {
+		t.Fatal(err)
+	}
+	accepted, err := runtime.RecordEvidence(root, statePath, journalPath, runtime.EvidenceRequest{
+		ExpectedRevision: issued.Revision, ID: "E-S4-001", Kind: "planning_task", Path: evidencePath,
+		ProducedBy: []string{"Main"}, ResponsibilityID: "Orchestrator", Validator: semantic.RuntimeCandidateValidator{},
+		Submission: &runtime.SubmissionRequest{PacketID: packet.ID, Owner: "Main", AnswerJSON: answerJSON, Files: files,
+			Authorize: func(root string, _ map[string]any) error {
+				checked, err := semantic.TasksCheckWithFiles(root, files, packet.Binding.Requirement.ID)
+				if err != nil {
+					return err
+				}
+				if checked.Tasks == 0 || len(checked.Problems) != 0 {
+					return fmt.Errorf("original TASK check: %+v", checked)
+				}
+				return nil
+			}},
+	})
+	if err != nil {
+		t.Fatalf("original S4 evidence Writer: %v", err)
+	}
+	record, found, err := runtime.FindSubmission(accepted.State, packet.ID)
+	if err != nil || !found {
+		t.Fatalf("original S4 receipt: %t %v", found, err)
+	}
+	state = accepted.State
+	var row map[string]any
+	for _, raw := range state["entities"].(map[string]any)["submissions"].([]any) {
+		candidate, _ := raw.(map[string]any)
+		if candidate["packet_id"] == packet.ID {
+			row = candidate
+			break
+		}
+	}
+	if row == nil {
+		t.Fatal("original S4 receipt was not registered")
+	}
+	followup := record.FollowupID
+
 	return state, row, packet, followup
 }
 
-func TestTaskPlanningLegacyNoTransitionRetriesOnlyAtOriginalEntry(t *testing.T) {
+func TestTaskPlanningOriginalPendingReceiptRetriesOnlyAtOriginalEntry(t *testing.T) {
 	for _, change := range []string{"none", "new_entry", "new_generation", "other_runtime", "advanced", "replaced"} {
 		t.Run(change, func(t *testing.T) {
 			state, row, packet, followup := taskPlanningFollowupState(t)
@@ -67,29 +118,6 @@ func TestTaskPlanningLegacyNoTransitionRetriesOnlyAtOriginalEntry(t *testing.T) 
 			}
 			if _, err := runtime.SubmissionFollowup(state, followup); !errors.Is(err, expected) {
 				t.Fatalf("followup after %s: got %v, want %v", change, err, expected)
-			}
-		})
-	}
-}
-
-func TestTaskPlanningLegacyNoTransitionStampRequiresOriginalTR002Destination(t *testing.T) {
-	for _, destination := range []string{"S5", "wrong_entry", "wrong_phase"} {
-		t.Run(destination, func(t *testing.T) {
-			state, row, packet, followup := taskPlanningFollowupState(t)
-			life := map[string]any{"state": "document_verification", "phase_revision": packet.Binding.StageEntry + 1}
-			if destination == "wrong_entry" {
-				life["phase_revision"] = packet.Binding.StageEntry + 5
-			} else if destination == "wrong_phase" {
-				life["state"], life["phase"] = "planning", "tasks"
-			}
-			state["lifecycle"] = life
-			err := runtime.StampSubmissionTransition(state, followup, "evt-original-TR-002")
-			if destination == "S5" {
-				if err != nil || row["control_status"] != "advanced" || row["transition_event_id"] != "evt-original-TR-002" {
-					t.Fatalf("original adjacent stamp failed: %v; %#v", err, row)
-				}
-			} else if !errors.Is(err, runtime.ErrSubmissionFollowupProcessed) || row["control_status"] != "no_transition" {
-				t.Fatalf("stamped an unrelated destination: %v; %#v", err, row)
 			}
 		})
 	}

@@ -4,13 +4,12 @@
   "title": "Loop Hook Decision",
   "description": "Hook decision envelope. deny is recoverable and machine-actionable; block is reserved for human-only hard stops.",
   "type": "object",
-  "additionalProperties": false,
+  "additionalProperties": true,
   "required": [
     "schema_version",
     "decision_id",
     "policy_id",
     "policy_version",
-    "policy_sha256",
     "hook_event",
     "session_id",
     "runtime_id",
@@ -32,7 +31,6 @@
     "decision_id": {"type": "string", "pattern": "^hook-decision-[A-Za-z0-9._-]+$"},
     "policy_id": {"type": "string", "pattern": "^hook-policy-[A-Za-z0-9._-]+$"},
     "policy_version": {"type": "string", "minLength": 1},
-    "policy_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
     "hook_event": {"type": "string", "minLength": 1},
     "session_id": {"type": "string", "minLength": 1},
     "runtime_id": {"type": ["string", "null"]},
@@ -86,7 +84,7 @@
     "quality_gate": {
       "type": "object",
       "description": "Controller-driven Quality Gate projection (BUG-039-03 §4.1 / SYNC-039 §4). Populated for PreToolUse envelopes so the audit outbox mirrors the wire payload. The `status` field is enum-constrained to the five Controller statuses; `advanced` is only ever observed when `transition_committed=true`.",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": ["status"],
       "properties": {
         "status": {
@@ -95,7 +93,6 @@
         "gate_id": {"type": "string"},
         "candidate_transition": {"type": "string"},
         "observed_revision": {"type": "integer", "minimum": 0},
-        "fingerprint": {"type": "string"},
         "missing": {
           "type": "array",
           "items": {"type": "string", "minLength": 1}

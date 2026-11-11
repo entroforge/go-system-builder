@@ -247,9 +247,11 @@ func TestS8DelegationPreparationPreservesChoiceAndRequiresCurrentBinding(t *test
 	if !bytes.Equal(authored, after) || !strings.Contains(context, "Optional finite") {
 		t.Fatal("preparation overwrote or made finite delegation mandatory")
 	}
+	// A changed recorded REQ digest is not a source qualification. The original
+	// application must stay on the same responsibility path.
 	bound := mapFieldCLI(current.State, "bound_req")
 	bound["sha256"] = strings.Repeat("f", 64)
-	if samePath(repairDelegationApplicationPaths(root, current.State)[0], path) {
-		t.Fatal("old finite grant application followed changed REQ hash")
+	if !samePath(repairDelegationApplicationPaths(root, current.State)[0], path) {
+		t.Fatal("original finite grant application moved on a changed REQ digest")
 	}
 }

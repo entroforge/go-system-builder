@@ -28,10 +28,8 @@
       "minLength": 1
     },
     "authoring_path": {
-      "enum": [
-        ".claude/submissions/stage-answer.json",
-        ".loop-submissions/stage-answer.json"
-      ]
+      "type": "string",
+      "pattern": "^([.]claude/submissions/stage-answer[.]json|[.]loop-submissions(-candidate-[1-9][0-9]*)?/stage-answer[.]json)$"
     },
     "frozen_input_root": {
       "const": ".claude/inputs"

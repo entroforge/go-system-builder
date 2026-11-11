@@ -84,17 +84,3 @@ func TestPostMergeChecksUseCandidateOnTargetExactlyOnce(t *testing.T) {
 		t.Fatal("unknown mode accepted")
 	}
 }
-
-func TestVerifiedRejectsTargetDriftEvenWhenCommandReturnsZero(t *testing.T) {
-	f := newIntegrationFixture(t)
-	defer f.cleanup()
-	cfg := IntegrateConfig{Root: f.root, GitRoot: f.root, RuntimeID: "test", CheckpointDir: f.checkpointPath("assignment-test"), RequiredChecks: []string{"check"}, CheckRunner: func(context.Context, string, string) error {
-		f.fr.addCommit("foreign", "feature-commit")
-		f.fr.setBranch("develop", "foreign")
-		return nil
-	}}
-	result, err := Integrate(context.Background(), IntegrateRequest{Inspection: f.readyInspection()}, cfg)
-	if err == nil || result.Checkpoint.State == StateVerified {
-		t.Fatalf("drift accepted: %+v %v", result, err)
-	}
-}

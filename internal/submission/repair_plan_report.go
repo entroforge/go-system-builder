@@ -1,7 +1,6 @@
 package submission
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -20,6 +19,10 @@ const repairPlanReportAnswerLimit int64 = 20 << 20
 // IssueRepairPlanReports delegates publication to the original S9 packet
 // Writer. It adds no packet registry or receipt authority of its own.
 func (s *Service) IssueRepairPlanReports(ctx context.Context, ownerFilter string) ([]workpacket.RepairPlanReportPacket, error) {
+	return s.IssueRepairPlanReportsPrepared(ctx, ownerFilter, nil)
+}
+
+func (s *Service) IssueRepairPlanReportsPrepared(ctx context.Context, ownerFilter string, prepare repair.RepairPlanReportPreparation) ([]workpacket.RepairPlanReportPacket, error) {
 	s = s.WithContext(ctx)
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -27,26 +30,32 @@ func (s *Service) IssueRepairPlanReports(ctx context.Context, ownerFilter string
 	// The original packet Issuer owns pending-marker recovery and its own CAS.
 	// Do not pre-read through the read-only service snapshot here: a pending
 	// original PACKET-ISSUE must be recoverable by this named mutation path.
-	packets, err := repair.IssueRepairPlanReportPacketsContext(ctx, s.Root, s.StatePath, s.JournalPath, -1, ownerFilter)
+	packets, err := repair.IssueRepairPlanReportPacketsPreparedContext(ctx, s.Root, s.StatePath, s.JournalPath, -1, ownerFilter, prepare)
 	if err != nil {
 		return nil, err
 	}
-	for _, packet := range packets {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		if err := publishRepairPlanReportView(s.Root, packet); err != nil {
-			return nil, err
-		}
-		draft, err := jsonMarshalIndent(packet.Draft)
-		if err != nil {
-			return nil, err
-		}
-		if _, err := workpacket.PublishBounded(s.Root, packet.AnswerPath, append(draft, '\n'), repairPlanReportAnswerLimit); err != nil {
-			return nil, err
-		}
-	}
 	return packets, nil
+}
+
+// IssueRepairPlanReportForAssignment publishes only the requested original
+// responsibility and returns whether this call actually issued its packet.
+func (s *Service) IssueRepairPlanReportForAssignment(ctx context.Context, owner, assignmentID string) ([]repair.RepairPlanReportIssuance, error) {
+	return s.IssueRepairPlanReportForAssignmentPrepared(ctx, owner, assignmentID, nil)
+}
+
+// IssueRepairPlanReportForAssignmentPrepared keeps native source preparation
+// inside the original assignment-scoped issuer, before durable issuance.
+func (s *Service) IssueRepairPlanReportForAssignmentPrepared(ctx context.Context, owner, assignmentID string, prepare repair.RepairPlanReportPreparation) ([]repair.RepairPlanReportIssuance, error) {
+	s = s.WithContext(ctx)
+	results, err := repair.IssueRepairPlanReportForAssignmentPreparedContext(ctx, s.Root, s.StatePath, s.JournalPath, -1, owner, assignmentID, prepare)
+	if err != nil {
+		return nil, err
+	}
+	packets := make([]workpacket.RepairPlanReportPacket, 0, len(results))
+	for _, result := range results {
+		packets = append(packets, result.Packet)
+	}
+	return results, nil
 }
 
 // RepairPlanReportSourceForPath resolves a current answer path to its exact
@@ -64,6 +73,16 @@ func (s *Service) RepairPlanReportSourceForPath(path string) (workpacket.RepairP
 // RepairPlanReport Writer. The legacy authorization callback is not a save
 // qualification; the registered packet supplies the current responsibility.
 func (s *Service) SaveRepairPlanReportFrom(ctx context.Context, owner, path, sourceRoot string, authorize func(root string, state map[string]any) error) (Receipt, error) {
+	return s.saveRepairPlanReport(ctx, owner, path, sourceRoot, nil)
+}
+
+// SaveRepairPlanReportBytes consumes the already located author's original.
+// No typed authoring copy is written, and accepted receipts never reopen it.
+func (s *Service) SaveRepairPlanReportBytes(ctx context.Context, owner, packetID, sourceRoot string, raw []byte) (Receipt, error) {
+	return s.saveRepairPlanReport(ctx, owner, packetID, sourceRoot, raw)
+}
+
+func (s *Service) saveRepairPlanReport(ctx context.Context, owner, path, sourceRoot string, raw []byte) (Receipt, error) {
 	s = s.WithContext(ctx)
 	snapshot, err := s.snapshot()
 	if err != nil {
@@ -72,7 +91,15 @@ func (s *Service) SaveRepairPlanReportFrom(ctx context.Context, owner, path, sou
 	if err := ctx.Err(); err != nil {
 		return rejected(snapshot, "", err), err
 	}
-	packet, actualRoot, found, err := currentRepairPlanReportSourceForPath(s.Root, snapshot.State, path, s.Context())
+	var packet workpacket.RepairPlanReportPacket
+	var actualRoot string
+	var found bool
+	if raw != nil {
+		packet, found, err = repairPlanReportByReference(s.Root, snapshot.State, path, ctx)
+		actualRoot = sourceRoot
+	} else {
+		packet, actualRoot, found, err = currentRepairPlanReportSourceForPath(s.Root, snapshot.State, path, s.Context())
+	}
 	if err != nil {
 		return rejected(snapshot, "", err), err
 	}
@@ -84,7 +111,8 @@ func (s *Service) SaveRepairPlanReportFrom(ctx context.Context, owner, path, sou
 	sourceRoot = actualRoot
 	next, report, submitErr := repair.SubmitIssuedRepairPlanReport(s.Root, s.StatePath, s.JournalPath, repair.IssuedPlanReportRequest{
 		Context:          ctx,
-		ExpectedRevision: snapshot.Revision,
+		AnswerBytes:      raw,
+		ExpectedRevision: -1,
 		PacketID:         packet.ID,
 		AnswerPath:       packet.AnswerPath,
 		OwnerAgentID:     owner,
@@ -101,17 +129,12 @@ func (s *Service) SaveRepairPlanReportFrom(ctx context.Context, owner, path, sou
 	if err != nil {
 		return receipt, err
 	}
-	receipt.NextAction = "本人 S9 PlanReport 已记录；原生 Builder 继续原专业修复、自检并返回实际工作树中的 Result，由 Stop 接收。Main 单独完成原集成与必要检查，无需重复提交 Plan 或分工卷；已冻结旧执行保留原恢复路径。"
-	// Only an actual existing frozen execution keeps workspace recovery.
-	// A missing native brief is a preparation gap, never legacy authority.
-	workspaceState, _ := next.State["workspace"].(map[string]any)
-	executions, _ := workspaceState["executions"].(map[string]any)
-	execution, _ := executions[packet.Binding.ManifestAssignmentID].(map[string]any)
-	brief := filepath.Join(s.Root, filepath.Dir(packet.ViewPath), packet.ID, "native", "brief.md")
-	if len(execution) > 0 && execution["purpose"] != "native_delivery" {
-		receipt.NextAction = fmt.Sprintf("本人 S9 PlanReport 已记录；Main 保留已登记旧执行的原恢复位置：runtime workspace prepare --root %q --assignment %q --agent %q --check-location %s。准备完成后提供本人的准确 RepairResult 卷，无需重复提交 Plan 或分工卷。", s.Root, packet.Binding.ManifestAssignmentID, owner, execution["check_location"])
-	} else if _, err := os.Stat(brief); err != nil {
-		receipt.NextAction += fmt.Sprintf(" 原生简报 %s 暂不可读，由 Main/系统恢复该原准备资料；不转为旧 workspace startup，不重填已接收 Plan。", brief)
+	receipt.NextAction = "本人 S9 PlanReport 已记录；原生 Builder 继续原专业修复、自检，在实际工作树的准确原路径保存 Result；适用 PreToolUse、成功 PostToolUse 和 Stop/SubagentStop 经原消费者接收，无需额外提交或返回路径。Main 单独完成原集成与必要检查，无需重复提交 Plan 或分工卷。"
+	if packet.BriefPath != "" {
+		brief := filepath.Join(s.Root, filepath.FromSlash(packet.BriefPath))
+		if _, err := os.Stat(brief); err != nil {
+			receipt.NextAction += fmt.Sprintf(" 原生简报 %s 暂不可读，由 Main/系统恢复该原准备资料；不重填已接收 Plan。", brief)
+		}
 	}
 	return receipt, nil
 }
@@ -141,11 +164,22 @@ func (s *Service) RepairPlanReportReceipt(owner, ref string) (Receipt, error) {
 }
 
 func currentRepairPlanReportSourceForPath(root string, state map[string]any, inputPath string, contexts ...context.Context) (workpacket.RepairPlanReportPacket, string, bool, error) {
-	packets, err := loopruntime.CurrentRepairPlanReportPacketsContext(submissionRepairPacketContext(contexts...), root, state, "")
+	ctx := submissionRepairPacketContext(contexts...)
+	routes, err := loopruntime.CurrentRepairPlanReportRoutesContext(ctx, state)
 	if err != nil {
 		return workpacket.RepairPlanReportPacket{}, "", false, err
 	}
-	return repairPlanReportPathInPackets(root, inputPath, packets)
+	// Compare exact original coordinates before reading any selected body.
+	coordinates := make([]workpacket.RepairPlanReportPacket, 0, len(routes))
+	for _, route := range routes {
+		coordinates = append(coordinates, workpacket.RepairPlanReportPacket{ID: route.ID, AnswerPath: route.AnswerPath})
+	}
+	selected, source, found, err := repairPlanReportPathInPackets(root, inputPath, coordinates)
+	if err != nil || !found {
+		return selected, source, found, err
+	}
+	packet, found, err := loopruntime.FindRepairPlanReportPacketContext(loopruntime.WithPacketBodyRoot(ctx, root), state, selected.ID)
+	return packet, source, found, err
 }
 
 func repairPlanReportByReference(root string, state map[string]any, ref string, contexts ...context.Context) (workpacket.RepairPlanReportPacket, bool, error) {
@@ -194,40 +228,10 @@ func repairPlanReportPathInPackets(root, inputPath string, packets []workpacket.
 	return *selected, rootAbs, true, nil
 }
 
-func publishRepairPlanReportView(root string, packet workpacket.RepairPlanReportPacket) error {
-	mainRoot, err := filepath.Abs(root)
-	if err != nil {
-		return err
-	}
-	display := packet.Draft
-	display.Read = append([]workpacket.ReadItem(nil), packet.Draft.Read...)
-	for i := range display.Read {
-		if !filepath.IsAbs(display.Read[i].Path) {
-			display.Read[i].Path = filepath.Join(mainRoot, filepath.FromSlash(display.Read[i].Path))
-		}
-	}
-	data, err := jsonMarshalIndent(display)
-	if err != nil {
-		return err
-	}
-	data = append(data, '\n')
-	stored, err := workpacket.PublishBounded(root, packet.ViewPath, data, repairPlanReportAnswerLimit)
-	if err != nil {
-		return err
-	}
-	if !bytes.Equal(stored, data) {
-		return fmt.Errorf("S9 issued view differs from the professional questionnaire: %s", packet.ViewPath)
-	}
-	return nil
-}
-
 func sameRepairPlanReportPacket(a, b workpacket.RepairPlanReportPacket) bool {
-	left, err := workpacket.RepairPlanReportPacketDigest(a)
-	if err != nil {
-		return false
-	}
-	right, err := workpacket.RepairPlanReportPacketDigest(b)
-	return err == nil && left == right
+	return a.ID == b.ID && a.Binding.RuntimeID == b.Binding.RuntimeID &&
+		a.Binding.SessionID == b.Binding.SessionID && a.Binding.RepairAssignmentID == b.Binding.RepairAssignmentID &&
+		a.Binding.OwnerAgentID == b.Binding.OwnerAgentID
 }
 
 func hasRepairPlanReportPacket(packets []workpacket.RepairPlanReportPacket, expected workpacket.RepairPlanReportPacket) bool {
@@ -242,7 +246,7 @@ func hasRepairPlanReportPacket(packets []workpacket.RepairPlanReportPacket, expe
 func acceptedRepairPlanReportReceipt(snapshot loopruntime.Snapshot, packet workpacket.RepairPlanReportPacket, accepted loopruntime.RepairPlanReportReceipt) (Receipt, error) {
 	result := emptyReceipt(snapshot, packet.ID)
 	if accepted.PacketID != packet.ID || accepted.OwnerAgentID != packet.Binding.OwnerAgentID ||
-		accepted.ReportID != packet.ReportID || accepted.AnswerSHA256 == "" || accepted.WorkComplete {
+		accepted.ReportID != packet.ReportID || accepted.WorkComplete {
 		return result, errors.New("original S9 PlanReport receipt differs from its issued packet")
 	}
 	result.SubmissionKey = accepted.AcceptedIdempotencyKey

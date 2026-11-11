@@ -5,8 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"time"
-
-	"github.com/entroforge/go-system-builder/internal/workpacket"
 )
 
 var ErrSubmissionFollowupProcessed = errors.New("submission followup already processed")
@@ -29,14 +27,10 @@ func SubmissionFollowup(state map[string]any, eventID string) (SubmissionRecord,
 		if p, taskPlanning, err := FindTaskPlanningPacket(state, record.PacketID); err != nil {
 			return record, err
 		} else if taskPlanning {
-			key := workpacket.Digest([]byte("submission:" + p.ID))
-			if record.Key != key || record.FollowupID != workpacket.Digest([]byte(key+":after-domain")) || record.Owner != "Main" || record.OriginState != "planning" || record.OriginPhase != "tasks" || record.OriginEntry != p.Binding.StageEntry {
+			if record.Key == "" || record.FollowupID == "" || record.Owner != "Main" || record.OriginState != "planning" || record.OriginPhase != "tasks" || record.OriginEntry != p.Binding.StageEntry {
 				return record, fmt.Errorf("invalid task planning followup binding")
 			}
-			// A pre-fix S4 evaluation could have stored no_transition while
-			// TR-002 was not ready. It remains retryable only at this exact
-			// original tasks entry; an advanced or replaced submission is history.
-			if record.ControlStatus != "pending" && record.ControlStatus != "no_transition" {
+			if record.ControlStatus != "pending" {
 				return record, ErrSubmissionFollowupProcessed
 			}
 			life, _ := state["lifecycle"].(map[string]any)
@@ -52,14 +46,10 @@ func SubmissionFollowup(state map[string]any, eventID string) (SubmissionRecord,
 		if p, contract, err := FindContractPacket(state, record.PacketID); err != nil {
 			return record, err
 		} else if contract {
-			key := workpacket.Digest([]byte("submission:" + p.ID))
-			if record.Key != key || record.FollowupID != workpacket.Digest([]byte(key+":after-domain")) || record.Owner != "Main" || record.OriginState != "planning" || record.OriginPhase != "contracts" || record.OriginEntry != p.Binding.StageEntry {
+			if record.Key == "" || record.FollowupID == "" || record.Owner != "Main" || record.OriginState != "planning" || record.OriginPhase != "contracts" || record.OriginEntry != p.Binding.StageEntry {
 				return record, fmt.Errorf("invalid contract followup binding")
 			}
-			// Older S3 evaluations recorded no_transition before the gate
-			// was ready. That is retryable only at this exact original entry;
-			// an advanced or replaced submission stays historical.
-			if record.ControlStatus != "pending" && record.ControlStatus != "no_transition" {
+			if record.ControlStatus != "pending" {
 				return record, ErrSubmissionFollowupProcessed
 			}
 			life, _ := state["lifecycle"].(map[string]any)
@@ -78,7 +68,7 @@ func SubmissionFollowup(state map[string]any, eventID string) (SubmissionRecord,
 			if record.OriginState != "planning" || record.OriginPhase != "design" || record.OriginEntry != p.Binding.StageEntry {
 				return record, fmt.Errorf("design followup responsibility differs")
 			}
-			if record.ControlStatus != "pending" && record.ControlStatus != "no_transition" {
+			if record.ControlStatus != "pending" {
 				return record, ErrSubmissionFollowupProcessed
 			}
 			life, _ := state["lifecycle"].(map[string]any)
@@ -95,8 +85,7 @@ func SubmissionFollowup(state map[string]any, eventID string) (SubmissionRecord,
 		if err != nil || !ok {
 			return record, fmt.Errorf("followup has no issued packet")
 		}
-		key := workpacket.Digest([]byte("submission:" + packet.ID))
-		if record.Key != key || record.FollowupID != workpacket.Digest([]byte(key+":after-domain")) || record.Owner != packet.Binding.Owner || record.OriginState != "document_verification" || record.OriginPhase != "" || record.OriginEntry != packet.Binding.StageEntry {
+		if record.Key == "" || record.FollowupID == "" || record.Owner != packet.Binding.Owner || record.OriginState != "document_verification" || record.OriginPhase != "" || record.OriginEntry != packet.Binding.StageEntry {
 			return record, fmt.Errorf("invalid submission followup binding")
 		}
 		if record.ControlStatus != "pending" {
@@ -134,12 +123,7 @@ func setSubmissionControl(state map[string]any, eventID, status, transitionEvent
 		row, _ := raw.(map[string]any)
 		if row["followup_event_id"] == eventID {
 			if row["control_status"] != "pending" {
-				// Stamp runs after the original engine changed the cursor. Only
-				// S2/S3/S4 no_transition origins may complete their original
-				// adjacent move; other processed work remains historical.
-				if row["control_status"] != "no_transition" || status != "advanced" || !validNoTransitionPlanningStamp(state, stringValue(row["packet_id"])) {
-					return ErrSubmissionFollowupProcessed
-				}
+				return ErrSubmissionFollowupProcessed
 			}
 			row["control_status"] = status
 			if transitionEventID != "" {
@@ -149,24 +133,6 @@ func setSubmissionControl(state map[string]any, eventID, status, transitionEvent
 		}
 	}
 	return fmt.Errorf("submission followup is not registered")
-}
-
-func validNoTransitionPlanningStamp(state map[string]any, packetID string) bool {
-	life, _ := state["lifecycle"].(map[string]any)
-	entry, entryErr := integerField(life, "phase_revision")
-	if entryErr != nil {
-		return false
-	}
-	if packet, found, err := FindDesignPacket(state, packetID); err == nil && found {
-		return state["runtime_id"] == packet.Binding.RuntimeID && baselineGeneration(state) == packet.Binding.Generation && life["state"] == "planning" && life["phase"] == "contracts" && entry == packet.Binding.StageEntry+1
-	}
-	if packet, found, err := FindContractPacket(state, packetID); err == nil && found {
-		return state["runtime_id"] == packet.Binding.RuntimeID && baselineGeneration(state) == packet.Binding.Generation && life["state"] == "planning" && life["phase"] == "tasks" && entry == packet.Binding.StageEntry+1
-	}
-	if packet, found, err := FindTaskPlanningPacket(state, packetID); err == nil && found {
-		return state["runtime_id"] == packet.Binding.RuntimeID && baselineGeneration(state) == packet.Binding.Generation && life["state"] == "document_verification" && life["phase"] == nil && entry == packet.Binding.StageEntry+1
-	}
-	return false
 }
 
 // RecordSubmissionEvaluation records a completed, non-transitioning gate

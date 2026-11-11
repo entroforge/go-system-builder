@@ -60,11 +60,20 @@ func TestRuntimeRepairTargetedResumeReopensBlockedVerification(t *testing.T) {
 	req039fixtures.WriteState(t, root, state)
 
 	var stdout, stderr bytes.Buffer
-	code := cli.Run([]string{"runtime", "repair", "targeted", "resume", "--root", root, "--actor", "qa", "--reason", "the browser session was restored"}, strings.NewReader(""), &stdout, &stderr)
+	request := filepath.Join(root, "targeted-request.json")
+	stageJSON(t, root, "targeted-request.json", map[string]any{
+		"reverification_id": "targeted-reverification-1", "runtime_id": "loop-req039-ct", "baseline_generation": 1,
+		"case_id": "investigation-case-1", "original_assignment_id": "assignment-s6-native-context",
+		"performing_assignment_id": "assignment-s6-native-context", "continuity_reason": "the browser session was restored",
+		"impact_id": "impact-1", "assertion_results": []any{}, "scope_compliance": "pass", "result": "pass",
+	})
+	code := cli.Run([]string{"runtime", "repair", "targeted", "create", "--root", root, "--file", request}, strings.NewReader(""), &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("targeted resume code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "new independent targeted reverification") || !strings.Contains(stdout.String(), "targeted_reverification") {
+	// The blocked targeted verification is reopened as a new independent
+	// targeted reverification recorded by the original consumer.
+	if !strings.Contains(stdout.String(), "targeted_reverification") || !strings.Contains(stdout.String(), "targeted-reverification-1.json") {
 		t.Fatalf("targeted resume must expose the next independent verification action: stdout=%s stderr=%s", stdout.String(), stderr.String())
 	}
 }

@@ -4,12 +4,6 @@
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "profile_digest",
-    "subject_digest",
-    "runner_digest",
-    "environment_digest",
-    "dependency_digest",
-    "fixture_digest",
     "profile_id",
     "profile_version",
     "environment",
@@ -17,30 +11,6 @@
     "reuse_eligible"
   ],
   "properties": {
-    "profile_digest": {
-      "type": "string",
-      "pattern": "^[a-f0-9]{64}$"
-    },
-    "subject_digest": {
-      "type": "string",
-      "pattern": "^[a-f0-9]{64}$"
-    },
-    "runner_digest": {
-      "type": "string",
-      "pattern": "^[a-f0-9]{64}$"
-    },
-    "environment_digest": {
-      "type": "string",
-      "pattern": "^[a-f0-9]{64}$"
-    },
-    "dependency_digest": {
-      "type": "string",
-      "pattern": "^[a-f0-9]{64}$"
-    },
-    "fixture_digest": {
-      "type": "string",
-      "pattern": "^[a-f0-9]{64}$"
-    },
     "profile_id": {
       "type": "string",
       "minLength": 1
@@ -76,7 +46,7 @@
       "minLength": 1
     },
     "reuse_eligible": {
-      "const": false
+      "type": "boolean"
     },
     "permissions": {
       "type": "object",
@@ -86,12 +56,6 @@
         "runner",
         "platform",
         "kernel",
-        "binary_sha256",
-        "shell_sha256",
-        "libraries_sha256",
-        "filter_sha256",
-        "policy_sha256",
-        "authority_sha256",
         "main_root",
         "common_dir",
         "worker_root",
@@ -112,24 +76,6 @@
           "type": "string"
         },
         "kernel": {
-          "type": "string"
-        },
-        "binary_sha256": {
-          "type": "string"
-        },
-        "shell_sha256": {
-          "type": "string"
-        },
-        "libraries_sha256": {
-          "type": "string"
-        },
-        "filter_sha256": {
-          "type": "string"
-        },
-        "policy_sha256": {
-          "type": "string"
-        },
-        "authority_sha256": {
           "type": "string"
         },
         "main_root": {
@@ -166,18 +112,6 @@
           "type": "string"
         }
       }
-    },
-    "permission_digest": {
-      "type": "string",
-      "pattern": "^[a-f0-9]{64}$"
     }
-  },
-  "dependentRequired": {
-    "permissions": [
-      "permission_digest"
-    ],
-    "permission_digest": [
-      "permissions"
-    ]
   }
 }

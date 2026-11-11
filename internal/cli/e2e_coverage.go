@@ -1,11 +1,9 @@
 package cli
 
 import (
-	"crypto/sha256"
 	"flag"
 	"fmt"
 	"io"
-	"os"
 	"strings"
 
 	"github.com/entroforge/go-system-builder/internal/e2ecoverage"
@@ -30,12 +28,6 @@ func runE2ECoverage(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	data, err := os.ReadFile(*inventoryPath)
-	if err != nil {
-		fmt.Fprintln(stderr, formatFailure("e2e-coverage", err))
-		return 1
-	}
-
 	inv, err := e2ecoverage.LoadInventory(*inventoryPath)
 	if err != nil {
 		fmt.Fprintln(stderr, formatFailure("e2e-coverage", err))
@@ -44,7 +36,6 @@ func runE2ECoverage(args []string, stdout, stderr io.Writer) int {
 
 	report := e2ecoverage.Score(inv)
 	report.InventoryPath = *inventoryPath
-	report.InventorySHA = fmt.Sprintf("%x", sha256.Sum256(data))
 
 	e2ecoverage.FormatReport(stdout, report)
 

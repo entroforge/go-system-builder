@@ -3,6 +3,7 @@ package review
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path"
@@ -32,6 +33,7 @@ func knownE2ECases(ctx context.Context, root string, state map[string]any, plan 
 		return nil, err
 	}
 	modules := map[string]bool{}
+	var unavailable error
 	bound, _ := state["bound_req"].(map[string]any)
 	if p := stringField(bound["path"]); p != "" {
 		body, err := read(p)
@@ -39,30 +41,30 @@ func knownE2ECases(ctx context.Context, root string, state map[string]any, plan 
 		// at registration. Preserve that recovery boundary, without interpreting
 		// absent input as permission to scan the entire project.
 		if err != nil && !(plan.ProductBaseline == nil && os.IsNotExist(err)) {
-			return nil, fmt.Errorf("S7_CASE_SOURCE: Main must restore bound REQ %s: %w", p, err)
+			unavailable = errors.Join(unavailable, fmt.Errorf("REQ %s is unavailable: %w", p, err))
 		}
-		addModulePaths(modules, p, string(body))
+		if err == nil {
+			addModulePaths(modules, p, string(body))
+		}
 	}
 	var tasks []taskDoc
 	if plan.ProductBaseline != nil {
 		for _, t := range plan.ProductBaseline.Tasks {
-			tasks = append(tasks, taskDoc{id: t.ID, path: t.Path, sha256: t.SHA256})
+			tasks = append(tasks, taskDoc{id: t.ID, path: t.Path})
 		}
 	} else {
 		for _, raw := range stateDocuments(state) {
 			doc, _ := raw.(map[string]any)
 			if doc["kind"] == "task" && intField(doc["generation"]) == baselineGeneration(state) {
-				tasks = append(tasks, taskDoc{id: stringField(doc["id"]), path: stringField(doc["path"]), sha256: stringField(doc["sha256"])})
+				tasks = append(tasks, taskDoc{id: stringField(doc["id"]), path: stringField(doc["path"])})
 			}
 		}
 	}
 	for _, task := range tasks {
 		body, err := read(task.path)
 		if err != nil {
-			return nil, fmt.Errorf("S7_CASE_SOURCE: Main must restore frozen TASK %s: %w", task.path, err)
-		}
-		if task.sha256 == "" || sha256Of(body) != task.sha256 {
-			return nil, fmt.Errorf("S7_CASE_SOURCE: frozen TASK %s changed; Main must restore its original source", task.path)
+			unavailable = errors.Join(unavailable, fmt.Errorf("TASK %s is unavailable: %w", task.path, err))
+			continue
 		}
 		text := string(body)
 		if h := moduleTruthHeader.FindStringSubmatch(text); len(h) == 2 {
@@ -94,19 +96,23 @@ func knownE2ECases(ctx context.Context, root string, state map[string]any, plan 
 		p := "docs/design/prototypes/" + name + "/cases.json"
 		body, err := read(p)
 		if err != nil {
-			return nil, fmt.Errorf("S7_CASE_SOURCE: Main must restore declared module CASE source %s: %w", p, err)
+			unavailable = errors.Join(unavailable, fmt.Errorf("CASE source %s is unavailable: %w", p, err))
+			continue
 		}
 		var doc e2eCasesDocument
 		if err := json.Unmarshal(body, &doc); err != nil {
-			return nil, fmt.Errorf("S7_CASE_SOURCE: decode %s: %w", p, err)
+			unavailable = errors.Join(unavailable, fmt.Errorf("decode CASE source %s: %w", p, err))
+			continue
 		}
 		if len(doc.Cases) == 0 {
-			return nil, fmt.Errorf("S7_CASE_SOURCE: declared module %s has no CASE list; Main must restore its original scenario source", name)
+			unavailable = errors.Join(unavailable, fmt.Errorf("CASE source for %s has no CASE list", name))
+			continue
 		}
 		seen := map[string]bool{}
 		for _, c := range doc.Cases {
 			if c.ID == "" || seen[c.ID] {
-				return nil, fmt.Errorf("S7_CASE_SOURCE: empty or duplicate CASE %q in %s; Main must correct the original scenario source", c.ID, p)
+				unavailable = errors.Join(unavailable, fmt.Errorf("CASE source %s contains an empty or duplicate CASE %q", p, c.ID))
+				continue
 			}
 			seen[c.ID] = true
 			if c.Required && c.BrowserRequired {
@@ -114,7 +120,7 @@ func knownE2ECases(ctx context.Context, root string, state map[string]any, plan 
 			}
 		}
 	}
-	return cases, nil
+	return cases, unavailable
 }
 
 func addModulePaths(modules map[string]bool, source, text string) {

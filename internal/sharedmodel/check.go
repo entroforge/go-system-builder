@@ -52,7 +52,9 @@ func IndexRequirement(content string) (string, error) {
 
 // Section returns an H2 section, including numbered H2 headings.
 func Section(s, name string) string {
-	s = fenceRE.ReplaceAllString(s, "")
+	if strings.Contains(s, "```") {
+		s = fenceRE.ReplaceAllString(s, "")
+	}
 	active := false
 	var lines []string
 	for _, line := range strings.Split(s, "\n") {

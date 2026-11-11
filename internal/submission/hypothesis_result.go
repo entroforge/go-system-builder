@@ -62,6 +62,12 @@ func (s *Service) HypothesisResultSourceForPath(path string) (workpacket.Hypothe
 // bind the owner and source; authorize is an optional compatibility callback,
 // not a normal Hook identity/session requirement.
 func (s *Service) SaveHypothesisResultFrom(ctx context.Context, owner, path, sourceRoot string, authorize func(root string, state map[string]any) error) (Receipt, error) {
+	return s.ObserveHypothesisResultFrom(ctx, owner, path, sourceRoot, authorize, true)
+}
+
+// ObserveHypothesisResultFrom receives an original active delivery or reuses
+// its accepted fact. It does not add an author signal or persist a cache.
+func (s *Service) ObserveHypothesisResultFrom(ctx context.Context, owner, path, sourceRoot string, authorize func(root string, state map[string]any) error, continueUnresolved bool) (Receipt, error) {
 	s = s.WithContext(ctx)
 	snapshot, err := s.snapshot()
 	if err != nil {
@@ -92,25 +98,18 @@ func (s *Service) SaveHypothesisResultFrom(ctx context.Context, owner, path, sou
 	if err := ctx.Err(); err != nil {
 		return rejected(snapshot, packet.ID, err), err
 	}
-	next, submitErr := investigation.SubmitIssuedHypothesisResult(s.Root, s.StatePath, s.JournalPath, investigation.IssuedHypothesisResultRequest{
+	next, accepted, submitErr := investigation.ReceiveIssuedHypothesisResult(s.Root, s.StatePath, s.JournalPath, investigation.IssuedHypothesisResultRequest{
 		Context:          ctx,
-		ExpectedRevision: snapshot.Revision,
+		ExpectedRevision: -1,
 		PacketID:         packet.ID,
 		AnswerPath:       packet.AnswerPath,
 		OwnerAgentID:     owner,
 		SourceRoot:       actualRoot,
 		AuthorizeSource:  authorize,
 		OccurredAt:       time.Now().UTC(),
-	})
+	}, continueUnresolved)
 	if submitErr != nil {
 		return rejected(snapshot, packet.ID, submitErr), submitErr
-	}
-	accepted, ok, err := investigation.IssuedHypothesisResultReceipt(s.Root, next.State, packet.ID, owner)
-	if err != nil {
-		return Receipt{}, err
-	}
-	if !ok {
-		return rejected(next, packet.ID, errors.New("original Case consumer returned without a verified HypothesisResult receipt")), nil
 	}
 	return acceptedHypothesisResultReceipt(next, packet, accepted)
 }
@@ -147,7 +146,7 @@ func currentHypothesisResultSourceForPath(root string, state map[string]any, inp
 	if err != nil {
 		return workpacket.HypothesisResultPacket{}, "", false, err
 	}
-	return hypothesisResultPathInRoots(root, state, inputPath, packets, true)
+	return hypothesisResultPathInRoots(root, state, inputPath, packets)
 }
 
 func hypothesisResultByReference(root string, state map[string]any, ref string) (workpacket.HypothesisResultPacket, bool, error) {
@@ -158,11 +157,11 @@ func hypothesisResultByReference(root string, state map[string]any, ref string) 
 	if err != nil {
 		return workpacket.HypothesisResultPacket{}, false, err
 	}
-	packet, _, found, err := hypothesisResultPathInRoots(root, state, ref, packets, false)
+	packet, _, found, err := hypothesisResultPathInRoots(root, state, ref, packets)
 	return packet, found, err
 }
 
-func hypothesisResultPathInRoots(root string, state map[string]any, inputPath string, packets []workpacket.HypothesisResultPacket, currentOnly bool) (workpacket.HypothesisResultPacket, string, bool, error) {
+func hypothesisResultPathInRoots(root string, state map[string]any, inputPath string, packets []workpacket.HypothesisResultPacket) (workpacket.HypothesisResultPacket, string, bool, error) {
 	abs := inputPath
 	if !filepath.IsAbs(abs) {
 		abs = filepath.Join(root, filepath.FromSlash(inputPath))
@@ -189,9 +188,6 @@ func hypothesisResultPathInRoots(root string, state map[string]any, inputPath st
 				if execution.AssignmentID != packet.Binding.AssignmentID || execution.RuntimeID != packet.Binding.RuntimeID ||
 					execution.BaselineGeneration != packet.Binding.BaselineGeneration || execution.AgentID != packet.Binding.OwnerAgentID || execution.Status != "ready" {
 					return workpacket.HypothesisResultPacket{}, "", false, errors.New("S8 packet registered execution owner, generation or status differs")
-				}
-				if currentOnly && (packet.Binding.RuntimeID != text(state["runtime_id"]) || packet.Binding.BaselineGeneration != workspace.Generation(state)) {
-					continue
 				}
 				candidateRoot = execution.Path
 			}
@@ -222,12 +218,9 @@ func hypothesisResultPathInRoots(root string, state map[string]any, inputPath st
 }
 
 func sameHypothesisResultPacket(a, b workpacket.HypothesisResultPacket) bool {
-	left, err := workpacket.HypothesisResultPacketDigest(a)
-	if err != nil {
-		return false
-	}
-	right, err := workpacket.HypothesisResultPacketDigest(b)
-	return err == nil && left == right
+	return a.ID != "" && a.ID == b.ID && a.Binding.RuntimeID == b.Binding.RuntimeID &&
+		a.Binding.CaseID == b.Binding.CaseID && a.Binding.AssignmentID == b.Binding.AssignmentID &&
+		a.Binding.OwnerAgentID == b.Binding.OwnerAgentID
 }
 
 func containsHypothesisResultPacket(values []workpacket.HypothesisResultPacket, expected workpacket.HypothesisResultPacket) bool {
@@ -241,15 +234,17 @@ func containsHypothesisResultPacket(values []workpacket.HypothesisResultPacket, 
 
 func acceptedHypothesisResultReceipt(snapshot loopruntime.Snapshot, packet workpacket.HypothesisResultPacket, accepted loopruntime.HypothesisResultReceipt) (Receipt, error) {
 	result := emptyReceipt(snapshot, packet.ID)
-	if accepted.PacketID != packet.ID || accepted.OwnerAgentID != packet.Binding.OwnerAgentID || accepted.SuccessorCaseRef == "" || accepted.AnswerSHA256 == "" {
+	if accepted.PacketID != packet.ID || accepted.OwnerAgentID != packet.Binding.OwnerAgentID || accepted.SuccessorCaseRef == "" {
 		return result, errors.New("original HypothesisResult receipt differs from its issued packet")
 	}
 	result.SubmissionKey = accepted.AcceptedIdempotencyKey
 	result.Accepted = true
 	result.ResponsibilityStatus = "accepted"
+	// This receipt completes this delivery, not the investigation or the
+	// Agent/Task lifecycle. An inconclusive finding does not undo that work.
 	result.WorkComplete = true
 	result.DomainRefs = []string{accepted.SuccessorCaseRef}
 	result.WaitingOn = []Waiting{}
-	result.NextAction = "Canonical HypothesisResult 已由原 InvestigationCase 接收器登记；本人的 Investigator Assignment 已交付。"
+	result.NextAction = "原 HypothesisResult 已接收，本次原答卷交付完成；结论不替代本人进度或 Case 完成。Main 判断未知及下一责任；实际未完成时可沿原责任自然继续，不要求重交旧答案。"
 	return result, nil
 }

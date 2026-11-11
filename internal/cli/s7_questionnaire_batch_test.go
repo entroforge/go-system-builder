@@ -14,7 +14,6 @@ import (
 	"github.com/entroforge/go-system-builder/internal/schema"
 	"github.com/entroforge/go-system-builder/internal/semantic"
 	"github.com/entroforge/go-system-builder/internal/submission"
-	"github.com/entroforge/go-system-builder/internal/workpacket"
 	"github.com/entroforge/go-system-builder/internal/workstate"
 )
 
@@ -44,7 +43,6 @@ func TestS7MainPreparesAllDispatchedQuestionnairesInOneOriginalHandoff(t *testin
 		if err := os.WriteFile(path, body, 0600); err != nil {
 			t.Fatal(err)
 		}
-		subject.SHA256 = workpacket.Digest(body)
 	}
 	queued := plan.Claims[1]
 	queued.ClaimID, queued.Target, queued.FocusKey = "claim-queued", "internal/other", "test-oracle"
@@ -93,7 +91,7 @@ func TestS7MainPreparesAllDispatchedQuestionnairesInOneOriginalHandoff(t *testin
 			manifestRef := ".claude/workgroups/" + a.AssignmentID + ".json"
 			role := map[string]string{"delivery": "delivery-verifier", "qa": "qa"}[a.Lens]
 			manifest := review.ManifestDraft{
-				RuntimeID: f.state["runtime_id"].(string), BaselineGeneration: plan.BaselineGeneration, ReviewRound: plan.ReviewRound,
+				RuntimeID: f.state["runtime_id"].(string), BaselineGeneration: plan.BaselineGeneration,
 				WorkgroupID: teamID, WorkgroupKind: review.LensToWorkgroupKind(a.Lens),
 				Assignments: []review.ManifestAssignment{{AssignmentID: a.AssignmentID, AgentID: owner, RoleFamily: role, ClaimIDs: a.ClaimIDs, SkillRefs: []string{}}},
 			}
@@ -111,8 +109,8 @@ func TestS7MainPreparesAllDispatchedQuestionnairesInOneOriginalHandoff(t *testin
 			teams, _ := entities["teams"].([]any)
 			entities["teams"] = append(teams, map[string]any{
 				"id": teamID, "platform_team_id": teamID, "kind": manifest.WorkgroupKind, "status": "planned",
-				"manifest_ref": manifestRef, "manifest_sha256": workpacket.Digest(manifestBytes),
-				"responsibility_ids": []string{}, "agent_ids": []string{owner}, "review_round": plan.ReviewRound,
+				"manifest_ref":       manifestRef,
+				"responsibility_ids": []string{}, "agent_ids": []string{owner},
 			})
 			for _, raw := range entities["agents"].([]any) {
 				agent := raw.(map[string]any)
@@ -122,7 +120,7 @@ func TestS7MainPreparesAllDispatchedQuestionnairesInOneOriginalHandoff(t *testin
 			}
 		}
 	}
-	f.state["review"] = map[string]any{"round": 1, "clean_round": nil, "claims": map[string]any{}, "assignments": assignments, "plan": map[string]any{"plan_id": plan.ReviewPlanID, "path": planRel, "sha256": workpacket.Digest(data), "revision": 1, "review_round": 1, "status": "running", "e2e_coverage_state": "not_applicable", "submitted_at": "2026-10-23T00:00:00Z"}}
+	f.state["review"] = map[string]any{"round": 1, "clean_round": nil, "claims": map[string]any{}, "assignments": assignments, "plan": map[string]any{"plan_id": plan.ReviewPlanID, "path": planRel, "revision": 1, "review_round": 1, "status": "running", "e2e_coverage_state": "not_applicable", "submitted_at": "2026-10-23T00:00:00Z"}}
 	f.persist(t)
 	// Original issuance freezes a real Git source, even when the professional
 	// Plan/dispatch facts were registered synthetically by this fixture.
@@ -146,7 +144,7 @@ func TestS7MainPreparesAllDispatchedQuestionnairesInOneOriginalHandoff(t *testin
 	if err != nil || len(packets) != 2 {
 		t.Fatalf("single original handoff issued %d/2 responsibilities: %v\n%s", len(packets), err, output)
 	}
-	if !strings.Contains(output, "Optional capture") || !strings.Contains(output, "source/environment blockers to Main") {
+	if !strings.Contains(output, "PreToolUse observes the ready original answer") || !strings.Contains(output, "ordinary tools remain available") {
 		t.Fatalf("new issuance did not carry the complete native task: %s", output)
 	}
 	for _, packet := range packets {
@@ -170,7 +168,7 @@ func TestS7MainPreparesAllDispatchedQuestionnairesInOneOriginalHandoff(t *testin
 		t.Fatalf("ordinary reminder repeated long instructions or lost the actual answer: %s", repeated)
 	}
 	restored := stageReviewResultLifecycleContext(context.Background(), f.root, policy.Input{Event: "SessionStart", CWD: f.root}, service, after, "Main")
-	if !strings.Contains(restored, "Optional capture") || !strings.Contains(restored, path) {
+	if !strings.Contains(restored, "PreToolUse observes the ready original answer") || !strings.Contains(restored, path) {
 		t.Fatalf("new session lost the complete task: %s", restored)
 	}
 	latest, err := runtime.NewStore(f.statePath, f.journalPath).Snapshot()

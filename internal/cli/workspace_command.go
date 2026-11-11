@@ -9,20 +9,71 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"time"
 
 	"github.com/entroforge/go-system-builder/internal/fileview"
 	"github.com/entroforge/go-system-builder/internal/hookctx"
 	"github.com/entroforge/go-system-builder/internal/integration"
-	"github.com/entroforge/go-system-builder/internal/repair"
 	"github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/semantic"
 	"github.com/entroforge/go-system-builder/internal/submission"
 	"github.com/entroforge/go-system-builder/internal/workpacket"
 	"github.com/entroforge/go-system-builder/internal/workspace"
 )
+
+// workspaceEventIdentity returns the journal event id and the idempotency key
+// of one workspace operation. The key carries the responsibility (the Runtime
+// that owns the slot) and the intent (the operation, the assignment slot, its
+// owner, the execution generation and the operation's own domain
+// discriminator). No Runtime write count is encoded, so the same intent
+// retried keeps its identity while a different responsibility never collides
+// with it (G18 §1.3).
+//
+// The anchor is the Runtime journal's last registered event id: a record
+// identity, not a write counter. It is passed only by an operation that
+// legitimately writes the same intent more than once, so that those writes
+// stay separable (G18 §1.2).
+func workspaceEventIdentity(runtimeID, operation, assignmentID, agentID string, generation int, intent, anchor string) (string, string) {
+	parts := []string{operation}
+	if assignmentID != "" {
+		parts = append(parts, assignmentID)
+	}
+	if agentID != "" {
+		parts = append(parts, agentID)
+	}
+	if generation > 0 {
+		parts = append(parts, fmt.Sprintf("g%d", generation))
+	}
+	if intent != "" {
+		parts = append(parts, intent)
+	}
+	if anchor != "" {
+		parts = append(parts, anchor)
+	}
+	coordinate := strings.Join(parts, "-")
+	return "evt-workspace-" + coordinate, fmt.Sprintf("runtime:workspace:%s:%s", runtimeID, coordinate)
+}
+
+// workspaceCommandIdentity names a workspace command's step. The dispatched
+// context it bound is part of the intent: preparing the same slot twice can
+// bind a second, relocated context, and that registered artifact is what
+// tells the two writes apart.
+func workspaceCommandIdentity(runtimeID, event string, binding *workspace.ExecutionRegistry, assignmentID string) (string, string) {
+	agentID, generation, source := "", 0, ""
+	if binding != nil {
+		if execution, ok := binding.Executions[assignmentID]; ok {
+			agentID = execution.AgentID
+			generation = execution.Generation
+			source = workspace.DispatchContextSource(execution)
+		}
+	}
+	intent := ""
+	if source != "" {
+		intent = domainEventToken(source)
+	}
+	return workspaceEventIdentity(runtimeID, event, assignmentID, agentID, generation, intent, "")
+}
 
 // Workspace creation is an explicit, journaled operation. The intent is saved
 // before Git side effects, so interrupted preparation can resume by identity.
@@ -51,7 +102,7 @@ func runRuntimeWorkspace(args []string, stdout, stderr io.Writer) int {
 	if len(args) > 0 && args[0] == "launch" {
 		return runWorkspaceLaunch(args[1:], stdout, stderr)
 	}
-	if len(args) > 0 && (args[0] == "deliver" || args[0] == "integrate") {
+	if len(args) > 0 && args[0] == "integrate" {
 		return runWorkspaceDelivery(args, stdout, stderr)
 	}
 	if len(args) > 0 && args[0] == "commit" {
@@ -64,11 +115,11 @@ func runRuntimeWorkspace(args []string, stdout, stderr io.Writer) int {
 		return runWorkspaceCheck(args[1:], stdout, stderr)
 	}
 	if len(args) > 0 && (args[0] == "--help" || args[0] == "-h") {
-		fmt.Fprintln(stdout, "runtime workspace <bind|status|prepare|adopt|replace|rebind|rework|launch|begin|report|observe|integration-status|check|commit|deliver|integrate|pending|answer|receipt|review-check> --root <main-root> [--assignment <id> --agent <id>]; prepare installs a building, authorized S9, or enabled S5 document-review Worker; check runs a declared check in an isolated copy; integration-status observes the original Main lock without writing; see docs/workspace-integration.md")
+		fmt.Fprintln(stdout, "runtime workspace <bind|status|prepare|adopt|replace|rebind|rework|launch|begin|report|observe|integration-status|check|commit|integrate|pending|answer|receipt|review-check> --root <main-root> [--assignment <id> --agent <id>]; prepare installs a building or enabled S5 document-review Worker; check runs a declared check in an isolated copy; integration-status observes the original Main lock without writing; see docs/workspace-integration.md")
 		return 0
 	}
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "runtime workspace <bind|status|prepare|adopt|replace|rebind|rework|launch|begin|report|observe|check|commit|deliver|integrate|pending> --root <main-root> [--assignment <id> --agent <id>]")
+		fmt.Fprintln(stderr, "runtime workspace <bind|status|prepare|adopt|replace|rebind|rework|launch|begin|report|observe|check|commit|integrate|pending> --root <main-root> [--assignment <id> --agent <id>]")
 		return 2
 	}
 	verb := args[0]
@@ -112,13 +163,6 @@ func runRuntimeWorkspace(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(err)
 	}
-	if verb == "prepare" {
-		for _, packet := range nativeS9PlanPackets(mainRoot, snap.State) {
-			if packet.Binding.OwnerAgentID == *agent && (packet.Binding.ManifestAssignmentID == *id || packet.Binding.RepairAssignmentID == *id) {
-				return fail(fmt.Errorf("native S9 responsibility uses Claude Code Agent/worktree; pass its exact brief, then receive the returned source at SubagentStop; workspace prepare is for frozen legacy executions"))
-			}
-		}
-	}
 	binding, err := workspace.Decode(snap.State)
 	if err != nil {
 		return fail(err)
@@ -132,32 +176,11 @@ func runRuntimeWorkspace(args []string, stdout, stderr io.Writer) int {
 		json.NewEncoder(stdout).Encode(binding)
 		return 0
 	}
-	var s9ProfileReportRef repair.ArtifactRef
-	var s9ProfileCommands []string
-	s9ProfileLocation := ""
-	s9GeneratedProfiles := false
 	persist := func(event string) error {
 		now := time.Now().UTC()
-		key := fmt.Sprintf("workspace-%s-r%d", event, snap.Revision+1)
-		next, e := store.Update(snap.Revision, runtime.Mutation{EventID: key, TransitionID: "WORKSPACE", Event: "workspace_updated", Actor: "main", RuntimeID: workspace.RuntimeID(snap.State), BaselineGeneration: workspace.Generation(snap.State), IdempotencyKey: key, RetainLastTransition: true, OccurredAt: now, Message: event, Apply: func(state map[string]any) error {
+		eventID, idempotencyKey := workspaceCommandIdentity(workspace.RuntimeID(snap.State), event, binding, *id)
+		next, e := store.Update(snap.Revision, runtime.Mutation{EventID: eventID, TransitionID: "WORKSPACE", Event: "workspace_updated", Actor: "main", RuntimeID: workspace.RuntimeID(snap.State), BaselineGeneration: workspace.Generation(snap.State), IdempotencyKey: idempotencyKey, RetainLastTransition: true, OccurredAt: now, Message: event, Apply: func(state map[string]any) error {
 			if event == "preparing" || event == "ready" {
-				if lifecycleState, _ := state["lifecycle"].(map[string]any); lifecycleState["state"] == "bug_resolution" && s9GeneratedProfiles {
-					authority, err := repair.ResolveWorkspaceAuthority(mainRoot, state, *id, *agent)
-					if err != nil {
-						return fmt.Errorf("revalidate S9 accepted PlanReport before freezing check profiles: %w", err)
-					}
-					if authority.ReportRef != s9ProfileReportRef {
-						return fmt.Errorf("S9 accepted PlanReport changed before profile freeze")
-					}
-					execution, exists := binding.Executions[*id]
-					if !exists || execution.CheckLocation != s9ProfileLocation {
-						return fmt.Errorf("S9 original check location changed before profile freeze")
-					}
-					profiles, err := runtime.RepairResultCheckProfiles(authority.ReportRef.SHA256, s9ProfileCommands, s9ProfileLocation)
-					if err != nil || !reflect.DeepEqual(profiles, execution.CheckProfiles) {
-						return fmt.Errorf("S9 deterministic profile projection changed before freeze: %v", err)
-					}
-				}
 				for _, execution := range binding.Executions {
 					if execution.AssignmentID != *id {
 						continue
@@ -202,8 +225,8 @@ func runRuntimeWorkspace(args []string, stdout, stderr io.Writer) int {
 	}
 	lifecycle, _ := snap.State["lifecycle"].(map[string]any)
 	documentReview := runtime.PacketEnabled(snap.State) && lifecycle["state"] == "document_verification"
-	if lifecycle["state"] != "building" && lifecycle["state"] != "bug_resolution" && !documentReview {
-		return fail(fmt.Errorf("workspace prepare requires building, an executing S9 assignment, or an enabled current S5 review"))
+	if lifecycle["state"] != "building" && !documentReview {
+		return fail(fmt.Errorf("workspace prepare requires building or an enabled current S5 review"))
 	}
 	loaded, err := hookctx.LoadFull(mainRoot, *agent)
 	if err != nil {
@@ -227,36 +250,11 @@ func runRuntimeWorkspace(args []string, stdout, stderr io.Writer) int {
 			inputs = append(inputs, path)
 		}
 	}
-	if lifecycle["state"] == "bug_resolution" {
-		authority, err := repair.ResolveWorkspaceAuthority(mainRoot, snap.State, *id, *agent)
-		if err != nil {
-			return fail(err)
-		}
-		assignment.WritePaths = authority.Assignment.Scope
-		if len(assignment.RequiredChecks) == 0 {
-			fmt.Fprintln(stderr, "S9 Main checks remain pending: Main must select and execute necessary checks during integration; preparing this Worker does not mark checks passed")
-		}
-		inputs = append(inputs, authority.Inputs...)
-		s9ProfileReportRef = authority.ReportRef
-		s9ProfileCommands = append([]string(nil), assignment.RequiredChecks...)
-	}
 
 	if *contextProfile == "backend-core" && (!workstate.SupportsAssignments(snap.State["schema_version"]) || lifecycle["state"] != "building" || assignment.RoleFamily != "backend-builder") {
 		return fail(fmt.Errorf("backend-core requires a new original 1.2 S6 backend Builder"))
 	}
 	_, priorExecution := binding.Executions[*id]
-	if lifecycle["state"] == "bug_resolution" && runtime.PacketEnabled(snap.State) && !priorExecution && len(assignment.RequiredChecks) > 0 && len(assignment.CheckProfiles) == 0 {
-		if *checkLocation != "main" && *checkLocation != "worker" {
-			return fail(fmt.Errorf("new packet-backed S9 Worker prepare must explicitly choose --check-location main or worker"))
-		}
-		profiles, profileErr := runtime.RepairResultCheckProfiles(s9ProfileReportRef.SHA256, s9ProfileCommands, *checkLocation)
-		if profileErr != nil {
-			return fail(profileErr)
-		}
-		assignment.CheckProfiles = profiles
-		s9ProfileLocation = *checkLocation
-		s9GeneratedProfiles = true
-	}
 
 	newContext := workstate.SupportsAssignments(snap.State["schema_version"]) && !priorExecution
 	if priorExecution && *contextProfile != "" {
@@ -281,7 +279,6 @@ func runRuntimeWorkspace(args []string, stdout, stderr io.Writer) int {
 	}
 	var canonicalDispatch *workspace.Dispatch
 	var declaredReadView *fileview.View
-	var declaredReadDigests map[string]string
 	if lifecycle["state"] == "building" && assignment.AssignmentRecord != nil {
 		dispatch, dispatchErr := workspaceDispatch(snap.State, *assignment)
 		if dispatchErr != nil {
@@ -289,12 +286,8 @@ func runRuntimeWorkspace(args []string, stdout, stderr io.Writer) int {
 		}
 		canonicalDispatch = &dispatch
 		if dispatch.AssignmentRecord != nil && len(dispatch.ReadPaths) > 0 {
-			originalCommit := ""
-			if priorExecution {
-				originalCommit = binding.Executions[*id].BaseCommit
-			}
 			var declaredPaths []string
-			declaredReadView, declaredPaths, declaredReadDigests, err = freezeAssignmentReadClosure(ctx, mainRoot, snap.State, dispatch.ReadPaths, originalCommit)
+			declaredReadView, declaredPaths, _, err = freezeAssignmentReadClosure(ctx, mainRoot, snap.State, dispatch.ReadPaths, "")
 			if err != nil {
 				return fail(err)
 			}
@@ -346,14 +339,6 @@ func runRuntimeWorkspace(args []string, stdout, stderr io.Writer) int {
 		return fail(err)
 	}
 	if declaredReadView != nil {
-		if e.BaseCommit != declaredReadView.Commit {
-			return fail(fmt.Errorf("prepared execution base differs from the pinned Assignment read sources"))
-		}
-		for path, expected := range declaredReadDigests {
-			if e.Inputs[path] != expected {
-				return fail(fmt.Errorf("prepared execution did not freeze the pinned Assignment read source: %s", path))
-			}
-		}
 		if err := declaredReadView.Verify(); err != nil {
 			return fail(err)
 		}
@@ -410,65 +395,7 @@ func runRuntimeWorkspace(args []string, stdout, stderr io.Writer) int {
 			e.CheckLocation = *checkLocation
 		}
 	}
-	// Real workspace readiness supplies the next professional question once.
-	// Ordinary tool observation never enters this preparation path.
-	resultViewPath, resultAnswerPath := "", ""
-	publishS9Result := func(execution workspace.Execution) error {
-		if lifecycle["state"] != "bug_resolution" || !runtime.PacketEnabled(snap.State) {
-			return nil
-		}
-		packets, err := s9ListenerQuestionnairesContext(context.Background(), *root, snap.State, *agent, true)
-		if err != nil {
-			return err
-		}
-		supplied := false
-		for _, packet := range packets {
-			if packet.binding.ManifestAssignmentID != *id {
-				continue
-			}
-			resultViewPath, resultAnswerPath = resolveRootPath(execution.Path, packet.view), resolveRootPath(execution.Path, packet.answer)
-			fmt.Fprintf(stderr, "S9 RepairResult view: %s; answer: %s; fill and save this exact professional answer.\n", resultViewPath, resultAnswerPath)
-			supplied = true
-		}
-		if supplied {
-			return nil
-		}
-		service, err := submission.New(mainRoot)
-		if err != nil {
-			return err
-		}
-		issued, err := service.IssueRepairResults(ctx, *agent)
-		if err != nil {
-			return fmt.Errorf("Worker is ready; Main/system must finish RepairResult preparation: %w", err)
-		}
-		for _, packet := range issued {
-			if packet.Binding.Sources.ManifestAssignmentID != *id {
-				continue
-			}
-			resultViewPath, resultAnswerPath = resolveRootPath(execution.Path, packet.ViewPath), resolveRootPath(execution.Path, packet.AnswerPath)
-			fmt.Fprintf(stderr, "S9 RepairResult view: %s; answer: %s; fill and save this exact professional answer.\n", resultViewPath, resultAnswerPath)
-			supplied = true
-		}
-		if !supplied {
-			return fmt.Errorf("Worker is ready but its RepairResult questionnaire is not prepared for Assignment %s; Main/system owns this preparation gap", *id)
-		}
-		return nil
-	}
 	writePrepared := func(execution workspace.Execution) error {
-		if lifecycle["state"] == "bug_resolution" {
-			contextRef := ""
-			if workspace.HasDispatchContext(execution) {
-				contextRef = resolveRootPath(execution.Path, workspace.DispatchContextPath)
-			}
-			return json.NewEncoder(stdout).Encode(map[string]any{
-				"execution":              execution,
-				"assignment_context_ref": contextRef,
-				"frozen_input_root":      resolveRootPath(execution.Path, ".claude/inputs"),
-				"view_path":              resultViewPath,
-				"answer_path":            resultAnswerPath,
-				"next_action":            "Implement or test the assigned repair in this actual work location and perform real self-checks. For actual source changes, use ordinary git add and git commit in this Worker; no-change tests require no new commit. Then fill and save the supplied RepairResult answer. No extra commit form or generic completion report is required. Main owns real integration and necessary checks.",
-			})
-		}
 		return writePreparedExecution(stdout, execution, binding, lifecycle["state"] == "building" && (assignment.RoleFamily == "backend-builder" || assignment.RoleFamily == "frontend-builder" || assignment.RoleFamily == "test-builder"))
 	}
 	source := mainRoot
@@ -480,12 +407,6 @@ func runRuntimeWorkspace(args []string, stdout, stderr io.Writer) int {
 	}
 	if e.Status == "ready" {
 		if err = binding.ValidateExecution(ctx, e, false); err != nil {
-			return fail(err)
-		}
-		if err = binding.ValidateBootstrap(e); err != nil {
-			return fail(err)
-		}
-		if err = publishS9Result(e); err != nil {
 			return fail(err)
 		}
 		if err = writePrepared(e); err != nil {
@@ -503,6 +424,17 @@ func runRuntimeWorkspace(args []string, stdout, stderr io.Writer) int {
 	if err = binding.Materialize(ctx, e); err != nil {
 		return fail(err)
 	}
+	reserved, err := binding.ReserveWorkerSubmissionPaths(e)
+	if err != nil {
+		return fail(err)
+	}
+	if workspace.DispatchContextSource(reserved) != workspace.DispatchContextSource(e) {
+		e = reserved
+		binding.Executions[*id] = e
+		if err = persist("preparing"); err != nil {
+			return fail(err)
+		}
+	}
 	executable, err := os.Executable()
 	if err != nil {
 		return fail(err)
@@ -510,16 +442,9 @@ func runRuntimeWorkspace(args []string, stdout, stderr io.Writer) int {
 	if err = binding.Bootstrap(e, executable); err != nil {
 		return fail(err)
 	}
-	e.BootstrapSHA256, err = workspace.BootstrapDigest(e)
-	if err != nil {
-		return fail(err)
-	}
 	e.Status = "ready"
 	binding.Executions[*id] = e
 	if err = persist("ready"); err != nil {
-		return fail(err)
-	}
-	if err = publishS9Result(e); err != nil {
 		return fail(err)
 	}
 	if err = writePrepared(e); err != nil {

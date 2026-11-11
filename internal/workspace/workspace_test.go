@@ -27,11 +27,7 @@ func repository(t *testing.T) (*ExecutionRegistry, context.Context) {
 	if _, err := Git(ctx, root, "commit", "-m", "base"); err != nil {
 		t.Fatal(err)
 	}
-	head, err := Git(ctx, root, "rev-parse", "HEAD")
-	if err != nil {
-		t.Fatal(err)
-	}
-	saveControlState(t, root, map[string]any{"bound_req": map[string]any{"workspace": Binding{root, "test2", "main", head}.Map()}})
+	saveControlState(t, root, map[string]any{"bound_req": map[string]any{"workspace": Binding{ProjectRoot: root, DevBranch: "test2", ReleaseUpstream: "main"}.Map()}})
 	b, err := New(ctx, root)
 	if err != nil {
 		t.Fatal(err)
@@ -40,7 +36,7 @@ func repository(t *testing.T) (*ExecutionRegistry, context.Context) {
 }
 func TestPinnedTest2AndDirtyInputs(t *testing.T) {
 	b, ctx := repository(t)
-	state := map[string]any{"bound_req": map[string]any{"workspace": Binding{b.MainRoot, b.Branch, "main", b.BoundHead}.Map()}, "runtime_id": "loop-test", "baseline": map[string]any{"generation": 1}}
+	state := map[string]any{"bound_req": map[string]any{"workspace": Binding{ProjectRoot: b.MainRoot, DevBranch: b.Branch, ReleaseUpstream: "main"}.Map()}, "runtime_id": "loop-test", "baseline": map[string]any{"generation": 1}}
 	for _, args := range [][]string{{"branch", "test3"}, {"branch", "test4"}} {
 		if _, err := Git(ctx, b.MainRoot, args...); err != nil {
 			t.Fatal(err)
@@ -55,8 +51,9 @@ func TestPinnedTest2AndDirtyInputs(t *testing.T) {
 		t.Fatal(err)
 	}
 	head, _ := Git(ctx, e.Path, "rev-parse", "HEAD")
+	mainHead, _ := Git(ctx, b.MainRoot, "rev-parse", "HEAD")
 	main, _ := Git(ctx, b.MainRoot, "branch", "--show-current")
-	if head != b.BoundHead || main != "test2" || e.TargetBranch != "test2" {
+	if head != mainHead || main != "test2" || e.TargetBranch != "test2" {
 		t.Fatalf("baseline drift: %+v %s %s", e, head, main)
 	}
 	for _, kind := range []string{"unstaged", "staged", "untracked"} {
@@ -69,7 +66,15 @@ func TestPinnedTest2AndDirtyInputs(t *testing.T) {
 			if kind == "staged" {
 				Git(ctx, b.MainRoot, "add", path)
 			}
-			if err := b.CleanInputs(ctx); err == nil || !strings.Contains(err.Error(), path) {
+			err := b.CleanInputs(ctx)
+			if kind == "untracked" {
+				if err != nil {
+					t.Fatalf("untracked file blocked dispatch: %v", err)
+				}
+				if data, readErr := os.ReadFile(filepath.Join(b.MainRoot, path)); readErr != nil || string(data) != "not committed" {
+					t.Fatalf("private file changed: %q %v", data, readErr)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), path) {
 				t.Fatalf("missed %s: %v", kind, err)
 			}
 			if kind == "untracked" {
@@ -97,7 +102,7 @@ func TestInputSymlinkEscape(t *testing.T) {
 	}
 	Git(ctx, b.MainRoot, "add", "link")
 	Git(ctx, b.MainRoot, "commit", "-m", "link")
-	_, err := b.Plan(ctx, map[string]any{"bound_req": map[string]any{"workspace": Binding{b.MainRoot, b.Branch, "main", b.BoundHead}.Map()}, "runtime_id": "loop-test"}, "assignment", "builder", nil, nil, []string{"link"})
+	_, err := b.Plan(ctx, map[string]any{"bound_req": map[string]any{"workspace": Binding{ProjectRoot: b.MainRoot, DevBranch: b.Branch, ReleaseUpstream: "main"}.Map()}, "runtime_id": "loop-test"}, "assignment", "builder", nil, nil, []string{"link"})
 	if err == nil {
 		t.Fatal("accepted outside input")
 	}
@@ -111,7 +116,7 @@ func TestBindingUsesUsersCurrentCheckoutAndBranch(t *testing.T) {
 			if _, err := Git(ctx, original.MainRoot, "worktree", "add", "-b", branch, userRoot); err != nil {
 				t.Fatal(err)
 			}
-			saveControlState(t, userRoot, map[string]any{"bound_req": map[string]any{"workspace": Binding{userRoot, branch, "main", original.BoundHead}.Map()}})
+			saveControlState(t, userRoot, map[string]any{"bound_req": map[string]any{"workspace": Binding{ProjectRoot: userRoot, DevBranch: branch, ReleaseUpstream: "main"}.Map()}})
 			binding, err := New(ctx, userRoot)
 			if err != nil {
 				t.Fatal(err)
@@ -133,7 +138,7 @@ func TestBindingUsesUsersCurrentCheckoutAndBranch(t *testing.T) {
 
 func TestExecutionRegistryCannotOverrideRequirementAuthority(t *testing.T) {
 	b, ctx := repository(t)
-	state := map[string]any{"bound_req": map[string]any{"workspace": Binding{b.MainRoot, b.Branch, "main", b.BoundHead}.Map()}}
+	state := map[string]any{"bound_req": map[string]any{"workspace": Binding{ProjectRoot: b.MainRoot, DevBranch: b.Branch, ReleaseUpstream: "main"}.Map()}}
 	if err := b.ValidateAuthority(state); err != nil {
 		t.Fatal(err)
 	}
@@ -153,8 +158,8 @@ func TestWorktreeReminderControlShapeDoesNotHideProductInputs(t *testing.T) {
 		path    string
 		control bool
 	}{
-		{".claude/worktree-reminders/" + key + ".txt", true},
-		{".claude/worktree-reminders/.delivery-1234567890", true},
+		{".claude/worktree-reminders/" + key + ".txt", false},
+		{".claude/worktree-reminders/.delivery-1234567890", false},
 		{".claude/worktree-reminders/product.go", false},
 		{".claude/worktree-reminders/short.txt", false},
 		{".claude/worktree-reminders/" + strings.Repeat("A", 64) + ".txt", false},
@@ -184,17 +189,47 @@ func TestWorktreeReminderControlShapeDoesNotHideProductInputs(t *testing.T) {
 	if err := os.WriteFile(reminder, []byte("original advisory"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := b.CleanInputs(ctx); err != nil {
-		t.Fatalf("original reminder blocked dispatch: %v", err)
+	_ = b.CleanInputs(ctx)
+	if data, err := os.ReadFile(reminder); err != nil || string(data) != "original advisory" {
+		t.Fatalf("unknown reminder-shaped file changed: %q %v", data, err)
 	}
 	product := filepath.Join(dir, "product.go")
 	if err := os.WriteFile(product, []byte("uncommitted input"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := b.CleanInputs(ctx); err == nil || !strings.Contains(err.Error(), "product.go") {
-		t.Fatalf("neighbor product input bypassed dirty guard: %v", err)
+	if err := b.CleanInputs(ctx); err != nil {
+		t.Fatalf("untracked neighbor blocked dispatch: %v", err)
+	}
+	if data, err := os.ReadFile(product); err != nil || string(data) != "uncommitted input" {
+		t.Fatalf("untracked neighbor changed: %q %v", data, err)
 	}
 	if _, err := os.Stat(reminder); err != nil {
 		t.Fatalf("CleanInputs mutated advisory: %v", err)
+	}
+}
+
+func TestPlanPreservesUntrackedMainFiles(t *testing.T) {
+	b, ctx := repository(t)
+	privatePath := filepath.Join(b.MainRoot, "private-notes.txt")
+	if err := os.WriteFile(privatePath, []byte("personal notes\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	state := map[string]any{
+		"bound_req":  map[string]any{"workspace": Binding{ProjectRoot: b.MainRoot, DevBranch: b.Branch, ReleaseUpstream: "main"}.Map()},
+		"runtime_id": "loop-test", "baseline": map[string]any{"generation": 1},
+	}
+	execution, err := b.Plan(ctx, state, "assignment-private", "builder", []string{"input.md"}, nil, []string{"input.md"})
+	if err != nil {
+		t.Fatalf("unrelated private file blocked original dispatch: %v", err)
+	}
+	b.Executions[execution.AssignmentID] = execution
+	if err := b.Materialize(ctx, execution); err != nil {
+		t.Fatalf("original worktree creation failed: %v", err)
+	}
+	if data, err := os.ReadFile(privatePath); err != nil || string(data) != "personal notes\n" {
+		t.Fatalf("private Main file changed: %q %v", data, err)
+	}
+	if _, err := os.Stat(filepath.Join(execution.Path, "private-notes.txt")); !os.IsNotExist(err) {
+		t.Fatalf("untracked Main file was included in the Worker checkout: %v", err)
 	}
 }

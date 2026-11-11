@@ -72,7 +72,7 @@ func TestOneOfPruningReportsClosestBranchOnly(t *testing.T) {
 	if !strings.Contains(pruned, `"completionReport"`) {
 		t.Errorf("pruned error should name the closest branch, got:\n%s", pruned)
 	}
-	for _, other := range []string{"readback_request", "plan_report", "shutdown_approval"} {
+	for _, other := range []string{"readback_response", "plan_report", "shutdown_approval"} {
 		if strings.Contains(pruned, "must be \""+other+"\"") {
 			t.Errorf("pruned error should not expand ruled-out branch %q, got:\n%s", other, pruned)
 		}
@@ -88,7 +88,7 @@ func TestOneOfPruningReportsClosestBranchOnly(t *testing.T) {
 		t.Fatal("expected a validation error in verbose mode")
 	}
 	full := fullErr.Error()
-	if !strings.Contains(full, "readback_request") {
+	if !strings.Contains(full, "readback_response") {
 		t.Errorf("verbose mode must keep the full per-branch enumeration, got:\n%s", full)
 	}
 	if len(pruned) >= len(full)/2 {
@@ -125,7 +125,7 @@ func TestOneOfPruningFallsBackToBranchSummary(t *testing.T) {
 		t.Errorf("expected the undecidable summary, got:\n%s", pruned)
 	}
 	// The truncated summary lists branch names without their full trees.
-	for _, branch := range []string{"readbackRequest", "completionReport", "lifecycleEvent"} {
+	for _, branch := range []string{"readbackResponse", "completionReport", "lifecycleEvent"} {
 		if !strings.Contains(pruned, branch) {
 			t.Errorf("summary should list branch %s, got:\n%s", branch, pruned)
 		}
@@ -200,7 +200,7 @@ func TestPruningLocatesNestedDiscriminatorOneOf(t *testing.T) {
 			len(pruned), len(verbose))
 	}
 	// And the verbose form really does carry the per-branch fan-out.
-	if !strings.Contains(verbose, "readback_request") {
+	if !strings.Contains(verbose, "readback_response") {
 		t.Errorf("verbose form must carry the per-branch enumeration, got:\n%s", verbose)
 	}
 
@@ -211,79 +211,25 @@ func TestPruningLocatesNestedDiscriminatorOneOf(t *testing.T) {
 	}
 }
 
-// TestPruningLocatesNestedDiscriminatorAnyOf proves the walker also finds
-// anyOf failures nested below the root marker. The review-result schema's
-// verdict=finding anyOf (findings vs. blocked_claims) sits inside an
-// allOf/if/then, not at the document root, and the older implementation
-// skipped it entirely. Submitting a verdict=finding ReviewResult with no
-// findings and no blocked_claims triggers the anyOf; the pruned output
-// must name both candidate branches and point at the escape hatch.
+// TestPruningLocatesNestedDiscriminatorAnyOf uses the current S9 Result
+// questionnaire to exercise a real nested anyOf error without adding a gate.
 func TestPruningLocatesNestedDiscriminatorAnyOf(t *testing.T) {
-	validator := schema.NewEmbeddedValidator()
-	// Build a minimal review-result that fails the verdict=finding anyOf:
-	// the required envelope fields are present, but neither findings nor
-	// blocked_claims has minItems: 1.
-	reviewResult := map[string]any{
-		"schema_version":      "1.0.0",
-		"result_id":           "review-result-test-001",
-		"assignment_id":       "assignment-test-001",
-		"assignment_revision": 1,
-		"review_plan_id":      "review-plan-test-001",
-		"review_round":        1,
-		"baseline_generation": 1,
-		"producer_agent_id":   "agent-qa-1",
-		"subject_digest":      "0000000000000000000000000000000000000000000000000000000000000000",
-		// claim_results is required at the top level; keep it non-empty so
-		// the second anyOf passes. The first anyOf (verdict=finding) is
-		// the one that fails zero-match: both findings and blocked_claims
-		// are present-but-empty, so neither minItems: 1 branch succeeds.
-		"claim_results": []any{
-			map[string]any{
-				"claim_id":      "claim-test-1",
-				"conclusion":    "fail",
-				"observed":      "observed something",
-				"evidence_refs": []any{},
-			},
-		},
-		"findings":       []any{},
-		"blocked_claims": []any{},
-		"verdict":        "finding",
+	fields := []string{"verdict", "before_fix_results", "unit_results", "detection_gap_artifacts", "evidence_refs", "scope_deviations", "residual_risks", "migration_ref", "rollback_ref"}
+	questions, answer := map[string]any{}, map[string]any{}
+	for _, field := range fields {
+		questions[field] = map[string]any{"question": "Describe the actual result"}
+		answer[field] = nil
 	}
-	data := mustJSON(t, reviewResult)
-
+	answer["verdict"] = 42
+	input := map[string]any{"title": "Result", "instruction": "Describe the result", "read": []any{}, "questions": questions, "answer": answer}
 	t.Setenv(schema.SchemaVerboseEnv, "")
-	prunedErr := validator.ValidateBytes("review-result.schema.json", data)
-	if prunedErr == nil {
-		t.Fatal("expected a validation error")
+	err := schema.NewEmbeddedValidator().ValidateBytes("stage-answer-s9-result.schema.json", mustJSON(t, input))
+	if err == nil || !strings.Contains(err.Error(), "anyOf") || !strings.Contains(err.Error(), "/answer/verdict") || !strings.Contains(err.Error(), schema.SchemaVerboseEnv) {
+		t.Fatalf("nested anyOf must identify the actual answer and recovery detail: %v", err)
 	}
-	pruned := prunedErr.Error()
-
-	// Pruning must (a) name the anyOf keyword, (b) surface both candidate
-	// branches, (c) point at the escape hatch — these are the criteria the
-	// user-facing message needs to satisfy.
-	if !strings.Contains(pruned, "anyOf") {
-		t.Errorf("pruned output must name the anyOf failure, got:\n%s", pruned)
-	}
-	if !strings.Contains(pruned, "/findings") {
-		t.Errorf("pruned output must surface the findings branch failure, got:\n%s", pruned)
-	}
-	if !strings.Contains(pruned, "/blocked_claims") {
-		t.Errorf("pruned output must surface the blocked_claims branch failure, got:\n%s", pruned)
-	}
-	if !strings.Contains(pruned, schema.SchemaVerboseEnv) {
-		t.Errorf("pruned output must always expose the escape hatch, got:\n%s", pruned)
-	}
-
-	// Sanity: the verbose form would have buried the failure under two
-	// layers of "allOf → anyOf" wrapping; the pruned form leads with the
-	// anyOf.
-	if strings.HasPrefix(pruned, "validate data: jsonschema validation failed") {
-		t.Errorf("pruned output should not pass through the verbose wrapper, got:\n%s", pruned)
-	}
-
-	var ve *jsonschema.ValidationError
-	if !errors.As(prunedErr, &ve) {
-		t.Error("pruned error must unwrap to *jsonschema.ValidationError")
+	var validationErr *jsonschema.ValidationError
+	if !errors.As(err, &validationErr) {
+		t.Fatal("pruned error must retain the original validation error")
 	}
 }
 

@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"context"
+	"encoding/base64"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,10 +11,29 @@ import (
 
 	"github.com/entroforge/go-system-builder/internal/assignment"
 	"github.com/entroforge/go-system-builder/internal/review"
+	"github.com/entroforge/go-system-builder/internal/reviewmeta"
 	"github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/workpacket"
 	"github.com/entroforge/go-system-builder/internal/workstate"
 )
+
+func s7BlockedAssignmentGuidance(root string, state map[string]any, id string) string {
+	reviewState, _ := state["review"].(map[string]any)
+	assignments, _ := reviewState["assignments"].(map[string]any)
+	row, _ := assignments[id].(map[string]any)
+	owner := stringValue(row["agent_id"])
+	lead := fmt.Sprintf("S7 assignment=%s Reviewer=%s: this responsibility is unfinished. Main coordinates the actual obstacle; the Reviewer can naturally continue and save new observations in the same answer. No separate recovery submission is required.", id, owner)
+	packets, err := runtime.CurrentReviewResultPacketsContext(runtime.WithPacketBodyRoot(context.Background(), root), state, owner)
+	if err != nil {
+		return lead + " Original answer lookup: " + err.Error() + ".\n"
+	}
+	for _, packet := range packets {
+		if packet.Binding.AssignmentID == id {
+			return lead + " Original answer: " + packet.AnswerPath + "; view: " + packet.ViewPath + ".\n"
+		}
+	}
+	return lead + "\n"
+}
 
 // s7PendingReviewGuidance projects the same prerequisites as registration.
 // It only reads original facts/files; preparation remains an explicit Main
@@ -66,9 +87,7 @@ func s7PendingReviewGuidance(root string, state map[string]any) string {
 	return b.String()
 }
 
-// Main can copy this complete responsibility into the native task. The
-// optional capture prefixes use the same source as the issued answer, so a
-// new native Worker need not enter the legacy activation listener to find them.
+// Main can copy this complete responsibility into the native task.
 func s7ReviewerTaskGuidance(root, source, view, answer string, packet workpacket.ReviewResultPacket, full bool) string {
 	return s7ReviewerIndexTaskGuidance(root, source, view, answer, runtime.ReviewResultPacketIndex{ID: packet.ID, Binding: packet.Binding, ViewPath: packet.ViewPath, AnswerPath: packet.AnswerPath}, full)
 }
@@ -78,35 +97,84 @@ func s7ReviewerIndexTaskGuidance(root, source, view, answer string, packet runti
 	if !full {
 		return fmt.Sprintf("S7 Reviewer %s assignment=%s: Main carries exact view %s and answer %s into native Agent; read its selected method references and independently inspect its frozen subjects/Claims, save the professional answer. PreToolUse receives ready original answers, with successful PostToolUse and Stop/SubagentStop fallback; report results to Main when finished. Main restores real source/environment blockers.\n", packet.Binding.OwnerAgentID, id, view, answer)
 	}
-	executable := s7CaptureShellQuote(filepath.Join(root, ".claude/bin/loop-harness"))
-	execPrefix := executable + " capture exec --root " + s7CaptureShellQuote(root) + " --assignment " + s7CaptureShellQuote(id) + " --cwd " + s7CaptureShellQuote(source) + " --"
-	stepPrefix := executable + " capture step --root " + s7CaptureShellQuote(root) + " --assignment " + s7CaptureShellQuote(id)
-	buffer := review.CaptureFile(root, packet.Binding.RuntimeID, packet.Binding.BaselineGeneration, id)
-	return fmt.Sprintf("S7 Reviewer %s assignment=%s: Main carries this task into native Agent. Read exact view %s, its frozen subjects/Claims and the selected professional methods in its read list; independently perform the assigned lens checks. Fill only the professional answer at %s, preserve actual observations/evidence, save the ready original answer; report results to Main using that reference when finished; PreToolUse listens for the ready original answer; successful PostToolUse and Stop/SubagentStop provide fallback through the same original consumer. No extra submit, done or activation is required; reception does not wait for a final message or returned reference. Ordinary tools need no activation or receipt. Correct specific author-field errors in the same answer; report actual source/environment blockers to Main without inventing conclusions. Ordinary Findings retain safe remaining coverage; a real P0 stops dangerous work and retains capture gaps. Optional capture for command_output evidence: %s followed by the actual check command/arguments. Optional observed steps: %s followed by --action/--observed and actual --evidence, --claim or --finding as applicable. Prefixes alone are incomplete; genuine path: evidence also remains valid. Original capture buffer: %s. Frozen registered sources retain their original recovery.\n", packet.Binding.OwnerAgentID, id, view, answer, execPrefix, stepPrefix, buffer)
+	return fmt.Sprintf("S7 Reviewer %s assignment=%s: Main carries this task into native Agent. Read exact view %s, its Claims and selected professional methods; independently perform the assigned checks. Fill the professional answer at %s, preserve actual observations and evidence, and save it. PreToolUse observes the ready original answer; successful PostToolUse and Stop/SubagentStop provide fallback through the same original consumer. Report results to Main when finished. No extra submit, returned reference, done or activation is required; ordinary tools remain available. Report actual blockers without inventing conclusions; stop dangerous work for a real P0 and preserve observed gaps.\n", packet.Binding.OwnerAgentID, id, view, answer)
 }
 
 func s7ManifestPreparationHint(root string, state map[string]any, id string) string {
 	reviewState, _ := state["review"].(map[string]any)
 	baseline, _ := state["baseline"].(map[string]any)
-	round, generation := tolerantInt(reviewState["round"]), tolerantInt(baseline["generation"])
-	if generation < 1 || round < 1 || id == "" || filepath.Base(id) != id || id == "." || id == ".." {
-		return fmt.Sprintf("S7 assignment=%s: Main/system must restore the current ReviewPlan generation, round and Assignment before manifest preparation.\n", id)
+	generation := tolerantInt(baseline["generation"])
+	identity := reviewmeta.FromReview(reviewState)
+	if generation < 1 || identity.PlanID == "" || id == "" || filepath.Base(id) != id || id == "." || id == ".." {
+		return fmt.Sprintf("S7 assignment=%s: Main/system must restore the current ReviewPlan identity, generation and Assignment before manifest preparation.\n", id)
 	}
-	manifest := filepath.Join(root, ".claude/workgroups", fmt.Sprintf("manifest-g%d-r%d-%s.json", generation, round, id))
-	if _, err := os.Lstat(manifest); err == nil {
-		draft, err := readS7ExistingManifest(manifest, state, id)
-		if err != nil {
-			return fmt.Sprintf("S7 assignment=%s: preserve existing manifest %s; restore its original source: %v.\n", id, manifest, err)
+	directory := s7ManifestIdentityDir(filepath.Join(root, ".claude/workgroups/plans"), identity.PlanID)
+	directory = s7ManifestIdentityDir(filepath.Join(directory, "assignments"), id)
+	manifest := filepath.Join(directory, "manifest.json")
+	for suffix := 2; ; suffix++ {
+		if _, err := os.Lstat(manifest); os.IsNotExist(err) {
+			break
+		} else if err != nil {
+			return fmt.Sprintf("S7 assignment=%s: Main/system must restore manifest access at %s: %v.\n", id, manifest, err)
 		}
-		return fmt.Sprintf("S7 assignment=%s: preserve and read existing manifest %s. Main retains its actual Reviewer and professional division of work.\n", id, manifest) + s7ManifestRegistrationGuidance(root, manifest, draft)
-	} else if !os.IsNotExist(err) {
-		return fmt.Sprintf("S7 assignment=%s: Main/system must restore manifest access at %s: %v.\n", id, manifest, err)
+		if draft, err := readS7ExistingManifest(root, manifest, state, id); err == nil {
+			return s7ExistingManifestGuidance(root, id, manifest, draft)
+		}
+		// Preserve files without a known same-responsibility association and
+		// offer another free path; they are not a gate on this Assignment.
+		manifest = filepath.Join(directory, fmt.Sprintf("manifest-%d.json", suffix))
 	}
-	if info, err := os.Stat(filepath.Dir(manifest)); err != nil && !os.IsNotExist(err) {
-		return fmt.Sprintf("S7 assignment=%s: Main/system must restore workgroup directory %s: %v.\n", id, filepath.Dir(manifest), err)
-	} else if err == nil && !info.IsDir() {
-		return fmt.Sprintf("S7 assignment=%s: Main/system must restore %s: the workgroup path is not a directory.\n", id, filepath.Dir(manifest))
+	// This Assignment's historical registered layout is located by the
+	// registered generation and review round. The file name only locates the
+	// material: it never qualifies or rejects it, and an unknown round is
+	// never written as a fixed placeholder.
+	if registered := s7RegisteredManifestPath(root, generation, reviewState, id); registered != "" {
+		if draft, err := readS7ExistingManifest(root, registered, state, id); err == nil {
+			return s7ExistingManifestGuidance(root, id, registered, draft)
+		}
 	}
 	command := s7CaptureShellQuote(filepath.Join(root, ".claude/bin/loop-harness")) + " s7 manifest-draft --root " + s7CaptureShellQuote(root) + " --assignment " + s7CaptureShellQuote(id) + " --out " + s7CaptureShellQuote(manifest)
-	return fmt.Sprintf("S7 assignment=%s: prepare the manifest with %s; this preparation creates a missing output directory and preserves existing files. Read the saved JSON file; stdout also contains guidance and is not a JSON document. Main chooses the real Reviewer and professional division of work, then uses the returned registration command. After registration, carry the issued exact view/answer paths into native Agent.\n", id, command)
+	return fmt.Sprintf("S7 assignment=%s: prepare the manifest with %s; this preparation creates a missing output directory and preserves existing files. Read the saved JSON file; stdout also contains guidance and is not a JSON document. Main chooses the real Reviewer and professional division of work, then uses the returned registration command. After registration, carry the issued exact view/answer paths into native Agent.\n", id, command) + s7ManifestRegistrationShape(root, manifest)
+}
+
+// s7RegisteredManifestPath locates the historical registered manifest layout
+// of this Assignment. The generation and round in the file name are a
+// locating convention only; they never qualify or reject the material.
+func s7RegisteredManifestPath(root string, generation int, reviewState map[string]any, id string) string {
+	round := tolerantInt(reviewState["round"])
+	if round < 1 {
+		if plan, _ := reviewState["plan"].(map[string]any); plan != nil {
+			round = tolerantInt(plan["review_round"])
+		}
+	}
+	if round < 1 {
+		return ""
+	}
+	return filepath.Join(root, ".claude", "workgroups", fmt.Sprintf("manifest-g%d-r%d-%s.json", generation, round, id))
+}
+
+// s7ExistingManifestGuidance preserves the professional edits of a matched
+// manifest and hands Main the original registration entry for it.
+func s7ExistingManifestGuidance(root, id, manifest string, draft *review.ManifestDraft) string {
+	return fmt.Sprintf("S7 assignment=%s: preserve and read existing manifest %s. Main retains its actual Reviewer and professional division of work.\n", id, manifest) + s7ManifestRegistrationGuidance(root, manifest, draft)
+}
+
+// s7ManifestRegistrationShape states the original registration entry for a
+// manifest that does not exist yet. The TASK ID, the actual REQ/TASK path and
+// its business version come from this Assignment's registered TASK document;
+// no round, digest or extra author field is required.
+func s7ManifestRegistrationShape(root, manifest string) string {
+	return fmt.Sprintf("Main registers the original workgroup with %s runtime register-workgroup --root %s --manifest %s --task-id TASK-ID --task TASK-PATH; Main takes the TASK ID, the actual REQ/TASK path and its business version from this Assignment's registered TASK document in the prepared manifest, and the original registration entry rejects remaining professional placeholders.\n",
+		s7CaptureShellQuote(filepath.Join(root, ".claude/bin/loop-harness")), s7CaptureShellQuote(root), s7CaptureShellQuote(manifest))
+}
+
+// Split the reversible identity into bounded filesystem components. Segment
+// boundaries are fixed, so different original identities cannot collide.
+func s7ManifestIdentityDir(parent, identity string) string {
+	encoded := base64.RawURLEncoding.EncodeToString([]byte(identity))
+	for len(encoded) > 100 {
+		parent = filepath.Join(parent, encoded[:100])
+		encoded = encoded[100:]
+	}
+	return filepath.Join(parent, encoded)
 }

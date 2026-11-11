@@ -51,6 +51,9 @@ func TestNativeS6RecordedResultProjectsActualUnfinishedWork(t *testing.T) {
 				condition := closing["conditions"].([]any)[0].(map[string]any)
 				condition["judgment"] = disposition
 				condition["rationale"] = "Required integration fixture has not been exercised"
+			} else {
+				answer["risks_blockers"] = []string{"Non-blocking environment assumption remains visible"}
+				answer["scope_deviations"] = []string{"Informational scope clarification for Main"}
 			}
 			stageJSON(t, source, resultPath, answer)
 			if code, out := nativeEvent(t, root, source, "SubagentStop", filepath.Join(root, brief)+"\n"+filepath.Join(source, resultPath), false); code != 0 {
@@ -80,7 +83,7 @@ func TestNativeS6RecordedResultProjectsActualUnfinishedWork(t *testing.T) {
 					t.Fatal(text)
 				}
 				if disposition != "complete" {
-					for _, want := range []string{"Actual dependency service remains unavailable", "Required API branch still unfinished", "Required integration fixture has not been exercised", "Done when[0]", "--revise-assignment", "--revision-intent-key", r.Task.ID, r.RoleFamily, "before merge", "With that original rework checkpoint"} {
+					for _, want := range []string{"Actual dependency service remains unavailable", "Required API branch still unfinished", "Required integration fixture has not been exercised", "Done when[0]", "--revise-assignment", r.Task.ID, r.RoleFamily, "before merge", "With that original rework checkpoint"} {
 						if !strings.Contains(text, want) {
 							t.Fatalf("missing %q: %s", want, text)
 						}
@@ -89,10 +92,13 @@ func TestNativeS6RecordedResultProjectsActualUnfinishedWork(t *testing.T) {
 						t.Fatalf("unfinished work treated as qualified delivery: %s", text)
 					}
 				} else {
-					for _, want := range []string{"task-integrate", "after an actual Main check failure", "--retry-preserved"} {
+					for _, want := range []string{"task-integrate", "after an actual Main check failure", "--retry-preserved", "Non-blocking environment assumption remains visible", "Informational scope clarification for Main"} {
 						if !strings.Contains(text, want) {
 							t.Fatalf("missing %q: %s", want, text)
 						}
+					}
+					if strings.Contains(text, "--revise-assignment") || strings.Contains(text, "record the actual closing blocker") {
+						t.Fatalf("non-blocking statements wrongly sent Main to revision: %s", text)
 					}
 				}
 			}
@@ -144,14 +150,19 @@ func TestNativeS6RecordedResultProjectsActualUnfinishedWork(t *testing.T) {
 					t.Fatalf("original closing blocker not returned: %d %s %s", code, &blockedOut, &blockedErr)
 				}
 				checkpoint, found, err := integration.DefaultCheckpointStore().Load(integration.CheckpointPathForRecord(root, r.Reference()))
-				if err != nil || !found || checkpoint.State != integration.StatePreserved || checkpoint.MergeCommit != "" {
+				if err != nil || !found || checkpoint.State != integration.StatePreserved {
 					t.Fatalf("original closing blocker checkpoint missing: %+v %v", checkpoint, err)
 				}
 				afterHead, err := workspace.Git(t.Context(), root, "rev-parse", "HEAD")
 				if err != nil || head != afterHead {
 					t.Fatal("unclosed accepted Result was merged")
 				}
-				prepared := stageCLI(t, "s6", "prepare", "--root", root, "--task", r.Task.ID, "--role", r.RoleFamily, "--revise-assignment", r.AssignmentID, "--revision-intent-key", "actual-unfinished-result-correction")
+				// The current revision Writer derives the predecessor and the
+				// internal intent from the preserved rework checkpoint; no
+				// machine intent token is supplied by the caller
+				// (L4-workflow-convergence §"S6 实际返工…不要求
+				// `--revision-intent-key`,删除旧参数接线").
+				prepared := stageCLI(t, "s6", "prepare", "--root", root, "--task", r.Task.ID, "--role", r.RoleFamily, "--revise-assignment", r.AssignmentID)
 				records, err := assignmentrecord.RecordsFromState(stageSnapshot(t, root).State)
 				if err != nil {
 					t.Fatal(err)

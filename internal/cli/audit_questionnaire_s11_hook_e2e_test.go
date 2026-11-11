@@ -187,6 +187,23 @@ func TestS11QuestionnaireHookDeliversVerifiableS10PackageAndKeepsDecisionHuman(t
 		t.Fatalf("unregistered actor received the non-empty draft: %s", out)
 	}
 	assertNoDecision(humanChoice)
+	// The unregistered actor's save was not routed to the original decision
+	// consumer: the human gateway, its evidence and the lifecycle cursor are
+	// unchanged, and the actor is told that this decision belongs to Main's
+	// audience instead of receiving a decision receipt.
+	afterActor := readS10QuestionnaireState(t, statePath)
+	if afterActor["lifecycle"].(map[string]any)["state"] != "awaiting_human_release" {
+		t.Fatalf("unregistered actor moved the human gateway: %#v", afterActor["lifecycle"])
+	}
+	for _, entry := range afterActor["evidence"].([]any) {
+		row, _ := entry.(map[string]any)
+		if row != nil && row["kind"] == "human_decision" {
+			t.Fatalf("unregistered actor registered human_decision evidence: %#v", row)
+		}
+	}
+	if !strings.Contains(out, "filled in and saved by Main") {
+		t.Fatalf("unregistered actor was not told that this decision is Main's audience: %s", out)
+	}
 
 	// Restore the empty draft before Main saves it. Only a subsequent explicit
 	// synthetic human choice is carried through the original decision exit.
@@ -357,7 +374,7 @@ func prepareS10QuestionnaireReleaseAudit(t *testing.T, root, acceptancePath stri
 	if state["lifecycle"].(map[string]any)["state"] != "release_audit" {
 		t.Fatalf("Controller did not advance the genuinely registered acceptance package: %#v; Hook=%s", state["lifecycle"], out)
 	}
-	releasePath := filepath.Join(root, "s10", "loop-test", "g1", "r1", "release_audit-manifest.json")
+	releasePath := filepath.Join(filepath.Dir(acceptancePath), "release_audit-manifest.json")
 	if !strings.Contains(out, releasePath) {
 		t.Fatalf("release-audit Hook omitted its exact answer path: %s", out)
 	}

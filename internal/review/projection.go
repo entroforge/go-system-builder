@@ -10,9 +10,9 @@ import (
 // accompanies RegisterPlan. It is intentionally separate from the CAS
 // transaction so another stage (TR-012 S9 handoff) can register a previously
 // schema-validated seed in the same runtime mutation that opens S7.
-func ApplyRegisteredPlanProjection(state map[string]any, plan Plan, planPath, planSHA string, round int, workspace, artifactDigest string, occurredAt time.Time) error {
-	if plan.ReviewPlanID == "" || planPath == "" || planSHA == "" || round < 1 {
-		return fmt.Errorf("registered ReviewPlan projection requires plan identity, path, sha256, and positive round")
+func ApplyRegisteredPlanProjection(state map[string]any, plan Plan, planPath, workspace string, occurredAt time.Time) error {
+	if plan.ReviewPlanID == "" || planPath == "" {
+		return fmt.Errorf("registered ReviewPlan projection requires plan identity and path")
 	}
 	reviewMap, ok := state["review"].(map[string]any)
 	if !ok {
@@ -21,13 +21,10 @@ func ApplyRegisteredPlanProjection(state map[string]any, plan Plan, planPath, pl
 	reviewMap["plan"] = map[string]any{
 		"plan_id":                         plan.ReviewPlanID,
 		"path":                            planPath,
-		"sha256":                          planSHA,
 		"revision":                        1,
-		"review_round":                    round,
 		"status":                          "running",
 		"e2e_coverage_state":              plan.E2ECoverageState,
 		"verification_artifact_workspace": workspace,
-		"verification_artifact_digest":    artifactDigestOrNil(artifactDigest),
 		"submitted_at":                    occurredAt.UTC().Format(time.RFC3339Nano),
 	}
 	claimsProjection := map[string]any{}
@@ -73,7 +70,6 @@ func ApplyRegisteredPlanProjection(state map[string]any, plan Plan, planPath, pl
 	}
 	reviewMap["claims"] = claimsProjection
 	reviewMap["assignments"] = assignmentsProjection
-	reviewMap["observation_batch"] = nil
 	if entities, ok := state["entities"].(map[string]any); ok {
 		if _, present := entities["findings"]; !present {
 			entities["findings"] = []any{}
@@ -83,6 +79,9 @@ func ApplyRegisteredPlanProjection(state map[string]any, plan Plan, planPath, pl
 		lifecycle["state"] = "verification"
 		lifecycle["phase"] = "running"
 		lifecycle["phase_revision"] = intField(lifecycle["phase_revision"]) + 1
+		if len(assignmentsProjection) == 0 && RequiredResponsibilitiesComplete(state) && len(RoundFindings(state)) == 0 {
+			setPlanStatus(reviewMap, lifecycle, "clean")
+		}
 	}
 	state["updated_at"] = occurredAt.UTC().Format(time.RFC3339Nano)
 	return nil

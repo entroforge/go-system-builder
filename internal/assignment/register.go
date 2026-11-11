@@ -2,8 +2,8 @@ package assignment
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -18,20 +18,26 @@ import (
 	"github.com/entroforge/go-system-builder/internal/fileview"
 	"github.com/entroforge/go-system-builder/internal/identity"
 	"github.com/entroforge/go-system-builder/internal/integration"
+	"github.com/entroforge/go-system-builder/internal/qualitygate"
 	loopruntime "github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/schema"
 	"github.com/entroforge/go-system-builder/internal/semantic"
 	"github.com/entroforge/go-system-builder/internal/team"
-	"github.com/entroforge/go-system-builder/internal/transition"
 	"github.com/entroforge/go-system-builder/internal/workstate"
 )
 
 type Request struct {
-	Context            context.Context
-	ExpectedRevision   int
-	ManifestPath       string
-	TaskID             string
-	TaskPath           string
+	s5Prepared       bool // Only the original automatic S5 preparation chooses a registered winner.
+	Context          context.Context
+	ExpectedRevision int
+	ManifestPath     string
+	TaskID           string
+	TaskPath         string
+	// The caller's actual per-dispatch selection, when preparation already
+	// opened the original source view. These are internal values, not fields
+	// authored by an Agent or persisted as new evidence.
+	SelectedTaskBytes  []byte
+	SelectedBoard      *dispatch.Board
 	RepairAssignmentID string
 	RepairOwnerAgentID string
 	Revision           *RevisionRequest
@@ -44,7 +50,6 @@ type manifest struct {
 	PlatformTeamID             string                 `json:"platform_team_id"`
 	WorkgroupID                string                 `json:"workgroup_id"`
 	WorkgroupKind              string                 `json:"workgroup_kind"`
-	ReviewRound                *int                   `json:"review_round"`
 	ResponsibilityDispositions []responsibilityStatus `json:"responsibility_dispositions"`
 	Assignments                []assignment           `json:"assignments"`
 }
@@ -84,6 +89,45 @@ type RevisionAcceptanceReceipt struct {
 func Register(root, statePath, journalPath string, request Request) (loopruntime.Snapshot, error) {
 	snapshot, err := registerWithReceipt(root, statePath, journalPath, request, nil)
 	return snapshot, err
+}
+
+// RegisterS5Prepared shares Register's transaction and validation. Only this
+// original preparation path resumes an already registered current S5 team;
+// ordinary register-workgroup retains its duplicate-registration refusal.
+func RegisterS5Prepared(root, statePath, journalPath string, request Request) (loopruntime.Snapshot, error) {
+	request.s5Prepared = true
+	return Register(root, statePath, journalPath, request)
+}
+
+var errS5PreparationWinner = errors.New("current S5 preparation is already registered")
+
+func s5PreparedWinner(state map[string]any, value manifest) bool {
+	if !loopruntime.PacketEnabled(state) || value.WorkgroupKind != "document_verifier" {
+		return false
+	}
+	life, _ := state["lifecycle"].(map[string]any)
+	baseline, _ := state["baseline"].(map[string]any)
+	if life["state"] != "document_verification" {
+		return false
+	}
+	entities, _ := state["entities"].(map[string]any)
+	teams, _ := entities["teams"].([]any)
+	for _, raw := range teams {
+		t, _ := raw.(map[string]any)
+		if t["kind"] == "document_verifier" && t["id"] == value.WorkgroupID && dispatch.Number(t["packet_stage_entry"]) == dispatch.Number(life["phase_revision"]) && dispatch.Number(t["packet_generation"]) == dispatch.Number(baseline["generation"]) {
+			return true
+		}
+	}
+	return false
+}
+
+func s5NativeReviewAssignment(state map[string]any, value manifest, item assignment) bool {
+	life, _ := state["lifecycle"].(map[string]any)
+	mode := item.DispatchMode
+	if mode == "" {
+		mode = "plan_checkpoint"
+	}
+	return loopruntime.PacketEnabled(state) && life["state"] == "document_verification" && value.WorkgroupKind == "document_verifier" && item.RoleFamily == "document-verifier" && (item.ResponsibilityID == "DV-SPEC-CONSISTENCY" || item.ResponsibilityID == "DV-TASK-EXECUTABILITY") && (mode == "plan_checkpoint" || mode == "one_shot")
 }
 
 // RegisterWithReceipt adds the original durable issuance receipt for
@@ -189,9 +233,6 @@ func registerWithReceipt(root, statePath, journalPath string, request Request, r
 		if request.RepairAssignmentID != "" || request.RepairOwnerAgentID != "" {
 			return loopruntime.Snapshot{}, fmt.Errorf("Assignment revision cannot be combined with a repair binding")
 		}
-		if err := validateRevisionRequest(*request.Revision); err != nil {
-			return loopruntime.Snapshot{}, err
-		}
 		if len(value.Assignments) != 1 || value.Assignments[0].AssignmentID != request.Revision.AssignmentID {
 			return loopruntime.Snapshot{}, fmt.Errorf("Assignment revision manifest must contain exactly the requested Assignment")
 		}
@@ -208,67 +249,81 @@ func registerWithReceipt(root, statePath, journalPath string, request Request, r
 			return loopruntime.Snapshot{}, fmt.Errorf("team manifest assignment %s: %w", item.AssignmentID, err)
 		}
 	}
-	taskData, err := os.ReadFile(request.TaskPath)
+	manifestRef := repositoryPath(root, request.ManifestPath)
+	taskRef := repositoryPath(root, request.TaskPath)
+	if request.Revision != nil {
+		if err := resolveRevisionRequest(current, request.Revision, manifestRef, value); err != nil {
+			return loopruntime.Snapshot{}, err
+		}
+		if err := validateRevisionRequest(*request.Revision); err != nil {
+			return loopruntime.Snapshot{}, err
+		}
+		journalBytes, err := readRevisionJournal(journalPath)
+		if err != nil {
+			return loopruntime.Snapshot{}, fmt.Errorf("read Assignment revision issuance journal: %w", err)
+		}
+		if err := loopruntime.ValidateAssignmentRevisionReceipts(current, journalBytes); err != nil {
+			return loopruntime.Snapshot{}, fmt.Errorf("validate prior Assignment revision receipts: %w", err)
+		}
+		replayed, found, err := findRevisionReplay(root, current, *request.Revision, manifestRef, request.TaskID, taskRef, value.Assignments[0].AgentID, value.WorkgroupID)
+		if err != nil {
+			return loopruntime.Snapshot{}, err
+		}
+		if found {
+			wasReplay = true
+			return replayed, nil
+		}
+		records, err := assignmentrecord.RecordsFromState(current)
+		if err != nil {
+			return loopruntime.Snapshot{}, err
+		}
+		rid, gen, _, err := assignmentrecord.CurrentRuntimeBinding(current)
+		if err != nil {
+			return loopruntime.Snapshot{}, err
+		}
+		previous, found, err := assignmentrecord.FindRecord(records, rid, gen, request.Revision.AssignmentID)
+		if err != nil || !found {
+			return loopruntime.Snapshot{}, fmt.Errorf("Assignment revision requires a current canonical Record: %v", err)
+		}
+		if request.TaskID != previous.Task.ID {
+			return loopruntime.Snapshot{}, fmt.Errorf("Assignment revision must retain the current Assignment TASK id %s", previous.Task.ID)
+		}
+		if request.Revision.ExpectedRecord != previous.Reference() {
+			return loopruntime.Snapshot{}, fmt.Errorf("stale Assignment revision: expected Record %v, current is %v", request.Revision.ExpectedRecord, previous.Reference())
+		}
+	}
+	var selectedFiles fileview.Reader
+	var selectedBoard *dispatch.Board
+	var taskData []byte
+	if lifecycle["state"] == "building" && value.WorkgroupKind == "builder" && qualitygate.HasDispatchPlan(current) {
+		view, err := dispatch.View(root, current)
+		if err != nil {
+			return loopruntime.Snapshot{}, err
+		}
+		selectedFiles = view
+		if request.SelectedBoard != nil {
+			selectedBoard = request.SelectedBoard
+		} else {
+			board, err := dispatch.LoadWithFiles(root, current, view, 1<<20)
+			if err != nil {
+				return loopruntime.Snapshot{}, err
+			}
+			selectedBoard = &board
+		}
+		if request.SelectedTaskBytes != nil {
+			taskData = request.SelectedTaskBytes
+		} else {
+			taskData, err = view.ReadFile(request.TaskPath)
+		}
+	} else {
+		taskData, err = os.ReadFile(request.TaskPath)
+	}
 	if err != nil {
 		return loopruntime.Snapshot{}, fmt.Errorf("read task: %w", err)
 	}
 	occurredAt := request.OccurredAt
 	if occurredAt.IsZero() {
 		occurredAt = time.Now().UTC()
-	}
-	manifestRef := repositoryPath(root, request.ManifestPath)
-	taskRef := repositoryPath(root, request.TaskPath)
-	var revisionSources []assignmentrecord.ContextSource
-	var revisionDigest string
-	if request.Revision != nil {
-		revisionSources, err = revisionContextSources(root, current, manifestData, manifestRef, taskRef, request.TaskID, taskData)
-		if err != nil {
-			return loopruntime.Snapshot{}, err
-		}
-		journalBytes, readErr := readRevisionJournal(journalPath)
-		if readErr != nil {
-			return loopruntime.Snapshot{}, fmt.Errorf("read Assignment revision issuance journal: %w", readErr)
-		}
-		if err := loopruntime.ValidateAssignmentRevisionReceipts(current, journalBytes); err != nil {
-			return loopruntime.Snapshot{}, fmt.Errorf("validate prior Assignment revision receipts: %w", err)
-		}
-		replayed, found, replayErr := findRevisionReplay(root, current, *request.Revision, manifestRef, request.TaskID, taskRef, manifestData, taskData, revisionSources)
-		if replayErr != nil {
-			return loopruntime.Snapshot{}, replayErr
-		}
-		if found {
-			wasReplay = true
-			return replayed, nil
-		}
-		records, recordsErr := assignmentrecord.RecordsFromState(current)
-		if recordsErr != nil {
-			return loopruntime.Snapshot{}, recordsErr
-		}
-		runtimeID, generation, _, bindingErr := assignmentrecord.CurrentRuntimeBinding(current)
-		if bindingErr != nil {
-			return loopruntime.Snapshot{}, bindingErr
-		}
-		previous, found, findErr := assignmentrecord.FindRecord(records, runtimeID, generation, request.Revision.AssignmentID)
-		if findErr != nil || !found {
-			return loopruntime.Snapshot{}, fmt.Errorf("Assignment revision requires a current canonical Record: %v", findErr)
-		}
-		previousSHA, digestErr := previous.Digest()
-		if digestErr != nil {
-			return loopruntime.Snapshot{}, digestErr
-		}
-		if request.TaskID != previous.Task.ID {
-			return loopruntime.Snapshot{}, fmt.Errorf("Assignment revision must retain the current Assignment TASK id %s", previous.Task.ID)
-		}
-		if !zeroRecordReference(request.Revision.ExpectedRecord) &&
-			(request.Revision.ExpectedRecord != previous.Reference() || request.Revision.ExpectedRecordSHA256 != previousSHA) {
-			return loopruntime.Snapshot{}, fmt.Errorf("stale Assignment revision: expected Record %v/%s, current is %v/%s", request.Revision.ExpectedRecord, request.Revision.ExpectedRecordSHA256, previous.Reference(), previousSHA)
-		}
-		request.Revision.ExpectedRecord = previous.Reference()
-		request.Revision.ExpectedRecordSHA256 = previousSHA
-		revisionDigest, err = assignmentRevisionRequestDigest(runtimeID, generation, *request.Revision, manifestRef, manifestData, request.TaskID, taskRef, taskData, revisionSources)
-		if err != nil {
-			return loopruntime.Snapshot{}, err
-		}
 	}
 	agentIDs := make([]string, 0, len(value.Assignments))
 	for _, item := range value.Assignments {
@@ -278,15 +333,18 @@ func registerWithReceipt(root, statePath, journalPath string, request Request, r
 
 	store := loopruntime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{}).WithContext(ctx)
 	// Activation envelopes are staged while the mutation builds its candidate
-	// state. Keep their exact bytes' digests so a rejected Apply can remove only
+	// state. Keep their exact bytes so a rejected Apply can remove only
 	// the files created by this attempt. Store.Update already protects the
 	// cleanup with the same revision/pending-marker checks used by every other
 	// staged artifact; if the commit may still be recoverable, the file is
 	// intentionally retained.
 	stagedActivations := make([]loopruntime.ArtifactCleanupRequest, 0, len(value.Assignments))
-	mutationEventID := fmt.Sprintf("evt-register-%s-r%d", value.WorkgroupID, commitRevision+1)
+	// The identity of a workgroup registration is the registered workgroup and
+	// the manifest that declares it. The workgroup id is unique per
+	// registration, so no Runtime write counter is needed (G18 §1/§1.3).
+	mutationEventID := fmt.Sprintf("evt-register-%s", value.WorkgroupID)
 	mutationTransitionID, mutationEvent := "ENTITY-REGISTER", "workgroup_registered"
-	mutationIdempotencyKey := fmt.Sprintf("runtime:register:%s:%d", value.ManifestID, commitRevision)
+	mutationIdempotencyKey := fmt.Sprintf("runtime:register:%s:%s", value.ManifestID, value.WorkgroupID)
 	mutationMessage := "Registered a validated workgroup, task and phase-one Agents."
 	if request.Revision != nil {
 		mutationEventID = loopruntime.AssignmentRevisionEventID(request.Revision.ExpectedRecord, request.Revision.IntentKey)
@@ -294,7 +352,20 @@ func registerWithReceipt(root, statePath, journalPath string, request Request, r
 		mutationIdempotencyKey = loopruntime.AssignmentRevisionIdempotencyKey(request.Revision.ExpectedRecord, request.Revision.IntentKey)
 		mutationMessage = "Issued a new immutable Assignment revision and invalidated the previous current owner projection."
 	}
-	snapshot, updateErr := updateRuntime(store, request.ExpectedRevision, loopruntime.Mutation{
+	// G18 §3.2: the Assignment Record revision issuance is a professional act.
+	// It must not be refused because the Runtime moved for an unrelated
+	// reason, so the revision path takes the current-value path (-1 is the
+	// omission marker) instead of asserting the caller's Runtime write count.
+	// The protection is unchanged and lives in the domain facts: the received
+	// row (findRevisionReplay and the revision receipt index), the
+	// journal-level dedup (the domain idempotency key of this revision
+	// intent) and the Assignment Record's own revision (ExpectedRecord
+	// against the current Record, checked again inside Apply).
+	expectedRevision := request.ExpectedRevision
+	if request.Revision != nil {
+		expectedRevision = -1
+	}
+	snapshot, updateErr := updateRuntime(store, expectedRevision, loopruntime.Mutation{
 		EventID:            mutationEventID,
 		TransitionID:       mutationTransitionID,
 		Event:              mutationEvent,
@@ -307,125 +378,116 @@ func registerWithReceipt(root, statePath, journalPath string, request Request, r
 		BaselineGeneration: dispatch.Number(registeredBaseline["generation"]),
 		From:               cursor,
 		To:                 cursor,
+		// G18 §1/§3.2: the registration event id names the registered
+		// workgroup, so a repeated registration produces the same id and the
+		// journal's global event-id uniqueness check answers before the Apply
+		// closure can refuse it with the domain's own outcome. The store calls
+		// this judgment under its lock, after the revision CAS, so the caller
+		// keeps the domain outcome and the refused repeat writes neither
+		// Runtime state nor a journal fact.
+		Precheck: func(state map[string]any) error {
+			if request.s5Prepared && s5PreparedWinner(state, value) {
+				return errS5PreparationWinner
+			}
+			if _, err := validateWorkgroupRegistration(root, request, value, selectedBoard, selectedFiles, taskData, state); err != nil {
+				return err
+			}
+			return workgroupRegistrationRefusal(root, request, value, state)
+		},
 		Apply: func(state map[string]any) error {
+			currentBoard, err := validateWorkgroupRegistration(root, request, value, selectedBoard, selectedFiles, taskData, state)
+			if err != nil {
+				return err
+			}
+			// The dispatch pressure projection is part of the committed
+			// state, so the reconcile stays in the Apply closure: the
+			// read-only refusal above already judged the dispatch, and this
+			// write records the projection it judged. A refused dispatch
+			// never reaches this point, so the projection is never written
+			// for a registration the domain refused.
 			if value.WorkgroupKind == "builder" {
-				if err := dispatch.CheckConfiguredBackpressure(root, state); err != nil {
+				if err := dispatch.ReconcilePressure(root, state); err != nil {
 					return err
 				}
 			}
-			if request.Revision == nil {
-				if err := dispatch.CheckRegistration(root, state, request.TaskID); err != nil {
-					return err
-				}
-			} else if err := checkRevisionDispatchRegistration(root, state, request.TaskID); err != nil {
-				return err
-			}
-			plannedWrites := []string{}
-			for _, item := range value.Assignments {
-				plannedWrites = append(plannedWrites, effectiveActivationWritePaths(item.WritePaths, item.OutputPaths)...)
-			}
-			if err := dispatch.ValidateWorkPackage(root, state, request.TaskID, request.TaskPath, taskData, plannedWrites, len(value.Assignments)); err != nil {
-				return err
-			}
-
-			_, ok := state["lifecycle"].(map[string]any)
-			if !ok {
-				return fmt.Errorf("runtime lifecycle must be an object")
-			}
-			if err := validateWorkgroupState(value.WorkgroupKind, state); err != nil {
+			if err := checkRepairBinding(value, request, state); err != nil {
 				return err
 			}
 			if request.RepairAssignmentID != "" {
-				if value.WorkgroupKind != "builder" || request.RepairOwnerAgentID == "" {
-					return fmt.Errorf("repair assignment binding requires a builder workgroup and repair owner agent")
-				}
-				manifestAssignment := false
-				manifestOwner := ""
-				for _, item := range value.Assignments {
-					if item.AssignmentID == request.RepairAssignmentID || item.AssignmentID == "assignment-s9-"+strings.TrimPrefix(request.RepairAssignmentID, "repair-assignment-") {
-						manifestAssignment = true
-						manifestOwner = item.AgentID
-						break
-					}
-				}
-				if !manifestAssignment {
-					return fmt.Errorf("repair assignment %s is not represented by the registered builder manifest", request.RepairAssignmentID)
-				}
-				if manifestOwner != request.RepairOwnerAgentID {
-					return fmt.Errorf("repair assignment %s manifest owner %s does not match requested Agent %s", request.RepairAssignmentID, manifestOwner, request.RepairOwnerAgentID)
-				}
-				review, _ := state["review"].(map[string]any)
-				if review == nil {
-					return fmt.Errorf("repair assignment binding requires Runtime review state")
-				}
-				repairPointer, _ := review["repair"].(map[string]any)
-				if repairPointer == nil {
-					return fmt.Errorf("repair assignment %s is not bound to an active S9 RepairSession", request.RepairAssignmentID)
-				}
-				owners, _ := repairPointer["assignment_owners"].(map[string]any)
-				if owners == nil {
-					owners = map[string]any{}
-					repairPointer["assignment_owners"] = owners
-				}
-				if existing, _ := owners[request.RepairAssignmentID].(string); existing != "" && existing != request.RepairOwnerAgentID {
-					return fmt.Errorf("RepairAssignment %s is already owned by Agent %s; do not replace ownership mid-session", request.RepairAssignmentID, existing)
-				}
-				owners[request.RepairAssignmentID] = request.RepairOwnerAgentID
+				recordRepairBindingOwner(request, state)
 			}
 			// L3-S7: reviewer workgroups bind to the registered ReviewPlan —
 			// exact Claim set, lens match, static-before-behavior wave gate.
 			if err := bindReviewPlanAssignments(root, state, value); err != nil {
 				return err
 			}
-			entities, ok := state["entities"].(map[string]any)
-			if !ok {
-				return fmt.Errorf("runtime entities must be an object")
-			}
-			if request.Revision != nil {
-				_, err := applyAssignmentRevision(root, state, value, manifestData, manifestRef, taskRef, request.TaskID, taskData, *request.Revision, revisionDigest, revisionSources, mutationEventID, occurredAt, &stagedActivations)
+			if err := requireRuntimeEntities(state); err != nil {
 				return err
 			}
-			if containsEntity(entities["teams"], value.WorkgroupID) {
-				return fmt.Errorf("workgroup %s is already registered", value.WorkgroupID)
+			entities, _ := state["entities"].(map[string]any)
+			if request.Revision != nil {
+				_, err := applyAssignmentRevision(root, state, value, manifestData, manifestRef, taskRef, request.TaskID, taskData, *request.Revision, currentBoard, mutationEventID, occurredAt, &stagedActivations)
+				return err
 			}
-			task := map[string]any{
-				"id": request.TaskID,
-				// Registering a workgroup in S6 dispatches the TASK: the
-				// document is already `complete` and locked, the owner is
-				// named, and the Builder is expected to start — landing
-				// straight in `in_progress` keeps `runtime task-complete`
-				// (which requires that state) reachable without a manual
-				// lifecycle hop (L3-S6 complexity pass).
-				"state":           "in_progress",
-				"path":            taskRef,
-				"sha256":          transition.SHA256(taskData),
-				"owner_agent_ids": agentIDs,
+			if err := checkWorkgroupRegistration(state, value.WorkgroupID); err != nil {
+				return err
 			}
-			if err := workstate.RecordTaskActivity(state, task, "in_progress", mutationEvent); err != nil {
-				return fmt.Errorf("record registered TASK work state: %w", err)
-			}
-			tasks, _ := entities["tasks"].([]any)
-			if !containsEntity(tasks, request.TaskID) {
-				entities["tasks"] = append(tasks, task)
-			} else if life, _ := state["lifecycle"].(map[string]any); life["state"] == "building" && value.WorkgroupKind == "builder" {
-				// A TASK may already exist from the document-review/planning
-				// registry. Record the explicitly dispatched Builder owners in
-				// this same CAS; keep all existing TASK facts and prior owners.
-				for _, raw := range tasks {
-					row, _ := raw.(map[string]any)
-					if row["id"] != request.TaskID {
-						continue
+			life, _ := state["lifecycle"].(map[string]any)
+			// S5 reviewers reference a TASK as a document, not as Builder work.
+			// Their own Team and Agent entries retain that review responsibility.
+			if life["state"] == "document_verification" && value.WorkgroupKind == "document_verifier" {
+				// The shared TASK reference is needed for the reviewer's context;
+				// it is not an issued Builder assignment or an active owner.
+				tasks, _ := entities["tasks"].([]any)
+				if !containsEntity(tasks, request.TaskID) {
+					task := map[string]any{"id": request.TaskID, "path": taskRef, "owner_agent_ids": []any{}}
+					if err := workstate.RecordTaskActivity(state, task, "candidate", "task_created"); err != nil {
+						return fmt.Errorf("record review TASK reference: %w", err)
 					}
-					owners, _ := row["owner_agent_ids"].([]any)
-					for _, assignment := range value.Assignments {
-						switch assignment.RoleFamily {
-						case "backend-builder", "frontend-builder", "test-builder":
-							if !stringArrayContains(owners, assignment.AgentID) {
-								owners = append(owners, assignment.AgentID)
+					entities["tasks"] = append(tasks, task)
+				}
+			} else {
+				task := map[string]any{
+					"id": request.TaskID,
+					// Registering a workgroup in S6 dispatches the TASK: the
+					// document is already `complete` and locked, the owner is
+					// named, and the Builder is expected to start — landing
+					// straight in `in_progress` keeps `runtime task-complete`
+					// (which requires that state) reachable without a manual
+					// lifecycle hop (L3-S6 complexity pass).
+					"state":           "in_progress",
+					"path":            taskRef,
+					"owner_agent_ids": agentIDs,
+				}
+				if err := workstate.RecordTaskActivity(state, task, "in_progress", mutationEvent); err != nil {
+					return fmt.Errorf("record registered TASK work state: %w", err)
+				}
+				tasks, _ := entities["tasks"].([]any)
+				if !containsEntity(tasks, request.TaskID) {
+					entities["tasks"] = append(tasks, task)
+				} else if life, _ := state["lifecycle"].(map[string]any); life["state"] == "building" && value.WorkgroupKind == "builder" {
+					// A TASK may already exist from the document-review/planning
+					// registry. Record the explicitly dispatched Builder owners in
+					// this same CAS; keep all existing TASK facts and prior owners.
+					for _, raw := range tasks {
+						row, _ := raw.(map[string]any)
+						if row["id"] != request.TaskID {
+							continue
+						}
+						owners, _ := row["owner_agent_ids"].([]any)
+						for _, assignment := range value.Assignments {
+							switch assignment.RoleFamily {
+							case "backend-builder", "frontend-builder", "test-builder":
+								if !stringArrayContains(owners, assignment.AgentID) {
+									owners = append(owners, assignment.AgentID)
+								}
 							}
 						}
+						row["owner_agent_ids"] = owners
+						if err := workstate.RecordTaskActivity(state, row, "in_progress", mutationEvent); err != nil {
+							return fmt.Errorf("record registered TASK work state: %w", err)
+						}
 					}
-					row["owner_agent_ids"] = owners
 				}
 			}
 			teams, _ := entities["teams"].([]any)
@@ -437,10 +499,6 @@ func registerWithReceipt(root, statePath, journalPath string, request Request, r
 				"manifest_ref":       manifestRef,
 				"responsibility_ids": responsibilityIDs,
 				"agent_ids":          agentIDs,
-				"review_round":       value.ReviewRound,
-			}
-			if loopruntime.PacketEnabled(state) && (value.WorkgroupKind == "document_verifier" || value.WorkgroupKind == "delivery_verifier" || value.WorkgroupKind == "qa" || value.WorkgroupKind == "e2e_browser" || value.WorkgroupKind == "investigator" || (value.WorkgroupKind == "builder" && request.RepairAssignmentID != "")) {
-				teamRow["manifest_sha256"] = transition.SHA256(manifestData)
 			}
 			if loopruntime.PacketEnabled(state) && value.WorkgroupKind == "document_verifier" {
 				life, _ := state["lifecycle"].(map[string]any)
@@ -491,7 +549,7 @@ func registerWithReceipt(root, statePath, journalPath string, request Request, r
 			entities["agents"] = agents
 			var registeredRecords []Record
 			if recordEnabled {
-				records, err := buildRegisteredAssignmentRecords(root, state, manifestData, manifestRef, taskRef, request.TaskID, taskData)
+				records, err := buildRegisteredAssignmentRecords(root, state, manifestData, manifestRef, taskRef, request.TaskID, taskData, currentBoard)
 				if err != nil {
 					return err
 				}
@@ -525,7 +583,7 @@ func registerWithReceipt(root, statePath, journalPath string, request Request, r
 				registeredRecords = records
 			}
 			for _, item := range value.Assignments {
-				if value.AssignmentRecordContract == assignmentrecord.NativeDeliveryContract {
+				if value.AssignmentRecordContract == assignmentrecord.NativeDeliveryContract || s5NativeReviewAssignment(state, value, item) {
 					continue // Native delivery records engineering responsibility, never activation.
 				}
 				dispatchMode := item.DispatchMode
@@ -539,11 +597,6 @@ func registerWithReceipt(root, statePath, journalPath string, request Request, r
 						if record.AssignmentID == item.AssignmentID && record.OwnerAgentID == item.AgentID {
 							ref := record.Reference()
 							source.AssignmentRecord = &ref
-							sha, err := record.Digest()
-							if err != nil {
-								return err
-							}
-							source.AssignmentRecordSHA256 = sha
 							source.WritePaths = append([]string(nil), record.EffectiveWritePaths...)
 							source.OutputPaths = nil
 							found = true
@@ -555,12 +608,8 @@ func registerWithReceipt(root, statePath, journalPath string, request Request, r
 					}
 				}
 				// Pre-stage the activation envelope for plan_checkpoint
-				// agents (L4 §3.3 auto-activation). The envelope's
-				// hash-chain fields are placeholders; the PostToolUse
-				// auto-chain or the runtime agent-begin fallback verb
-				// rewrite the file with the real plan bytes before
-				// submitting activation_sent (so
-				// verifyActivationReadbackChain stays fail-closed).
+				// agents (L4 §3.3 auto-activation). The original
+				// responsibility and the actual Plan establish the handoff.
 				activationRef, envelopeErr := PreStageActivationEnvelope(root, value.WorkgroupID, request.TaskID, item.AgentID, dispatchMode, source)
 				if envelopeErr != nil {
 					return envelopeErr
@@ -570,12 +619,12 @@ func registerWithReceipt(root, statePath, journalPath string, request Request, r
 					envelope := buildActivationEnvelope(item.AgentID, source)
 					activationBytes, marshalErr := json.MarshalIndent(envelope, "", "  ")
 					if marshalErr != nil {
-						return fmt.Errorf("activation envelope: hash staged bytes: %w", marshalErr)
+						return fmt.Errorf("activation envelope: encode staged bytes: %w", marshalErr)
 					}
 					stagedActivations = append(stagedActivations, loopruntime.ArtifactCleanupRequest{
 						ExpectedRevision: commitRevision,
 						ArtifactPath:     activationRef,
-						ArtifactSHA256:   sha256Of(append(activationBytes, '\n')),
+						ArtifactBytes:    append(activationBytes, '\n'),
 						ReferencedPaths:  stateArtifactPaths(current),
 					})
 					activationRefValue = activationRef
@@ -592,23 +641,20 @@ func registerWithReceipt(root, statePath, journalPath string, request Request, r
 			return nil
 		},
 	})
+	if errors.Is(updateErr, errS5PreparationWinner) {
+		return store.Snapshot()
+	}
 	if updateErr != nil {
-		for index := len(stagedActivations) - 1; index >= 0; index-- {
-			if _, cleanupErr := store.RemoveUnreferencedArtifact(stagedActivations[index]); cleanupErr != nil {
-				return snapshot, fmt.Errorf("%w; staged registration artifact cleanup failed: %v", updateErr, cleanupErr)
-			}
-		}
+		// A path and equal bytes cannot prove that a failed registration's
+		// candidate still belongs to this attempt. Preserve unregistered
+		// artifacts; retry publishes a new exclusive candidate.
 		if request.Revision != nil {
 			latest, readErr := readRuntimeSnapshot(statePath)
 			if readErr == nil {
 				journalBytes, journalErr := readRevisionJournal(journalPath)
 				if journalErr == nil {
 					if validateErr := loopruntime.ValidateAssignmentRevisionReceipts(latest.State, journalBytes); validateErr == nil {
-						latestSources, sourceErr := revisionContextSources(root, latest.State, manifestData, manifestRef, taskRef, request.TaskID, taskData)
-						if sourceErr != nil {
-							return snapshot, fmt.Errorf("revalidate Assignment revision sources after Writer conflict: %w", sourceErr)
-						}
-						replayed, found, replayErr := findRevisionReplay(root, latest.State, *request.Revision, manifestRef, request.TaskID, taskRef, manifestData, taskData, latestSources)
+						replayed, found, replayErr := findRevisionReplay(root, latest.State, *request.Revision, manifestRef, request.TaskID, taskRef, value.Assignments[0].AgentID, value.WorkgroupID)
 						if replayErr == nil && found {
 							wasReplay = true
 							return replayed, nil
@@ -631,6 +677,204 @@ func registerWithReceipt(root, statePath, journalPath string, request Request, r
 		}
 	}
 	return snapshot, updateErr
+}
+
+// validateWorkgroupRegistration runs the read-only validation prefix of a
+// workgroup registration and returns the projected dispatch board (nil when
+// the registration has no selected plan). The Apply closure uses that board
+// for the Assignment revision and for the registered Assignment records.
+//
+// G18 §1/§3.2: the registration event id names the registered workgroup, so a
+// repeated registration produces the same id and the journal's global
+// event-id uniqueness check answers before the Apply closure can refuse it
+// with the domain's own outcome. The mutation's Precheck runs these same
+// judgments under the store lock, after the revision CAS, so the caller keeps
+// the domain outcome.
+//
+// The judgments are side-effect free: they never write the Runtime state and
+// never write a file. The dispatch backpressure judgment is the read-only
+// half of dispatch.CheckConfiguredBackpressure; the dispatch pressure
+// projection it judges is written by the Apply closure, which owns the
+// committed state.
+func validateWorkgroupRegistration(root string, request Request, value manifest, selected *dispatch.Board, files fileview.Reader, taskData []byte, state map[string]any) (*dispatch.Board, error) {
+	if value.WorkgroupKind == "builder" {
+		if err := dispatch.ConfiguredBackpressureRefusal(root, state); err != nil {
+			return nil, err
+		}
+	}
+	var currentBoard *dispatch.Board
+	if selected != nil {
+		board, err := dispatch.ProjectSelectedPlan(root, state, files, selected.Plan, 1<<20)
+		if err != nil {
+			return nil, err
+		}
+		currentBoard = &board
+	}
+	if request.Revision == nil {
+		if currentBoard != nil {
+			if err := dispatch.CheckBoardRegistration(*currentBoard, request.TaskID); err != nil {
+				return nil, err
+			}
+		} else if err := dispatch.CheckRegistration(root, state, request.TaskID); err != nil {
+			return nil, err
+		}
+	} else if err := checkRevisionDispatchRegistration(root, state, request.TaskID, currentBoard); err != nil {
+		return nil, err
+	}
+	plannedWrites := []string{}
+	for _, item := range value.Assignments {
+		plannedWrites = append(plannedWrites, effectiveActivationWritePaths(item.WritePaths, item.OutputPaths)...)
+	}
+	if currentBoard != nil {
+		if err := dispatch.ValidateBoardWorkPackage(root, *currentBoard, request.TaskID, request.TaskPath, plannedWrites, len(value.Assignments)); err != nil {
+			return nil, err
+		}
+	} else if err := dispatch.ValidateWorkPackage(root, state, request.TaskID, request.TaskPath, taskData, plannedWrites, len(value.Assignments)); err != nil {
+		return nil, err
+	}
+	if _, ok := state["lifecycle"].(map[string]any); !ok {
+		return nil, fmt.Errorf("runtime lifecycle must be an object")
+	}
+	if err := validateWorkgroupState(value.WorkgroupKind, state); err != nil {
+		return nil, err
+	}
+	return currentBoard, nil
+}
+
+// workgroupRegistrationRefusal is the read-only mirror of the judgments the
+// Apply closure runs after its validation prefix. The Apply closure keeps the
+// authority under concurrency; this mirror is what the mutation's Precheck
+// runs, so a repeated registration keeps the domain outcome instead of the
+// journal's event-id collision.
+//
+// The judgments run in the Apply closure's order, so the first refusal is the
+// same one the Apply closure produces.
+func workgroupRegistrationRefusal(root string, request Request, value manifest, state map[string]any) error {
+	if err := checkRepairBinding(value, request, state); err != nil {
+		return err
+	}
+	if err := reviewerDispatchRefusal(root, value, state); err != nil {
+		return err
+	}
+	// The Apply closure judges the entity registry right after the ReviewPlan
+	// bind, so the mirror keeps that position. A Runtime whose entities are
+	// not an object is refused with the Apply closure's own outcome, never
+	// with the journal's event-id collision.
+	if err := requireRuntimeEntities(state); err != nil {
+		return err
+	}
+	if request.Revision != nil {
+		// An Assignment revision re-registers the same workgroup on purpose,
+		// so the registered-workgroup judgment does not apply to it.
+		return nil
+	}
+	return checkWorkgroupRegistration(state, value.WorkgroupID)
+}
+
+// requireRuntimeEntities refuses a Runtime whose entity registry is not an
+// object. The judgment is read-only, so the mutation's Precheck can reach it
+// before the journal's event-id uniqueness check answers a repeated
+// registration. The refusal text is the Apply closure's own.
+func requireRuntimeEntities(state map[string]any) error {
+	if _, ok := state["entities"].(map[string]any); !ok {
+		return fmt.Errorf("runtime entities must be an object")
+	}
+	return nil
+}
+
+// checkRepairBinding judges the S9 repair binding of a Builder workgroup
+// registration without recording it. The judgment is read-only so the
+// mutation's Precheck can reach it before the journal's event-id uniqueness
+// check answers a repeated registration.
+func checkRepairBinding(value manifest, request Request, state map[string]any) error {
+	if request.RepairAssignmentID == "" {
+		return nil
+	}
+	if value.WorkgroupKind != "builder" || request.RepairOwnerAgentID == "" {
+		return fmt.Errorf("repair assignment binding requires a builder workgroup and repair owner agent")
+	}
+	manifestAssignment := false
+	manifestOwner := ""
+	for _, item := range value.Assignments {
+		if item.AssignmentID == request.RepairAssignmentID || item.AssignmentID == "assignment-s9-"+strings.TrimPrefix(request.RepairAssignmentID, "repair-assignment-") {
+			manifestAssignment = true
+			manifestOwner = item.AgentID
+			break
+		}
+	}
+	if !manifestAssignment {
+		return fmt.Errorf("repair assignment %s is not represented by the registered builder manifest", request.RepairAssignmentID)
+	}
+	if manifestOwner != request.RepairOwnerAgentID {
+		return fmt.Errorf("repair assignment %s manifest owner %s does not match requested Agent %s", request.RepairAssignmentID, manifestOwner, request.RepairOwnerAgentID)
+	}
+	review, _ := state["review"].(map[string]any)
+	if review == nil {
+		return fmt.Errorf("repair assignment binding requires Runtime review state")
+	}
+	repairPointer, _ := review["repair"].(map[string]any)
+	if repairPointer == nil {
+		return fmt.Errorf("repair assignment %s is not bound to an active S9 RepairSession", request.RepairAssignmentID)
+	}
+	owners, _ := repairPointer["assignment_owners"].(map[string]any)
+	if existing, _ := owners[request.RepairAssignmentID].(string); existing != "" && existing != request.RepairOwnerAgentID {
+		return fmt.Errorf("RepairAssignment %s is already owned by Agent %s; do not replace ownership mid-session", request.RepairAssignmentID, existing)
+	}
+	return nil
+}
+
+// recordRepairBindingOwner records the repair owner in the Runtime review
+// projection. The judgment that accepted the binding is checkRepairBinding's.
+func recordRepairBindingOwner(request Request, state map[string]any) {
+	review, _ := state["review"].(map[string]any)
+	repairPointer, _ := review["repair"].(map[string]any)
+	owners, _ := repairPointer["assignment_owners"].(map[string]any)
+	if owners == nil {
+		owners = map[string]any{}
+		repairPointer["assignment_owners"] = owners
+	}
+	owners[request.RepairAssignmentID] = request.RepairOwnerAgentID
+}
+
+// reviewerDispatchRefusal is the ReviewPlan dispatch judgment of a reviewer
+// workgroup registration. A plan Assignment dispatches once, so a repeated
+// registration is refused with the ReviewPlan bind's own outcome. The bind
+// records the dispatch in the Runtime projection, so it runs against a copy of
+// the locked state and only its outcome is used: the locked state stays
+// untouched.
+func reviewerDispatchRefusal(root string, value manifest, state map[string]any) error {
+	if value.WorkgroupKind != "delivery_verifier" && value.WorkgroupKind != "qa" && value.WorkgroupKind != "e2e_browser" {
+		return nil
+	}
+	candidate, err := cloneRuntimeState(state)
+	if err != nil {
+		return err
+	}
+	return bindReviewPlanAssignments(root, candidate, value)
+}
+
+// checkWorkgroupRegistration refuses a workgroup that is already registered in
+// the Runtime team registry. The judgment is read-only.
+func checkWorkgroupRegistration(state map[string]any, workgroupID string) error {
+	entities, _ := state["entities"].(map[string]any)
+	if containsEntity(entities["teams"], workgroupID) {
+		return fmt.Errorf("workgroup %s is already registered", workgroupID)
+	}
+	return nil
+}
+
+// cloneRuntimeState copies the Runtime state so a read-only judgment can run
+// against the facts without writing them.
+func cloneRuntimeState(state map[string]any) (map[string]any, error) {
+	data, err := json.Marshal(state)
+	if err != nil {
+		return nil, fmt.Errorf("clone runtime state: %w", err)
+	}
+	var clone map[string]any
+	if err := json.Unmarshal(data, &clone); err != nil {
+		return nil, fmt.Errorf("decode cloned runtime state: %w", err)
+	}
+	return clone, nil
 }
 
 func reviewAssignmentQueued(state map[string]any, assignmentID, agentID string) bool {
@@ -682,7 +926,7 @@ func validateWorkgroupState(kind string, runtimeState map[string]any) error {
 		switch phase {
 		case "running", "cannot_clean", "discovery_draining":
 		default:
-			return fmt.Errorf("%s workgroup requires a registered ReviewPlan (phase running/cannot_clean/discovery_draining, current %s); register the plan via `runtime review-plan` first", kind, phase)
+			return fmt.Errorf("%s workgroup requires a registered ReviewPlan (phase running/cannot_clean/discovery_draining, current %s); complete and save the original ReviewPlan questionnaire first", kind, phase)
 		}
 	case "builder":
 		if state != "building" && state != "bug_resolution" {
@@ -770,236 +1014,6 @@ func stateArtifactPaths(state map[string]any) []string {
 }
 
 // =============================================================================
-// TASK-015 / BUG-003 §4b.2(a) — RegisterBug runtime operation.
-//
-// RegisterBug adds a canonical BUG entity to state.entities.bugs. It is the
-// only sanctioned way to create a BUG entity at runtime; direct JSON edits
-// are forbidden by REQ-002.
-//
-// Contract (BUG-003 §4b.2(a)):
-//   - id matches ^BUG-[0-9]{3,}$.
-//   - severity ∈ {P0, P1, P2, P3}.
-//   - finding_source path exists on disk.
-//   - at least one EvidenceRefs entry exists on disk; an empty evidence
-//     chain is rejected.
-//   - finding fingerprint sha256(finding_source + sorted(EvidenceRefs)) is
-//     unique among all live (non-closed/non-rejected/non-duplicate) BUGs.
-//     On collision, ErrDuplicateBug{ExistingBugID} is returned.
-//   - CAS-safe append via loopruntime.Store.Update (acquireLock + revision
-//     check + atomic JSON write).
-// =============================================================================
-
-// RegisterBugRequest is the wire shape for the runtime register-bug
-// operation. Only the canonical fields allowed by the bug schema
-// (loop-state.schema.json §bug) are persisted; the finding_source and
-// evidence_refs fields are validated for existence and used to compute the
-// finding fingerprint, then folded into the stored BUG's path field as
-// `<finding_source>#fp=<sha256>` (the fingerprint suffix is the dedup key).
-type RegisterBugRequest struct {
-	ExpectedRevision     int
-	BugID                string   // must match ^BUG-[0-9]{3,}$
-	Severity             string   // P0..P3
-	Blocking             *bool    // explicit business-blocking marker (RC-02); nil = P0 implicit true, non-P0 false
-	FindingSource        string   // path to the finding source document
-	EvidenceRefs         []string // paths to evidence files
-	RootCause            string   // free text
-	Reproduction         string   // free text
-	ReporterAgentID      string   // required; recorded in original_finder_agent_ids
-	ClosingContractHints []string
-	OccurredAt           time.Time
-}
-
-// ErrDuplicateBug is returned by RegisterBug when a BUG with the same
-// finding fingerprint already exists and is still in a live state (not
-// closed/rejected/duplicate). ExistingBugID identifies the prior BUG that
-// the caller should link to instead.
-type ErrDuplicateBug struct {
-	ExistingBugID string
-}
-
-func (e *ErrDuplicateBug) Error() string {
-	return fmt.Sprintf("duplicate BUG (finding fingerprint already registered as %s)", e.ExistingBugID)
-}
-
-// ErrInvalidBugSeverity is returned when req.Severity is not in {P0..P3}.
-type ErrInvalidBugSeverity struct {
-	Severity string
-}
-
-func (e *ErrInvalidBugSeverity) Error() string {
-	return fmt.Sprintf("invalid severity %q (must be P0|P1|P2|P3)", e.Severity)
-}
-
-// ErrMissingEvidence is returned when req.EvidenceRefs is empty or any
-// referenced evidence file does not exist on disk.
-type ErrMissingEvidence struct {
-	Missing []string
-}
-
-func (e *ErrMissingEvidence) Error() string {
-	return fmt.Sprintf("missing or non-existent evidence: %v", e.Missing)
-}
-
-var (
-	bugIDPattern    = regexp.MustCompile(`^BUG-[0-9]{3,}$`)
-	bugSeverityEnum = map[string]bool{"P0": true, "P1": true, "P2": true, "P3": true}
-)
-
-// RegisterBug creates a canonical BUG entity using CAS-safe append.
-// Validation runs before the mutation; on any validation error the runtime
-// is not touched.
-func RegisterBug(root, statePath, journalPath string, req RegisterBugRequest) (loopruntime.Snapshot, error) {
-	if !bugIDPattern.MatchString(req.BugID) {
-		return loopruntime.Snapshot{}, fmt.Errorf("BUG id %q does not match ^BUG-[0-9]{3,}$", req.BugID)
-	}
-	if !bugSeverityEnum[req.Severity] {
-		return loopruntime.Snapshot{}, &ErrInvalidBugSeverity{Severity: req.Severity}
-	}
-	if req.FindingSource == "" {
-		return loopruntime.Snapshot{}, fmt.Errorf("finding_source is required")
-	}
-	if req.ReporterAgentID == "" {
-		return loopruntime.Snapshot{}, fmt.Errorf("reporter_agent_id is required")
-	}
-	if len(req.EvidenceRefs) == 0 {
-		return loopruntime.Snapshot{}, &ErrMissingEvidence{Missing: []string{"<empty evidence chain>"}}
-	}
-	missing, err := validateEvidenceFiles(root, req.EvidenceRefs)
-	if err != nil {
-		return loopruntime.Snapshot{}, &ErrMissingEvidence{Missing: missing}
-	}
-	absSource := filepath.Join(root, req.FindingSource)
-	if _, err := os.Stat(absSource); err != nil {
-		return loopruntime.Snapshot{}, fmt.Errorf("finding_source %q not readable: %w", req.FindingSource, err)
-	}
-
-	stateData, err := os.ReadFile(statePath)
-	if err != nil {
-		return loopruntime.Snapshot{}, fmt.Errorf("read runtime: %w", err)
-	}
-	var current map[string]any
-	if err := json.Unmarshal(stateData, &current); err != nil {
-		return loopruntime.Snapshot{}, fmt.Errorf("decode runtime: %w", err)
-	}
-	commitRevision, err := commitRevision(req.ExpectedRevision, current)
-	if err != nil {
-		return loopruntime.Snapshot{}, err
-	}
-	runtimeID, _ := current["runtime_id"].(string)
-	lifecycle, _ := current["lifecycle"].(map[string]any)
-	cursor := map[string]any{
-		"state": lifecycle["state"],
-		"phase": lifecycle["phase"],
-	}
-
-	fingerprint := bugFindingFingerprint(req.FindingSource, req.EvidenceRefs)
-	occurredAt := req.OccurredAt
-	if occurredAt.IsZero() {
-		occurredAt = time.Now().UTC()
-	}
-
-	store := loopruntime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{})
-	return updateRuntime(store, req.ExpectedRevision, loopruntime.Mutation{
-		EventID:        fmt.Sprintf("evt-register-bug-%s-r%d", req.BugID, commitRevision+1),
-		TransitionID:   "ENTITY-REGISTER",
-		Event:          "bug_registered",
-		Actor:          "orchestrator",
-		IdempotencyKey: fmt.Sprintf("runtime:register:bug:%s:%d", req.BugID, commitRevision),
-		From:           cursor,
-		To:             cursor,
-		RuntimeID:      runtimeID,
-		Message:        fmt.Sprintf("Registered canonical BUG %s (severity=%s)", req.BugID, req.Severity),
-		OccurredAt:     occurredAt,
-		EvidenceIDs:    append([]string{req.FindingSource}, req.EvidenceRefs...),
-		Apply: func(state map[string]any) error {
-			entities, ok := state["entities"].(map[string]any)
-			if !ok {
-				return fmt.Errorf("entities must be an object")
-			}
-			bugs, _ := entities["bugs"].([]any)
-			for _, raw := range bugs {
-				bug, _ := raw.(map[string]any)
-				id, _ := bug["id"].(string)
-				if id == req.BugID {
-					return fmt.Errorf("BUG %s already registered", req.BugID)
-				}
-			}
-			for _, raw := range bugs {
-				bug, _ := raw.(map[string]any)
-				path, _ := bug["path"].(string)
-				if !strings.HasSuffix(path, "#fp="+fingerprint) {
-					continue
-				}
-				stateVal, _ := bug["state"].(string)
-				if stateVal == "closed" || stateVal == "rejected" || stateVal == "duplicate" {
-					continue
-				}
-				existingID, _ := bug["id"].(string)
-				return &ErrDuplicateBug{ExistingBugID: existingID}
-			}
-			newBug := map[string]any{
-				"id":                          req.BugID,
-				"state":                       "draft",
-				"path":                        req.FindingSource + "#fp=" + fingerprint,
-				"severity":                    req.Severity,
-				"attempt_count":               0,
-				"same_contract_failure_count": 0,
-				"original_finder_agent_ids":   []any{req.ReporterAgentID},
-			}
-			// RC-02 (L3-S7 §10.1): persist the explicit business-blocking
-			// marker. P0 is implicitly blocking=true; a non-P0 BUG may still
-			// be business-blocking via blocking=true. Blocking is a business
-			// judgment, never a severity synonym.
-			blocking := req.Severity == "P0"
-			if req.Blocking != nil {
-				blocking = *req.Blocking
-			}
-			newBug["blocking"] = blocking
-			entities["bugs"] = append(bugs, newBug)
-			state["updated_at"] = occurredAt.UTC().Format(time.RFC3339Nano)
-			return nil
-		},
-	})
-}
-
-// bugFindingFingerprint computes sha256(findingSource + sorted(evidenceRefs))
-// per BUG-003 §4b.2(a). Sorting the evidence paths is what makes the
-// fingerprint canonical regardless of input ordering. The fingerprint is
-// then encoded in the BUG's path field for dedup.
-func bugFindingFingerprint(findingSource string, evidenceRefs []string) string {
-	refs := append([]string(nil), evidenceRefs...)
-	sort.Strings(refs)
-	h := sha256.New()
-	h.Write([]byte(findingSource))
-	h.Write([]byte{'\n'})
-	for i, ref := range refs {
-		if i > 0 {
-			h.Write([]byte{'\n'})
-		}
-		h.Write([]byte(ref))
-	}
-	return fmt.Sprintf("%x", h.Sum(nil))
-}
-
-// validateEvidenceFiles verifies that every supplied evidence path is
-// readable. The first return value is the list of missing paths (in input
-// order); the second is the error from os.Stat (typically nil since missing
-// paths return nil error from this helper).
-func validateEvidenceFiles(root string, refs []string) ([]string, error) {
-	var missing []string
-	for _, ref := range refs {
-		abs := filepath.Join(root, ref)
-		if _, err := os.Stat(abs); err != nil {
-			missing = append(missing, ref)
-		}
-	}
-	if len(missing) > 0 {
-		return missing, fmt.Errorf("missing evidence: %v", missing)
-	}
-	return nil, nil
-}
-
-// =============================================================================
 // TASK-015 / BUG-003 §4b.2(b) — RegisterTask runtime operation.
 // =============================================================================
 
@@ -1048,6 +1062,46 @@ func (e *ErrDuplicateTaskID) Error() string {
 // TASK-NNN with an optional numeric sub-suffix (TASK-001, TASK-001-01).
 var taskIDPattern = regexp.MustCompile(`^TASK-[0-9]{3,}(?:-[0-9]{2,})?$`)
 
+// duplicateTaskID refuses a canonical TASK id that is already present in the
+// Runtime TASK registry. The judgment is read-only: it reads the registry and
+// writes nothing, so the mutation's Precheck can run it under the store lock.
+func duplicateTaskID(state map[string]any, taskID string) error {
+	entities, _ := state["entities"].(map[string]any)
+	tasks, _ := entities["tasks"].([]any)
+	for _, raw := range tasks {
+		t, _ := raw.(map[string]any)
+		if id, _ := t["id"].(string); id == taskID {
+			return &ErrDuplicateTaskID{TaskID: taskID}
+		}
+	}
+	return nil
+}
+
+// taskRegistrationRefusal is the read-only mirror of the judgments the
+// RegisterTask Apply closure runs before it writes the TASK registry. The
+// judgments run in the Apply closure's order, so the first refusal is the
+// same one the Apply closure produces.
+func taskRegistrationRefusal(state map[string]any, taskID string) error {
+	// The Apply closure judges the entity registry before the duplicate TASK
+	// judgment, so the mirror keeps that position: a Runtime whose entities
+	// are not an object is refused with the Apply closure's own outcome,
+	// never with the journal's event-id collision.
+	if err := requireTaskEntities(state); err != nil {
+		return err
+	}
+	return duplicateTaskID(state, taskID)
+}
+
+// requireTaskEntities refuses a Runtime whose entity registry is not an
+// object. The TASK registration keeps its own refusal text, so the Apply
+// closure and its mirror answer with the same words.
+func requireTaskEntities(state map[string]any) error {
+	if _, ok := state["entities"].(map[string]any); !ok {
+		return fmt.Errorf("entities must be an object")
+	}
+	return nil
+}
+
 // manifestHint translates r97-native failure shapes (B/C roads) into the
 // concrete missing piece. It only appends guidance; the underlying
 // validation judgment is unchanged.
@@ -1067,8 +1121,7 @@ func manifestSchemaHint(err error) string {
 		{"closing_contract", "s6-closing-v1 is Builder-only; a document-verifier assignment carries no closing_contract"},
 		{"integration_mode", "document-verifier assignments use dispatch_mode plan_checkpoint, not S6 integration fields"},
 		{"na_rationale", "every responsibility_disposition needs explicit na_rationale and evidence_ref (null when assigned)"},
-		{"review_round", "review_round is integer-or-null in the manifest; the round label (review-e4) lives in workgroup_id/manifest_id/assignment_ids"},
-		{"version", "every document reference needs id/path/version/sha256; version comes from the Runtime documents registry or the file Version header"},
+		{"version", "every document reference needs id/path/version; version comes from the Runtime documents registry or the file Version header"},
 	})
 }
 
@@ -1094,8 +1147,7 @@ func RegisterTask(root, statePath, journalPath string, req RegisterTaskRequest) 
 		return loopruntime.Snapshot{}, &ErrMissingTaskPath{}
 	}
 	absPath := filepath.Join(root, req.Path)
-	taskData, err := os.ReadFile(absPath)
-	if err != nil {
+	if _, err := os.ReadFile(absPath); err != nil {
 		return loopruntime.Snapshot{}, &ErrMissingTaskPath{Path: req.Path}
 	}
 	if len(req.OwnerAgentIDs) == 0 {
@@ -1113,8 +1165,7 @@ func RegisterTask(root, statePath, journalPath string, req RegisterTaskRequest) 
 	if err := json.Unmarshal(stateData, &current); err != nil {
 		return loopruntime.Snapshot{}, fmt.Errorf("decode runtime: %w", err)
 	}
-	commitRevision, err := commitRevision(req.ExpectedRevision, current)
-	if err != nil {
+	if _, err := commitRevision(req.ExpectedRevision, current); err != nil {
 		return loopruntime.Snapshot{}, err
 	}
 	runtimeID, _ := current["runtime_id"].(string)
@@ -1124,7 +1175,6 @@ func RegisterTask(root, statePath, journalPath string, req RegisterTaskRequest) 
 		"phase": lifecycle["phase"],
 	}
 	taskRef := repositoryPath(root, absPath)
-	taskSHA := transition.SHA256(taskData)
 	occurredAt := req.OccurredAt
 	if occurredAt.IsZero() {
 		occurredAt = time.Now().UTC()
@@ -1132,30 +1182,41 @@ func RegisterTask(root, statePath, journalPath string, req RegisterTaskRequest) 
 
 	store := loopruntime.NewWriter(statePath, journalPath, root, semantic.RuntimeCandidateValidator{})
 	return updateRuntime(store, req.ExpectedRevision, loopruntime.Mutation{
-		EventID:        fmt.Sprintf("evt-register-task-%s-r%d", req.TaskID, commitRevision+1),
+		// The identity of a TASK registration is the registered TASK and the
+		// canonical task document it registers. The TASK id is unique per
+		// registration, so no Runtime write counter is needed (G18 §1/§1.3).
+		EventID:        fmt.Sprintf("evt-register-task-%s", req.TaskID),
 		TransitionID:   "ENTITY-REGISTER",
 		Event:          "task_registered",
 		Actor:          "orchestrator",
-		IdempotencyKey: fmt.Sprintf("runtime:register:task:%s:%d", req.TaskID, commitRevision),
+		IdempotencyKey: fmt.Sprintf("runtime:register:task:%s:%s", req.TaskID, taskRef),
 		From:           cursor,
 		To:             cursor,
 		RuntimeID:      runtimeID,
 		Message:        fmt.Sprintf("Registered canonical TASK %s", req.TaskID),
 		OccurredAt:     occurredAt,
 		EvidenceIDs:    []string{taskRef},
+		// G18 §3.1: the identity of a TASK registration is the registered TASK,
+		// so the event id carries no Runtime write counter. A repeated
+		// registration therefore collides in the journal's global event-id
+		// index, and that collision runs before the Apply closure below, which
+		// carries the duplicate rejection. The duplicate judgment runs here
+		// instead, under the store lock and after the revision CAS, so the
+		// caller keeps the original observable outcome: the domain refusal,
+		// never the journal's key collision. The Apply closure keeps the same
+		// judgments as the authority under concurrency.
+		Precheck: func(state map[string]any) error {
+			return taskRegistrationRefusal(state, req.TaskID)
+		},
 		Apply: func(state map[string]any) error {
-			entities, ok := state["entities"].(map[string]any)
-			if !ok {
-				return fmt.Errorf("entities must be an object")
+			// The mirror and the Apply closure share one judgment, so the
+			// refusal the caller sees before the journal collision is the
+			// refusal the Apply closure produces.
+			if err := taskRegistrationRefusal(state, req.TaskID); err != nil {
+				return err
 			}
+			entities, _ := state["entities"].(map[string]any)
 			tasks, _ := entities["tasks"].([]any)
-			for _, raw := range tasks {
-				t, _ := raw.(map[string]any)
-				id, _ := t["id"].(string)
-				if id == req.TaskID {
-					return &ErrDuplicateTaskID{TaskID: req.TaskID}
-				}
-			}
 			agents, _ := entities["agents"].([]any)
 			known := map[string]bool{}
 			for _, raw := range agents {
@@ -1176,7 +1237,6 @@ func RegisterTask(root, statePath, journalPath string, req RegisterTaskRequest) 
 				"id":              req.TaskID,
 				"state":           "candidate",
 				"path":            taskRef,
-				"sha256":          taskSHA,
 				"owner_agent_ids": owners,
 			}
 			if err := workstate.RecordTaskActivity(state, newTask, "candidate", "task_registered"); err != nil {

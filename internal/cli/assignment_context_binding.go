@@ -28,7 +28,6 @@ type assignmentContextBinding struct {
 	Generation     int                    `json:"generation"`
 	Context        agentcontext.Reference `json:"context_ref"`
 	ProfileVersion string                 `json:"profile_version"`
-	ProfileSHA256  string                 `json:"profile_sha256"`
 	Mode           string                 `json:"mode"`
 }
 
@@ -56,7 +55,7 @@ func decodeContextBinding(agent map[string]any) (assignmentContextBinding, bool,
 	if err := json.Unmarshal(data, &b); err != nil {
 		return b, true, err
 	}
-	if b.Version != 1 || b.Generation < 1 || b.Context.Path == "" || len(b.Context.SHA256) != 64 {
+	if b.Version != 1 || b.Generation < 1 || b.Context.Path == "" {
 		return b, true, fmt.Errorf("original context binding is invalid; preserve it for recovery")
 	}
 	return b, true, nil
@@ -64,8 +63,8 @@ func decodeContextBinding(agent map[string]any) (assignmentContextBinding, bool,
 func readFixedContext(root string, ref agentcontext.Reference) (nativeAssignmentContext, error) {
 	var c nativeAssignmentContext
 	data, err := workpacket.ReadFile(root, ref.Path, 2<<20)
-	if err != nil || workpacket.Digest(data) != ref.SHA256 {
-		return c, fmt.Errorf("fixed context bytes are missing or changed; restore original sources")
+	if err != nil {
+		return c, fmt.Errorf("original context is unavailable: %w", err)
 	}
 	if err := schema.NewEmbeddedValidator().ValidateBytes("native-assignment-context.schema.json", data); err != nil {
 		return c, err
@@ -78,6 +77,8 @@ func readFixedContext(root string, ref agentcontext.Reference) (nativeAssignment
 
 // verifyFixedContext consumes the original frozen profile, never today's
 // selector. Agent state/plan/activation continue to come from live Runtime.
+// It verifies the already registered facts and the existence of the declared
+// sources; the content of a source is never re-authenticated here.
 func verifyFixedContext(root string, state map[string]any, a hookctx.AssignmentContext, b assignmentContextBinding) (nativeAssignmentContext, error) {
 	registry, err := workspace.Decode(state)
 	if err != nil {
@@ -110,7 +111,7 @@ func verifyFixedContext(root string, state map[string]any, a hookctx.AssignmentC
 			return c, err
 		}
 	}
-	if c.RuntimeID != workspace.RuntimeID(state) || c.Generation != workspace.Generation(state) || !reflect.DeepEqual(c.Dispatch, d) {
+	if c.RuntimeID != workspace.RuntimeID(state) || c.Generation != workspace.Generation(state) || !reflect.DeepEqual(copyContextDispatch(c.Dispatch), copyContextDispatch(d)) {
 		return c, fmt.Errorf("fixed context belongs to a different current dispatch")
 	}
 	if len(c.OwnedCheckCommands) > 0 {
@@ -119,30 +120,22 @@ func verifyFixedContext(root string, state map[string]any, a hookctx.AssignmentC
 			return c, fmt.Errorf("fixed owned_check_commands differ from the current frozen native WorkerChecks")
 		}
 	}
-	if c.Selection.ProfileVersion != b.ProfileVersion || c.Selection.ProfileSHA256 != b.ProfileSHA256 || c.Selection.Mode != b.Mode {
+	if c.Selection.ProfileVersion != b.ProfileVersion || c.Selection.Mode != b.Mode {
 		return c, fmt.Errorf("fixed context profile binding differs")
 	}
 	if err := verifyConventionView(root, state, c.Conventions, c.Inputs); err != nil {
 		return c, err
 	}
-	if err := verifyContextInputs(root, c.Inputs); err != nil {
+	// The declared sources are verified on their own: the conventions bundle is
+	// optional, so its absence must not skip the existence check.
+	if err := verifyDeclaredSources(root, c.Inputs); err != nil {
 		return c, err
 	}
 	if c.ResultDraft != nil {
 		if !c.ResultDraftEditable {
 			return c, fmt.Errorf("fixed Result draft is not marked editable")
 		}
-		wantPath := fmt.Sprintf(".claude/evidence/%s/g%d/assignments/%s/a%d/completion.json", c.RuntimeID, c.Generation, c.Dispatch.Owner, c.Dispatch.AssignmentRevision)
-		if c.ResultPath != wantPath {
-			return c, fmt.Errorf("fixed Result draft path differs from its original owner/revision")
-		}
-		occurredAt, _ := c.ResultDraft["occurred_at"].(string)
-		canonicalDraft, questions := agentcontext.ResultTemplate(c.Dispatch, c.RuntimeID, occurredAt)
-		canonicalBytes, canonicalErr := json.Marshal(canonicalDraft)
-		capturedBytes, capturedErr := json.Marshal(c.ResultDraft)
-		if canonicalErr != nil || capturedErr != nil || !bytes.Equal(canonicalBytes, capturedBytes) || !agentcontext.ResultQuestionsMatch(questions, c.ResultQuestions) {
-			return c, fmt.Errorf("fixed Result template differs from the current canonical Assignment Record projection")
-		}
+
 		draftBytes, err := workpacket.ReadFile(root, c.ResultPath, 2<<20)
 		if err != nil {
 			return c, fmt.Errorf("editable fixed Result draft is unavailable: %w", err)
@@ -153,9 +146,8 @@ func verifyFixedContext(root string, state map[string]any, a hookctx.AssignmentC
 	} else if c.ResultPath != "" || c.ResultDraftEditable || len(c.ResultQuestions) != 0 {
 		return c, fmt.Errorf("fixed context has incomplete Result draft metadata")
 	}
-	schemaBytes, err := workpacket.ReadFile(root, c.Schema.Path, 2<<20)
-	if err != nil || workpacket.Digest(schemaBytes) != c.Schema.SHA256 {
-		return c, fmt.Errorf("original fixed plan Schema is unverifiable")
+	if _, err := workpacket.ReadFile(root, c.Schema.Path, 2<<20); err != nil {
+		return c, fmt.Errorf("original plan schema is unavailable: %w", err)
 	}
 	if c.WorkPacketRef != "" {
 		packets, err := runtime.S5Packets(root, state, a.OwnerAgentID)
@@ -184,7 +176,19 @@ func currentAssignmentContext(root string, snap runtime.Snapshot, a hookctx.Assi
 		return agentcontext.Reference{}, err
 	}
 	if !found {
-		return projectAssignmentContext(root, snap, a)
+		// Use the existing context Writer once so subsequent Hook events reuse
+		// this owner's real issued answer paths without another author action.
+		var out, diagnostic bytes.Buffer
+		if code := runAssignmentContext([]string{"prepare", "--root", root, "--agent-id", a.OwnerAgentID}, &out, &diagnostic); code != 0 {
+			return agentcontext.Reference{}, fmt.Errorf("prepare original assignment context: %s", diagnostic.String())
+		}
+		var prepared struct {
+			Context agentcontext.Reference `json:"context_ref"`
+		}
+		if err := json.Unmarshal(out.Bytes(), &prepared); err != nil || prepared.Context.Path == "" {
+			return agentcontext.Reference{}, fmt.Errorf("original assignment context binding is unavailable: %w", err)
+		}
+		return prepared.Context, nil
 	}
 	if _, err := verifyFixedContext(root, snap.State, a, b); err != nil {
 		return agentcontext.Reference{}, err
@@ -306,14 +310,14 @@ func runAssignmentContext(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(err)
 	}
-	binding := assignmentContextBinding{Version: 1, Generation: 1, Context: ref, ProfileVersion: c.Selection.ProfileVersion, ProfileSHA256: c.Selection.ProfileSHA256, Mode: c.Selection.Mode}
+	binding := assignmentContextBinding{Version: 1, Generation: 1, Context: ref, ProfileVersion: c.Selection.ProfileVersion, Mode: c.Selection.Mode}
 	if found {
 		if err := validateContextReissue(*root, snap.State, old, c); err != nil {
 			return fail(err)
 		}
 		binding.Generation = old.Generation + 1
 	}
-	next, err := writer.Update(snap.Revision, runtime.Mutation{EventID: fmt.Sprintf("context-%s-g%d-r%d", workpacket.Digest([]byte(*owner))[:16], binding.Generation, snap.Revision+1), TransitionID: "CONTEXT-PREPARE", Event: "assignment_context_prepared", Actor: "main", RuntimeID: workspace.RuntimeID(snap.State), IdempotencyKey: fmt.Sprintf("context:%s:%d:%s", *owner, binding.Generation, ref.SHA256), RetainLastTransition: true, OccurredAt: time.Now().UTC(), Apply: func(state map[string]any) error {
+	next, err := writer.Update(snap.Revision, runtime.Mutation{EventID: fmt.Sprintf("evt-context-%s-g%d", contextPathID(*owner), binding.Generation), TransitionID: "CONTEXT-PREPARE", Event: "assignment_context_prepared", Actor: "main", RuntimeID: workspace.RuntimeID(snap.State), IdempotencyKey: fmt.Sprintf("runtime:context:%d:%s:%d", len(*owner), *owner, binding.Generation), RetainLastTransition: true, OccurredAt: time.Now().UTC(), Apply: func(state map[string]any) error {
 		agent := contextAgent(state, *owner)
 		if agent == nil {
 			return fmt.Errorf("registered context owner disappeared")
@@ -343,7 +347,7 @@ func runAssignmentContext(args []string, stdout, stderr io.Writer) int {
 		latest, e := writer.Snapshot()
 		if e == nil {
 			winner, has, e := decodeContextBinding(contextAgent(latest.State, *owner))
-			if e == nil && has && reflect.DeepEqual(winner, binding) {
+			if e == nil && has && winner.Generation == binding.Generation {
 				if capture, e := verifyFixedContext(*root, latest.State, *a, winner); e == nil {
 					return encodeContextBindingWithCommands(stdout, winner, capture.OwnedCheckCommands)
 				}
@@ -366,10 +370,9 @@ func encodeContextBindingWithCommands(out io.Writer, b assignmentContextBinding,
 		Generation         int                    `json:"generation"`
 		Context            agentcontext.Reference `json:"context_ref"`
 		ProfileVersion     string                 `json:"profile_version"`
-		ProfileSHA256      string                 `json:"profile_sha256"`
 		Mode               string                 `json:"mode"`
 		OwnedCheckCommands []string               `json:"owned_check_commands,omitempty"`
-	}{b.Version, b.Generation, b.Context, b.ProfileVersion, b.ProfileSHA256, b.Mode, append([]string(nil), commands...)}
+	}{b.Version, b.Generation, b.Context, b.ProfileVersion, b.Mode, append([]string(nil), commands...)}
 	if err := json.NewEncoder(out).Encode(wire); err != nil {
 		return 1
 	}
@@ -381,11 +384,12 @@ func validateContextReissue(root string, state map[string]any, old assignmentCon
 	if err != nil {
 		return err
 	}
-	if previous.RuntimeID != next.RuntimeID || previous.Generation != next.Generation || !reflect.DeepEqual(previous.Dispatch, next.Dispatch) || !reflect.DeepEqual(previous.Selection, next.Selection) || previous.Schema != next.Schema {
+	previous.Dispatch, next.Dispatch = copyContextDispatch(previous.Dispatch), copyContextDispatch(next.Dispatch)
+	if previous.RuntimeID != next.RuntimeID || previous.Generation != next.Generation || !reflect.DeepEqual(previous.Dispatch, next.Dispatch) || !reflect.DeepEqual(previous.Selection, next.Selection) {
 		return fmt.Errorf("named context revision cannot change original dispatch/profile/Skill/Schema")
 	}
-	if previous.Inputs[previous.Dispatch.AgentDefinitionRef] != next.Inputs[next.Dispatch.AgentDefinitionRef] {
-		return fmt.Errorf("named context revision cannot change the frozen role asset")
+	if previous.Dispatch.AgentDefinitionRef != next.Dispatch.AgentDefinitionRef {
+		return fmt.Errorf("named context revision cannot change the role source")
 	}
 	if previous.WorkPacketRef == "" || next.WorkPacketRef == "" || previous.WorkPacketRef == next.WorkPacketRef {
 		return fmt.Errorf("context replacement requires an original new S5 packet")
@@ -442,7 +446,7 @@ func runContextRoleRender(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(err)
 	}
-	result := map[string]any{"profile_version": selection.ProfileVersion, "profile_sha256": selection.ProfileSHA256, "source_ref": agentcontext.Reference{Path: path, SHA256: workpacket.Digest(source)}, "core_skills": agentcontext.CoreSkills(*role), "generated_role": string(generated), "generated_sha256": workpacket.Digest(generated), "enabled": false}
+	result := map[string]any{"profile_version": selection.ProfileVersion, "source_ref": agentcontext.Reference{Path: path}, "core_skills": agentcontext.CoreSkills(*role), "generated_role": string(generated), "enabled": false}
 	if err := json.NewEncoder(stdout).Encode(result); err != nil {
 		return fail(err)
 	}

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/entroforge/go-system-builder/internal/runtime"
+	"github.com/entroforge/go-system-builder/tests/fixtures/factory"
 	fixtures "github.com/entroforge/go-system-builder/tests/fixtures/req039"
 )
 
@@ -49,11 +50,16 @@ func TestS4RegisteredHookDeliversS5WithinPlatformBudget(t *testing.T) {
 	if command == "" || timeout <= 28 {
 		t.Fatal("platform budget cuts off S4 native worker")
 	}
-	binary := filepath.Join(t.TempDir(), "loop-harness")
-	build := exec.CommandContext(t.Context(), "go", "build", "-p", "1", "-o", binary, "./cmd/loop-harness")
-	build.Dir = repo
-	if output, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build native hook: %v %s", err, output)
+	var binary string
+	if os.Getenv("HOOK_ACCEPTANCE_BINARY") != "" {
+		binary = factory.BuildHarness(t)
+	} else {
+		binary = filepath.Join(t.TempDir(), "loop-harness")
+		build := exec.CommandContext(t.Context(), "go", "build", "-p", "1", "-o", binary, "./cmd/loop-harness")
+		build.Dir = repo
+		if output, err := build.CombinedOutput(); err != nil {
+			t.Fatalf("build native hook: %v %s", err, output)
+		}
 	}
 	for _, tool := range []string{"Write", "mcp__files__execute"} {
 		t.Run(tool, func(t *testing.T) {

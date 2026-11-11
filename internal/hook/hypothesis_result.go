@@ -116,10 +116,10 @@ func HypothesisResultConsumed(root string, state map[string]any, agent *policy.A
 	binding := selected.Binding
 	return receipt.PacketID == selected.ID && receipt.OwnerAgentID == agent.ID &&
 		receipt.RuntimeID == binding.RuntimeID && receipt.BaselineGeneration == binding.BaselineGeneration &&
-		receipt.ReviewRound == binding.ReviewRound && receipt.AssignmentID == binding.AssignmentID &&
+		receipt.AssignmentID == binding.AssignmentID &&
 		receipt.TeamID == binding.TeamID && receipt.TaskID == binding.TaskID &&
-		receipt.ManifestRef == binding.ManifestRef && receipt.ManifestSHA256 == binding.ManifestSHA256 &&
-		receipt.SuccessorCaseRef != "" && receipt.SuccessorCaseRevision > binding.CaseRevision && receipt.AnswerSHA256 != ""
+		receipt.ManifestRef == binding.ManifestRef &&
+		receipt.SuccessorCaseRef != "" && receipt.SuccessorCaseRevision > binding.CaseRevision
 }
 
 func s8RouteFormallyConsumed(state map[string]any) bool {
@@ -138,7 +138,6 @@ func sameCurrentHypothesisTuple(state map[string]any, binding workpacket.Hypothe
 	baseline, _ := state["baseline"].(map[string]any)
 	return pointer != nil && binding.RuntimeID == responsibilityText(state["runtime_id"]) &&
 		binding.BaselineGeneration == responsibilityInt(baseline["generation"]) &&
-		binding.ReviewRound == responsibilityInt(reviewState["round"]) &&
 		binding.CaseID == responsibilityText(pointer["case_id"])
 }
 
@@ -153,9 +152,8 @@ func rawCurrentHypothesisResultBinding(state map[string]any, owner string) (stri
 	runtimeID := responsibilityText(state["runtime_id"])
 	baseline, _ := state["baseline"].(map[string]any)
 	generation := responsibilityInt(baseline["generation"])
-	round := responsibilityInt(reviewState["round"])
 	caseID := responsibilityText(pointer["case_id"])
-	if runtimeID == "" || generation < 1 || round < 1 || caseID == "" {
+	if runtimeID == "" || generation < 1 || caseID == "" {
 		return "", false
 	}
 	assignmentID := ""
@@ -169,7 +167,6 @@ func rawCurrentHypothesisResultBinding(state map[string]any, owner string) (stri
 		if responsibilityText(binding["owner_agent_id"]) != owner ||
 			responsibilityText(binding["runtime_id"]) != runtimeID ||
 			responsibilityInt(binding["baseline_generation"]) != generation ||
-			responsibilityInt(binding["review_round"]) != round ||
 			responsibilityText(binding["case_id"]) != caseID {
 			continue
 		}

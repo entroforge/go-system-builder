@@ -124,6 +124,24 @@ func nativeTranscriptUserTask(line []byte, final string) (string, bool, bool) {
 	return text, strings.TrimSpace(final+text) != strings.TrimSpace(final), false
 }
 
+// S7/S8 coordinator and skill-injection messages are follow-ups, not a
+// platform dispatch. Other stages retain their own transcript semantics.
+func nativeReviewOriginalTask(line []byte, agentID, final string) (string, bool, bool) {
+	var meta struct {
+		IsMeta      bool    `json:"isMeta"`
+		IsSidechain bool    `json:"isSidechain"`
+		AgentID     string  `json:"agentId"`
+		ParentUUID  *string `json:"parentUuid"`
+		Origin      struct {
+			Kind string `json:"kind"`
+		} `json:"origin"`
+	}
+	if json.Unmarshal(line, &meta) != nil || meta.IsMeta || meta.Origin.Kind == "coordinator" || !meta.IsSidechain || agentID == "" || meta.AgentID != agentID || meta.ParentUUID != nil {
+		return "", false, false
+	}
+	return nativeTranscriptUserTask(line, final)
+}
+
 // Reverse fragments are kept as slices until a complete JSON row is found.
 // Even a multi-megabyte line is joined once rather than copied per block.
 func nativeTaskJoin(prefix []byte, fragments [][]byte, reverse bool) []byte {
@@ -149,6 +167,10 @@ func nativeTaskJoin(prefix []byte, fragments [][]byte, reverse bool) []byte {
 }
 
 func (r *nativeTaskTranscript) latest(refs []string, final string) (string, bool, error) {
+	return r.latestMatching(refs, final, nativeS6ExactReference)
+}
+
+func (r *nativeTaskTranscript) latestMatching(refs []string, final string, matches func(string, string) bool) (string, bool, error) {
 	lower := max(int64(0), r.size-nativeTaskWindow)
 	r.diagnostic.TailTruncated = lower != 0
 	var fragments [][]byte
@@ -156,7 +178,7 @@ func (r *nativeTaskTranscript) latest(refs []string, final string) (string, bool
 		task, ok, _ := nativeTranscriptUserTask(line, final)
 		if ok {
 			for _, ref := range refs {
-				if nativeS6ExactReference(task, ref) {
+				if matches(task, ref) {
 					return task, true
 				}
 			}
@@ -194,12 +216,16 @@ func (r *nativeTaskTranscript) latest(refs []string, final string) (string, bool
 }
 
 func (r *nativeTaskTranscript) earliest(final string) (string, bool, error) {
+	return r.earliestUsing(final, nativeTranscriptUserTask)
+}
+
+func (r *nativeTaskTranscript) earliestUsing(final string, parse func([]byte, string) (string, bool, bool)) (string, bool, error) {
 	upper := min(r.size, nativeTaskWindow)
 	r.diagnostic.HeadTruncated = upper < r.size
 	var fragments [][]byte
 	suffix := ""
 	consume := func(line []byte) bool {
-		task, ok, plain := nativeTranscriptUserTask(line, final+suffix)
+		task, ok, plain := parse(line, final+suffix)
 		if plain {
 			suffix += "\n" + task
 		} else {
@@ -239,34 +265,61 @@ func (r *nativeTaskTranscript) earliest(final string) (string, bool, error) {
 	return suffix, false, nil
 }
 
+// Keep task text separate from the final so S9 can grant aliases only to actual
+// user tasks. The shared reader and other stages retain their original output.
+type nativeTaskSources struct {
+	Final string
+	Task  string
+}
+
+func (s nativeTaskSources) text() string { return s.Final + s.Task }
+
 func nativeTaskTextDiagnostic(in policy.Input, refs []string, latest bool) (string, nativeTaskReadDiagnostic) {
+	sources, diagnostic := nativeTaskSourcesDiagnostic(in, refs, latest)
+	return sources.text(), diagnostic
+}
+
+func nativeTaskSourcesDiagnostic(in policy.Input, refs []string, latest bool) (nativeTaskSources, nativeTaskReadDiagnostic) {
+	return nativeTaskSourcesMatchingDiagnostic(in, refs, latest, nativeS6ExactReference)
+}
+
+func nativeTaskSourcesMatchingDiagnostic(in policy.Input, refs []string, latest bool, matches func(string, string) bool) (nativeTaskSources, nativeTaskReadDiagnostic) {
 	file, err := os.Open(in.AgentTranscriptPath)
 	if err != nil {
-		return in.LastAssistantMessage, nativeTaskReadDiagnostic{Reason: "unreadable", Err: err}
+		return nativeTaskSources{Final: in.LastAssistantMessage}, nativeTaskReadDiagnostic{Reason: "unreadable", Err: err}
 	}
 	defer file.Close()
 	info, err := file.Stat()
 	if err != nil {
-		return in.LastAssistantMessage, nativeTaskReadDiagnostic{Reason: "unreadable", Err: err}
+		return nativeTaskSources{Final: in.LastAssistantMessage}, nativeTaskReadDiagnostic{Reason: "unreadable", Err: err}
 	}
 	reader := &nativeTaskTranscript{ctx: contextForHook(in), reader: file, size: info.Size()}
-	return reader.taskText(in.LastAssistantMessage, refs, latest)
+	return reader.taskSourcesMatching(in.LastAssistantMessage, refs, latest, matches)
 }
 
 func (r *nativeTaskTranscript) taskText(final string, refs []string, latest bool) (string, nativeTaskReadDiagnostic) {
+	sources, diagnostic := r.taskSources(final, refs, latest)
+	return sources.text(), diagnostic
+}
+
+func (r *nativeTaskTranscript) taskSources(final string, refs []string, latest bool) (nativeTaskSources, nativeTaskReadDiagnostic) {
+	return r.taskSourcesMatching(final, refs, latest, nativeS6ExactReference)
+}
+
+func (r *nativeTaskTranscript) taskSourcesMatching(final string, refs []string, latest bool, matches func(string, string) bool) (nativeTaskSources, nativeTaskReadDiagnostic) {
 	if latest {
-		task, ok, err := r.latest(refs, final)
+		task, ok, err := r.latestMatching(refs, final, matches)
 		if ok && r.ctx.Err() != nil {
 			err, ok = r.ctx.Err(), false
 		}
 		if ok {
 			r.diagnostic.Reason = "latest_exact_task"
-			return final + "\n" + task, r.diagnostic
+			return nativeTaskSources{Final: final, Task: "\n" + task}, r.diagnostic
 		}
 		r.diagnostic.Err = err
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			r.diagnostic.Reason = "canceled"
-			return final, r.diagnostic
+			return nativeTaskSources{Final: final}, r.diagnostic
 		}
 	}
 	// The compatibility pass still selects the earliest real user task in the
@@ -291,7 +344,7 @@ func (r *nativeTaskTranscript) taskText(final string, refs []string, latest bool
 		r.diagnostic.Reason = "no_task_match"
 	}
 	if r.diagnostic.Reason == "canceled" {
-		return final, r.diagnostic
+		return nativeTaskSources{Final: final}, r.diagnostic
 	}
-	return final + task, r.diagnostic
+	return nativeTaskSources{Final: final, Task: task}, r.diagnostic
 }

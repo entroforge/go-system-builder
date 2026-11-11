@@ -7,13 +7,10 @@ import "encoding/json"
 type PlanPointer struct {
 	PlanID                        string
 	Path                          string
-	SHA256                        string
 	Revision                      int
-	ReviewRound                   int
 	Status                        string
 	E2ECoverageState              string
 	VerificationArtifactWorkspace string
-	VerificationArtifactDigest    string
 	SubmittedAt                   string
 }
 
@@ -30,18 +27,13 @@ func FromState(state map[string]any) *PlanPointer {
 	ptr := &PlanPointer{
 		PlanID:           textField(raw["plan_id"]),
 		Path:             textField(raw["path"]),
-		SHA256:           textField(raw["sha256"]),
 		Revision:         numberField(raw["revision"]),
-		ReviewRound:      numberField(raw["review_round"]),
 		Status:           textField(raw["status"]),
 		E2ECoverageState: textField(raw["e2e_coverage_state"]),
 		SubmittedAt:      textField(raw["submitted_at"]),
 	}
 	if ws, ok := raw["verification_artifact_workspace"].(string); ok {
 		ptr.VerificationArtifactWorkspace = ws
-	}
-	if digest, ok := raw["verification_artifact_digest"].(string); ok {
-		ptr.VerificationArtifactDigest = digest
 	}
 	if ptr.PlanID == "" || ptr.Path == "" {
 		return nil
@@ -63,4 +55,9 @@ func numberField(value any) int {
 		return int(n)
 	}
 	return 0
+}
+
+// Identity returns the original registered responsibility, including a present legacy number.
+func (p PlanPointer) Identity() Identity {
+	return Identity{PlanID: p.PlanID}
 }

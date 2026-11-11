@@ -41,14 +41,13 @@ type ContractDraft struct {
 	Answer      ContractAnswer      `json:"answer"`
 }
 type ContractPacket struct {
-	ID          string          `json:"packet_id"`
-	TemplateID  string          `json:"template_id"`
-	TemplateSHA string          `json:"template_sha256"`
-	Binding     PlanningBinding `json:"binding"`
-	Inputs      ContractInputs  `json:"inputs"`
-	ViewPath    string          `json:"view_path"`
-	AnswerPath  string          `json:"answer_path"`
-	Draft       ContractDraft   `json:"draft"`
+	ID         string          `json:"packet_id"`
+	TemplateID string          `json:"template_id"`
+	Binding    PlanningBinding `json:"binding"`
+	Inputs     ContractInputs  `json:"inputs"`
+	ViewPath   string          `json:"view_path"`
+	AnswerPath string          `json:"answer_path"`
+	Draft      ContractDraft   `json:"draft"`
 }
 
 func BuildContracts(binding PlanningBinding, inputs ContractInputs) (ContractPacket, error) {
@@ -65,13 +64,13 @@ func BuildContracts(binding PlanningBinding, inputs ContractInputs) (ContractPac
 	copyInputs := ContractInputs{Designs: append([]Reference(nil), inputs.Designs...), Sources: append([]Subject(nil), inputs.Sources...), Directories: map[string][]string{}}
 	seen := map[string]bool{binding.Requirement.Path: true}
 	for _, ref := range copyInputs.Designs {
-		if ref.ID == "" || ref.Version == "" || !safeRelative(ref.Path) || !digestPattern.MatchString(ref.SHA256) || seen[ref.Path] {
+		if ref.ID == "" || ref.Version == "" || !safeRelative(ref.Path) || seen[ref.Path] {
 			return ContractPacket{}, fmt.Errorf("design input identity is invalid or duplicated")
 		}
 		seen[ref.Path] = true
 	}
 	for _, ref := range copyInputs.Sources {
-		if !safeRelative(ref.Path) || !digestPattern.MatchString(ref.SHA256) || seen[ref.Path] {
+		if !safeRelative(ref.Path) || seen[ref.Path] {
 			return ContractPacket{}, fmt.Errorf("conditional input is invalid or duplicated")
 		}
 		seen[ref.Path] = true
@@ -105,13 +104,7 @@ func BuildContracts(binding PlanningBinding, inputs ContractInputs) (ContractPac
 	if err := json.Unmarshal(data, &template); err != nil || template.Stage != "S3" || template.Adapter != "planning_contract" || len(template.Questions) != 4 {
 		return ContractPacket{}, fmt.Errorf("unregistered S3 template")
 	}
-	sha := Digest(data)
-	identity, _ := json.Marshal(struct {
-		Binding     PlanningBinding
-		Inputs      ContractInputs
-		TemplateSHA string
-	}{binding, copyInputs, sha})
-	id := "packet-" + Digest(identity)
+	id := planningPacketID(binding)
 	base := fmt.Sprintf("%s/g%d/S3/e%d/%s", binding.RuntimeID, binding.Generation, binding.StageEntry, id)
 	read := []ReadItem{{Path: binding.Requirement.Path, Purpose: "Use the frozen locked requirement and its acceptance denominator."}}
 	for _, ref := range copyInputs.Designs {
@@ -120,7 +113,7 @@ func BuildContracts(binding PlanningBinding, inputs ContractInputs) (ContractPac
 	for _, ref := range copyInputs.Sources {
 		read = append(read, ReadItem{Path: ref.Path, Purpose: "Use this frozen conditional scenario, ADR or shared-model source."})
 	}
-	return ContractPacket{ID: id, TemplateID: "s3-contract-v1", TemplateSHA: sha, Binding: binding, Inputs: copyInputs, ViewPath: ".claude/work-packets/" + base + ".json", AnswerPath: ".claude/submissions/" + base + "/Main/answer.json", Draft: ContractDraft{Title: template.Title, Instruction: template.Instruction, Read: read, Questions: template.Questions, Answer: ContractAnswer{ContractPaths: []string{}, Applicability: map[string]ContractApplicability{}}}}, nil
+	return ContractPacket{ID: id, TemplateID: "s3-contract-v1", Binding: binding, Inputs: copyInputs, ViewPath: ".claude/work-packets/" + base + ".json", AnswerPath: ".claude/submissions/" + base + "/Main/answer.json", Draft: ContractDraft{Title: template.Title, Instruction: template.Instruction, Read: read, Questions: template.Questions, Answer: ContractAnswer{ContractPaths: []string{}, Applicability: map[string]ContractApplicability{}}}}, nil
 }
 
 func ValidateContractAnswer(p ContractPacket, data []byte) (ContractAnswer, []FieldError) {
@@ -182,17 +175,6 @@ func ValidateContractAnswer(p ContractPacket, data []byte) (ContractAnswer, []Fi
 	}
 	sort.Strings(answer.ContractPaths)
 	return answer, nil
-}
-
-func ContractAnswerDigest(answer ContractAnswer) (string, error) {
-	copyAnswer := answer
-	copyAnswer.ContractPaths = append([]string(nil), answer.ContractPaths...)
-	sort.Strings(copyAnswer.ContractPaths)
-	data, err := json.Marshal(copyAnswer)
-	if err != nil {
-		return "", err
-	}
-	return Digest(data), nil
 }
 
 // ContractDraftDeliveryPaths only projects safe author-named paths for display.

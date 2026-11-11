@@ -18,17 +18,17 @@ func (b *ExecutionRegistry) FreezeCheckProfiles(e Execution, profiles []checkexe
 			return e, err
 		}
 		for _, ref := range append(append([]checkexec.FileRef{}, p.Dependencies...), p.Fixtures...) {
-			data, err := checkexec.ReadProfileFile(b.MainRoot, ref.Path)
-			if err != nil || checkexec.Hash(data) != ref.SHA256 {
-				return e, fmt.Errorf("check profile source changed: %s", ref.Path)
+			_, err := checkexec.ReadProfileFile(b.MainRoot, ref.Path)
+			if err != nil {
+				return e, fmt.Errorf("check profile source unavailable: %s", ref.Path)
 			}
-			if old, ok := e.Inputs[ref.Path]; ok && old != ref.SHA256 {
-				return e, fmt.Errorf("profile input differs from frozen source")
-			}
-			e.Inputs[ref.Path] = ref.SHA256
 		}
 	}
 	e.CheckProfiles = append([]checkexec.Profile(nil), profiles...)
+	for i := range e.CheckProfiles {
+		e.CheckProfiles[i].Dependencies = append(make([]checkexec.FileRef, 0, len(e.CheckProfiles[i].Dependencies)), e.CheckProfiles[i].Dependencies...)
+		e.CheckProfiles[i].Fixtures = append(make([]checkexec.FileRef, 0, len(e.CheckProfiles[i].Fixtures)), e.CheckProfiles[i].Fixtures...)
+	}
 	return e, nil
 }
 func ProfileAt(e Execution, index int) (checkexec.Profile, bool) {

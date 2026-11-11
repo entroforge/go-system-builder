@@ -35,14 +35,14 @@ func TestNativeS9PreparedBriefAndConsumerPreserveSatisfiedAssertion(t *testing.T
 			if err := json.Unmarshal(p.Inputs.RepairAssignment, &assignment); err != nil {
 				t.Fatal(err)
 			}
-			brief, _, _ := nativeS9Paths(p)
+			brief := nativeS9BriefPath(p)
 			planPath, result := nativeS9TestAuthorPaths(t, root, p)
 			data, err := os.ReadFile(filepath.Join(root, brief))
 			if err != nil {
 				t.Fatal(err)
 			}
 			text := string(data)
-			_, after, ok := strings.Cut(text, "assertion_id in this original RepairAssignment, in its original order:\n")
+			_, after, ok := strings.Cut(text, "from this original RepairAssignment; report unfinished observations honestly:\n")
 			if !ok {
 				t.Fatal("prepared Result field lacks the original ordered assertion set")
 			}
@@ -111,12 +111,24 @@ func TestNativeS9PreparedBriefAndConsumerPreserveSatisfiedAssertion(t *testing.T
 			}
 			resultReceipt, receiptErr := service.RepairResultReceipt(p.Binding.OwnerAgentID, packets[0].ID)
 			if omitSatisfied {
-				if !strings.Contains(diagnostic.String(), "before_fix_results") || !strings.Contains(diagnostic.String(), "got 5 want 6") || execution.DeliveryRef != "" || receiptErr == nil && resultReceipt.Accepted {
-					t.Fatalf("omitted satisfied assertion bypassed original cardinality: %v %#v %s", receiptErr, resultReceipt, &diagnostic)
+				// The system does not compare the contract set item by item and
+				// does not reject an understandable original conclusion because
+				// one observation is missing (L3-S9-repair.md:354,
+				// L4-hook-acceptance-checklist.md:59 C10): the honest partial
+				// Result is received as a candidate and the completeness
+				// guidance stays in the professional brief.
+				if strings.Contains(diagnostic.String(), "got 5 want 6") {
+					t.Fatalf("reception still compares assertion coverage by machine: %s", &diagnostic)
+				}
+				if receiptErr != nil || !resultReceipt.Accepted {
+					t.Fatalf("honest partial Result was not received as a candidate: %v %#v %s", receiptErr, resultReceipt, &diagnostic)
+				}
+				if execution.DeliveryRef == "" {
+					t.Fatal("received candidate did not record its actual delivery")
 				}
 				main := nativeExecutionMainOutput(t, root, filepath.Join(root, brief), map[string]any{"status": "completed"})
-				if !strings.Contains(main, "got 5 want 6") || !strings.Contains(main, "PlanReport receipt is accepted") {
-					t.Fatalf("Main lacks original partial reception and concrete gap: %s", main)
+				if !strings.Contains(main, "PlanReport receipt is accepted") {
+					t.Fatalf("Main lacks the original candidate handoff: %s", main)
 				}
 				return
 			}

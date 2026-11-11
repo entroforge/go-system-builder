@@ -8,18 +8,15 @@ import (
 	"fmt"
 	"github.com/entroforge/go-system-builder/internal/metrics"
 	"io"
-	"os"
 	"path"
 	"path/filepath"
-	"sort"
-	"strings"
+	"reflect"
 	"time"
 
 	"github.com/entroforge/go-system-builder/internal/assignmentinputs"
 	"github.com/entroforge/go-system-builder/internal/assignmentrecord"
 	"github.com/entroforge/go-system-builder/internal/assignmentresult"
 	"github.com/entroforge/go-system-builder/internal/dispatch"
-	"github.com/entroforge/go-system-builder/internal/integration"
 	"github.com/entroforge/go-system-builder/internal/plancheckpoint"
 	loopruntime "github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/schema"
@@ -32,7 +29,6 @@ import (
 
 const (
 	canonicalResultMessageLimit = 1 << 20
-	canonicalResultSourceLimit  = 16 << 20
 	canonicalResultAssetLimit   = 20 << 20
 )
 
@@ -41,9 +37,7 @@ const (
 // backwards; Current reports whether those original pointers still name it.
 type ResultAcceptanceReceipt struct {
 	ResultRef      string `json:"result_ref"`
-	ResultSHA256   string `json:"result_sha256"`
 	ResultRevision int    `json:"result_revision"`
-	AnswerDigest   string `json:"answer_digest"`
 	Replayed       bool   `json:"replayed"`
 	Current        bool   `json:"current"`
 }
@@ -65,7 +59,6 @@ type canonicalCompletionMessage struct {
 	AssignmentID             string                               `json:"assignment_id"`
 	AssignmentRevision       int                                  `json:"assignment_revision"`
 	AssignmentRecordContract string                               `json:"assignment_record_contract"`
-	AssignmentRecordSHA256   string                               `json:"assignment_record_sha256"`
 	Summary                  string                               `json:"summary"`
 	AssertionEvidence        []assignmentresult.AssertionEvidence `json:"assertion_evidence"`
 	RisksBlockers            []string                             `json:"risks_blockers"`
@@ -94,7 +87,6 @@ type canonicalResultPlan struct {
 	AssignmentID       string                           `json:"assignment_id"`
 	AssignmentRevision int                              `json:"assignment_revision"`
 	RecordContract     string                           `json:"assignment_record_contract"`
-	RecordSHA256       string                           `json:"assignment_record_sha256"`
 	Assertions         []assignmentresult.PlanAssertion `json:"assertion_checks"`
 }
 
@@ -106,14 +98,9 @@ type resultExecutionView struct {
 	OwnerPrefix string
 }
 
-type canonicalResultSource struct {
-	Resolved assignmentresult.ResolvedEvidence
-	Bytes    []byte
-}
-
 type stagedCanonicalResultArtifact struct {
-	Path string
-	SHA  string
+	Path  string
+	Bytes []byte
 }
 
 type canonicalResultReplay struct {
@@ -197,6 +184,34 @@ func completeCanonicalTaskWithReceipt(
 	request CompletionRequest,
 	data []byte,
 ) (loopruntime.Snapshot, ResultAcceptanceReceipt, error) {
+	for {
+		snapshot, receipt, err := attemptCanonicalTaskWithReceipt(root, statePath, journalPath, request, data)
+		if err != loopruntime.ErrStaleRevision {
+			return snapshot, receipt, err
+		}
+		// Another Writer committed while this automatic request was preparing.
+		// Re-read the original responsibility and accepted results; the normal
+		// consumer resolves same-answer replay or validates the new state.
+		// G18 §3.2: a stale Runtime CAS is no longer a refusal here. The
+		// canonical consumer never asserts the Runtime write count, so a
+		// legitimate professional completion is chased instead of being
+		// rejected because the Runtime moved for an unrelated reason. The
+		// protection is unchanged: the received row (the accepted Result for
+		// this message_id), the journal-level dedup (the domain idempotency
+		// key) and the Assignment Record's own revision decide the outcome.
+		if request.Context != nil {
+			if err := request.Context.Err(); err != nil {
+				return loopruntime.Snapshot{}, ResultAcceptanceReceipt{}, err
+			}
+		}
+	}
+}
+
+func attemptCanonicalTaskWithReceipt(
+	root, statePath, journalPath string,
+	request CompletionRequest,
+	data []byte,
+) (loopruntime.Snapshot, ResultAcceptanceReceipt, error) {
 	defer metrics.Span(request.Context, "reception/s6")()
 	var empty loopruntime.Snapshot
 	var noReceipt ResultAcceptanceReceipt
@@ -208,7 +223,6 @@ func completeCanonicalTaskWithReceipt(
 	}
 	var message canonicalCompletionMessage
 	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&message); err != nil {
 		return empty, noReceipt, fmt.Errorf("decode canonical completion Result: %w", err)
 	}
@@ -231,9 +245,13 @@ func completeCanonicalTaskWithReceipt(
 	if err != nil {
 		return empty, noReceipt, fmt.Errorf("read runtime: %w", err)
 	}
-	if _, err := commitRevision(request.ExpectedRevision, snapshot.State); err != nil {
-		return empty, noReceipt, err
-	}
+	// G18 §3.2: the canonical S6 consumer does not compare the Runtime write
+	// count. The Runtime revision is an audit coordinate only
+	// (L4-revision-usage.md:141). This acceptance is protected by the three
+	// domain facts instead: the received row (the accepted Result for this
+	// message_id, read again inside Apply), the journal-level dedup (the
+	// domain idempotency key of this submission) and the Assignment Record's
+	// own revision (binding.Record versus the current Record inside Apply).
 	binding, err := resolveCanonicalResultBinding(ctx, root, snapshot, request.AgentID, message, request.NativePlanPath)
 	if err != nil {
 		return empty, noReceipt, err
@@ -244,10 +262,6 @@ func completeCanonicalTaskWithReceipt(
 	}
 	if err := assignmentresult.ValidateClosingAssessment(binding.Record, binding.Plan.Assertions, answer); err != nil {
 		return empty, noReceipt, fmt.Errorf("canonical Result closing assessment: %w", err)
-	}
-	answerDigest, err := assignmentresult.AnswerDigest(answer)
-	if err != nil {
-		return empty, noReceipt, err
 	}
 	readMain := func(ref string) ([]byte, error) {
 		return workpacket.ReadFile(binding.View.MainRoot, ref, canonicalResultAssetLimit)
@@ -261,76 +275,20 @@ func completeCanonicalTaskWithReceipt(
 		return empty, noReceipt, err
 	}
 	if registeredKey {
-		if acceptedKey.AnswerDigest != answerDigest {
-			return empty, noReceipt, fmt.Errorf("completion message_id %s was already accepted with a different AnswerDigest", message.MessageID)
+		if !reflect.DeepEqual(acceptedKey.Answer, answer) {
+			return empty, noReceipt, fmt.Errorf("completion message_id %s was already accepted with a different answer", message.MessageID)
 		}
 		receipt, err := canonicalResultReceipt(snapshot.State, acceptedKey, readMain, true)
 		return snapshot, receipt, err
 	}
-	for _, accepted := range history {
-		if binding.Record.Contract != assignmentrecord.NativeDeliveryContract && accepted.AnswerDigest == answerDigest && (binding.Record.ClosingContract == nil || len(binding.Record.ClosingContract.WorkerChecks) == 0) {
-			return bindResultSubmissionAlias(root, store, snapshot, request, message, accepted, readMain)
+	// An independent message carrying the same current professional answer
+	// and actual received checks is an alias of the existing Result, not a new
+	// Result. The old content-derived key is never recomputed.
+	currentFacts, _, _ := CollectWorkerCheckFacts(ctx, root, snapshot.State, binding.Record)
+	for i := len(history) - 1; i >= 0; i-- {
+		if reflect.DeepEqual(history[i].Answer, answer) && sameActualWorkerCheckFacts(history[i].WorkerCheckFacts, currentFacts) {
+			return registerCanonicalResultAlias(store, root, snapshot, binding.Record, history[i], message.MessageID, request, readMain)
 		}
-	}
-	var closureDigest string
-	if binding.Record.ClosingContract != nil && len(binding.Record.ClosingContract.WorkerChecks) > 0 {
-		var unlock func()
-		ctx, unlock, err = integration.LockWorkspace(ctx, root)
-		if err != nil {
-			return empty, noReceipt, err
-		}
-		defer unlock()
-		// Workspace lock precedes Runtime Writer; refresh the CAS snapshot.
-		snapshot, err = store.Snapshot()
-		if err != nil {
-			return empty, noReceipt, err
-		}
-		if _, err := commitRevision(request.ExpectedRevision, snapshot.State); err != nil {
-			return empty, noReceipt, err
-		}
-		binding, err = resolveCanonicalResultBinding(ctx, root, snapshot, request.AgentID, message, request.NativePlanPath)
-		if err != nil {
-			return empty, noReceipt, err
-		}
-		history, err = assignmentresult.AcceptedHistory(snapshot.State, binding.Record, readMain)
-		if err != nil {
-			return empty, noReceipt, err
-		}
-		prior, registered, keyErr := resultForSubmissionKey(snapshot.State, binding.Record, history, message.MessageID, readMain)
-		if keyErr != nil {
-			return empty, noReceipt, keyErr
-		}
-		if registered {
-			if prior.AnswerDigest != answerDigest {
-				return empty, noReceipt, fmt.Errorf("completion message_id %s was already accepted with a different AnswerDigest", message.MessageID)
-			}
-			receipt, err := canonicalResultReceipt(snapshot.State, prior, readMain, true)
-			return snapshot, receipt, err
-		}
-		facts, artifacts, err := CollectWorkerCheckFacts(ctx, root, snapshot.State, binding.Record)
-		if err != nil {
-			return empty, noReceipt, err
-		}
-		if err := prepareWorkerCheckArtifactRefs(binding.Record, "closure-preflight", facts, artifacts); err != nil {
-			return empty, noReceipt, err
-		}
-		closureDigest, err = assignmentresult.WorkerClosureDigest(binding.Record, facts)
-		if err != nil {
-			return empty, noReceipt, err
-		}
-		for _, prior := range history {
-			priorClosure, err := assignmentresult.EffectiveToolClosureDigest(binding.Record, prior)
-			if err != nil {
-				return empty, noReceipt, err
-			}
-			if prior.AnswerDigest == answerDigest && priorClosure == closureDigest {
-				return bindResultSubmissionAlias(root, store, snapshot, request, message, prior, readMain)
-			}
-		}
-	}
-	binding.View, binding.Execution, err = resolveResultExecutionView(ctx, root, snapshot.State, binding.Record)
-	if err != nil {
-		return empty, noReceipt, err
 	}
 
 	occurredAt := request.OccurredAt
@@ -339,7 +297,7 @@ func completeCanonicalTaskWithReceipt(
 	}
 	resultRevision := len(history) + 1
 	resultID := canonicalResultEvidenceID(binding.Record, resultRevision, message.MessageID)
-	var resultRel, resultSHA string
+	var resultRel string
 	var staged []stagedCanonicalResultArtifact
 	result := assignmentresult.AcceptedResult{
 		SchemaVersion:          "1.0.0",
@@ -351,35 +309,17 @@ func completeCanonicalTaskWithReceipt(
 		ProducerResponsibility: "BUILD-WORK-PACKAGE",
 		SubjectRefs: []assignmentresult.SubjectReference{{
 			ID: binding.Record.Task.ID, Kind: "task", Path: binding.Record.Task.Ref,
-			Version: binding.Record.Task.Version, SHA256: binding.Record.Task.SHA256,
+			Version: binding.Record.Task.Version,
 		}},
-		Conclusion:             "submitted",
-		TaskID:                 binding.Record.Task.ID,
-		AssignmentRecord:       binding.Record.Reference(),
-		AssignmentRecordSHA256: binding.RecordSHA,
-		ResultRevision:         resultRevision,
-		SubmissionKey:          message.MessageID,
-		AnswerDigest:           answerDigest,
-		Answer:                 answer,
-		PlanRef:                binding.PlanRef,
-		PlanSHA256:             binding.PlanSHA,
-		ResolvedEvidenceRefs:   []assignmentresult.ResolvedEvidence{},
-		CreatedAt:              occurredAt.UTC().Format(time.RFC3339Nano),
-	}
-	if binding.Record.Contract == assignmentrecord.NativeDeliveryContract {
-		result.SourceHead, err = workspace.Git(ctx, binding.View.SourceRoot, "rev-parse", "HEAD")
-		if err != nil {
-			return empty, noReceipt, fmt.Errorf("read actual native source commit: %w", err)
-		}
-	}
-	initialSources, err := readCanonicalResultSources(binding.View, binding.Record, binding.Execution, answer)
-	if err != nil {
-		return empty, noReceipt, err
-	}
-	for _, source := range initialSources {
-		resolved := source.Resolved
-		resolved.Path = canonicalResultEvidenceArtifactPath(binding.Record, resultID, resolved.Ref, resolved.SHA256)
-		result.ResolvedEvidenceRefs = append(result.ResolvedEvidenceRefs, resolved)
+		Conclusion:           "submitted",
+		TaskID:               binding.Record.Task.ID,
+		AssignmentRecord:     binding.Record.Reference(),
+		ResultRevision:       resultRevision,
+		SubmissionKey:        message.MessageID,
+		Answer:               answer,
+		PlanRef:              binding.PlanRef,
+		ResolvedEvidenceRefs: []assignmentresult.ResolvedEvidence{},
+		CreatedAt:            occurredAt.UTC().Format(time.RFC3339Nano),
 	}
 	catalog, err := transition.LoadCatalog(root)
 	if err != nil {
@@ -389,9 +329,8 @@ func completeCanonicalTaskWithReceipt(
 	taskTransitions := taskEntityTransitions(catalog)
 	lifecycle, _ := snapshot.State["lifecycle"].(map[string]any)
 	cursor := map[string]any{"state": lifecycle["state"], "phase": lifecycle["phase"]}
-	eventHash := sha256Of([]byte(message.MessageID))[:16]
 	mutation := loopruntime.Mutation{
-		EventID:            fmt.Sprintf("evt-s6-result-%s-g%d-a%d-r%d-%s", binding.Record.OwnerAgentID, binding.Record.BaselineGeneration, binding.Record.Revision, resultRevision, eventHash),
+		EventID:            fmt.Sprintf("evt-s6-result-%s-g%d-a%d-r%d", binding.Record.OwnerAgentID, binding.Record.BaselineGeneration, binding.Record.Revision, resultRevision),
 		TransitionID:       "BUILDER-RESULT",
 		Event:              "completion_reported",
 		Actor:              "orchestrator",
@@ -422,8 +361,8 @@ func completeCanonicalTaskWithReceipt(
 				return err
 			}
 			if registeredKey {
-				if prior.AnswerDigest != answerDigest {
-					return fmt.Errorf("completion message_id %s was already accepted with a different AnswerDigest", message.MessageID)
+				if !reflect.DeepEqual(prior.Answer, answer) {
+					return fmt.Errorf("completion message_id %s was already accepted with a different answer", message.MessageID)
 				}
 				receipt, err := canonicalResultReceipt(state, prior, readMain, true)
 				if err != nil {
@@ -431,7 +370,7 @@ func completeCanonicalTaskWithReceipt(
 				}
 				return &canonicalResultReplay{Snapshot: currentSnapshot, Receipt: receipt}
 			}
-			if current.Record.Reference() != binding.Record.Reference() || current.RecordSHA != binding.RecordSHA || len(currentHistory)+1 != resultRevision {
+			if current.Record.Reference() != binding.Record.Reference() || len(currentHistory)+1 != resultRevision {
 				return fmt.Errorf("canonical Assignment or Result history changed during acceptance")
 			}
 			if err := assignmentresult.ValidateAnswer(answer, current.Plan.Assertions); err != nil {
@@ -440,88 +379,58 @@ func completeCanonicalTaskWithReceipt(
 			if err := assignmentresult.ValidateClosingAssessment(current.Record, current.Plan.Assertions, answer); err != nil {
 				return fmt.Errorf("canonical Result closing assessment: %w", err)
 			}
-			current.View, current.Execution, err = resolveResultExecutionView(ctx, root, state, current.Record)
+			// Preserve only actual original check facts already held by this
+			// responsibility. An unavailable receipt stays unavailable; it does
+			// not turn professional answer reception into a new check gate.
+			facts, _, _ := CollectWorkerCheckFacts(ctx, root, state, current.Record)
+			// The durable fact records which fixed native context actually ran
+			// the check. The coordinate comes from the original captured receipt
+			// row itself; it is a stage coordinate, never a digest, fingerprint
+			// or checksum, and an unproved fact keeps no coordinate at all.
+			bindWorkerCheckStageCoordinates(state, current.Record, facts)
+			// The original CompleteTask Apply publishes the exact captured
+			// receipt bytes and the adjacent output log under the immutable
+			// per-Result paths and fills those paths on the facts. This copies
+			// bytes; it never compares a digest and never certifies a
+			// fingerprint. L4-worktree-governance.md:212 keeps S9 free of an
+			// extra evidence capture or SHA chain.
+			checkArtifacts, err := publishWorkerCheckArtifacts(root, current.Record, resultID, facts)
 			if err != nil {
 				return err
 			}
-			if current.Record.Contract == assignmentrecord.NativeDeliveryContract {
-				head, err := workspace.Git(ctx, current.View.SourceRoot, "rev-parse", "HEAD")
-				if err != nil || head != result.SourceHead {
-					return fmt.Errorf("native source commit changed during Result acceptance; preserve the actual delivery")
-				}
-			}
-			resultSources, err := readCanonicalResultSources(current.View, current.Record, current.Execution, answer)
-			if err != nil {
-				return err
-			}
-			result.ResolvedEvidenceRefs = make([]assignmentresult.ResolvedEvidence, 0, len(resultSources))
-			for i := range resultSources {
-				resultSources[i].Resolved.Path = canonicalResultEvidenceArtifactPath(current.Record, resultID, resultSources[i].Resolved.Ref, resultSources[i].Resolved.SHA256)
-				result.ResolvedEvidenceRefs = append(result.ResolvedEvidenceRefs, resultSources[i].Resolved)
-			}
-			for _, source := range resultSources {
-				staged = append(staged, stagedCanonicalResultArtifact{Path: source.Resolved.Path, SHA: source.Resolved.SHA256})
-				published, err := workpacket.PublishBounded(root, source.Resolved.Path, source.Bytes, canonicalResultSourceLimit)
-				if err != nil {
-					return fmt.Errorf("publish immutable Result evidence %s: %w", source.Resolved.Ref, err)
-				}
-				if !bytes.Equal(published, source.Bytes) {
-					return fmt.Errorf("immutable Result evidence path conflicts for %s", source.Resolved.Ref)
-				}
-			}
-			if closureDigest != "" {
-				facts, artifacts, err := CollectWorkerCheckFacts(ctx, root, state, current.Record)
-				if err != nil {
-					return err
-				}
-				if err := prepareWorkerCheckArtifactRefs(current.Record, resultID, facts, artifacts); err != nil {
-					return err
-				}
-				confirmedSources, err := readCanonicalResultSources(current.View, current.Record, current.Execution, answer)
-				if err != nil {
-					return err
-				}
-				if len(confirmedSources) != len(resultSources) {
-					return fmt.Errorf("Result evidence changed during Worker closure capture")
-				}
-				for i := range confirmedSources {
-					if confirmedSources[i].Resolved.Ref != resultSources[i].Resolved.Ref || !bytes.Equal(confirmedSources[i].Bytes, resultSources[i].Bytes) {
-						return fmt.Errorf("Result evidence changed during Worker closure capture; retry the same submission key")
-					}
-				}
-				actualDigest, err := assignmentresult.WorkerClosureDigest(current.Record, facts)
-				if err != nil {
-					return err
-				}
-				if actualDigest != closureDigest {
-					return fmt.Errorf("Worker closure changed during Result acceptance; retry with the same submission key")
-				}
-				assets, err := publishWorkerCheckArtifacts(root, current.Record, resultID, facts, artifacts)
-				staged = append(staged, assets...)
-				if err != nil {
-					return err
-				}
-				result.WorkerCheckFacts, result.ToolClosureDigest = facts, actualDigest
-				if err := assignmentresult.ValidateWorkerClosure(current.Record, result, readMain); err != nil {
-					return fmt.Errorf("validate captured Worker closure: %w", err)
-				}
-			}
+			staged = append(staged, checkArtifacts...)
+			result.WorkerCheckFacts = facts
 			encoded, err := json.MarshalIndent(result, "", "  ")
 			if err != nil {
 				return fmt.Errorf("encode canonical Result: %w", err)
 			}
 			envelope := append(encoded, '\n')
-			actualSHA := sha256Of(envelope)
-			actualRel := canonicalResultArtifactPath(current.Record, resultID, actualSHA)
-			staged = append(staged, stagedCanonicalResultArtifact{Path: actualRel, SHA: actualSHA})
-			published, err := workpacket.PublishBounded(root, actualRel, envelope, canonicalResultAssetLimit)
+			// Unregistered files, including identical contents, are not issued
+			// Results. Only reserve an unoccupied path, then register that exact
+			// path with the current responsibility in this Writer transaction.
+			parent, _, err := workpacket.OpenParent(root, ".claude/evidence/s6-result-probe.json", true)
 			if err != nil {
-				return fmt.Errorf("publish canonical Result: %w", err)
+				return fmt.Errorf("open Result storage: %w", err)
 			}
-			if !bytes.Equal(published, envelope) {
-				return fmt.Errorf("canonical Result path conflicts with previously staged bytes")
+			parent.Close()
+			actualRel := canonicalResultArtifactPath(current.Record, resultID)
+			for attempt := 0; ; attempt++ {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+				if attempt > 0 {
+					actualRel = path.Join(".claude/evidence", fmt.Sprintf("s6-result-candidate-%d", attempt), resultID+".json")
+				}
+				created, err := workpacket.PublishNewBounded(root, actualRel, envelope, canonicalResultAssetLimit)
+				if err != nil {
+					return fmt.Errorf("publish canonical Result: %w", err)
+				}
+				if created {
+					staged = append(staged, stagedCanonicalResultArtifact{Path: actualRel, Bytes: append([]byte(nil), envelope...)})
+					break
+				}
 			}
-			resultRel, resultSHA = actualRel, actualSHA
+			resultRel = actualRel
 			if current.Record.Contract == assignmentrecord.NativeDeliveryContract {
 				agent, found := findCompletionAgent(state, request.AgentID)
 				if !found {
@@ -553,7 +462,7 @@ func completeCanonicalTaskWithReceipt(
 			} else if err := applyCompletionTask(state, completionMessage{AgentID: request.AgentID, TaskID: current.Record.Task.ID}, taskTransitions, actualRel, occurredAt); err != nil {
 				return err
 			}
-			if err := appendCanonicalResultEvidence(state, result, actualRel, actualSHA, occurredAt); err != nil {
+			if err := appendCanonicalResultEvidence(state, result, actualRel, occurredAt); err != nil {
 				return err
 			}
 			return dispatch.ReconcilePressure(root, state)
@@ -577,7 +486,7 @@ func completeCanonicalTaskWithReceipt(
 			_, cleanupErr := store.RemoveUnreferencedArtifact(loopruntime.ArtifactCleanupRequest{
 				ExpectedRevision: snapshot.Revision,
 				ArtifactPath:     asset.Path,
-				ArtifactSHA256:   asset.SHA,
+				ArtifactBytes:    asset.Bytes,
 				ReferencedPaths:  stateArtifactPaths(snapshot.State),
 			})
 			if cleanupErr != nil {
@@ -586,7 +495,7 @@ func completeCanonicalTaskWithReceipt(
 		}
 		return empty, noReceipt, err
 	}
-	receipt := ResultAcceptanceReceipt{ResultRef: resultRel, ResultSHA256: resultSHA, ResultRevision: resultRevision, AnswerDigest: answerDigest, Current: true}
+	receipt := ResultAcceptanceReceipt{ResultRef: resultRel, ResultRevision: resultRevision, Current: true}
 	// The immutable bytes can include source references that changed between
 	// preflight and the locked Apply. Resolve the exact indexed receipt from the
 	// committed snapshot before returning it.
@@ -594,8 +503,218 @@ func completeCanonicalTaskWithReceipt(
 	if err != nil {
 		return committed, noReceipt, fmt.Errorf("validate newly accepted Result receipt: %w", err)
 	}
-	receipt.ResultRef, receipt.ResultSHA256, receipt.ResultRevision, receipt.AnswerDigest = resultRel, resultSHA, accepted.ResultRevision, accepted.AnswerDigest
+	receipt.ResultRef, receipt.ResultRevision = resultRel, accepted.ResultRevision
 	return committed, receipt, nil
+}
+
+// publishWorkerCheckArtifacts publishes byte-for-byte copies of the original
+// captured check receipt and its adjacent output log under the immutable
+// per-Result paths, and records those paths on the facts. The copied bytes
+// are the original captured ones; no digest, fingerprint or checksum is
+// computed or compared, and an unavailable receipt stays unavailable.
+func publishWorkerCheckArtifacts(root string, record assignmentrecord.Record, resultID string, facts []assignmentresult.WorkerCheckFact) ([]stagedCanonicalResultArtifact, error) {
+	var staged []stagedCanonicalResultArtifact
+	for i := range facts {
+		fact := &facts[i]
+		if fact.OriginalReceipt == nil {
+			continue
+		}
+		receiptRel, err := filepath.Rel(root, fact.OriginalReceipt.Path)
+		if err != nil || !filepath.IsLocal(receiptRel) {
+			continue
+		}
+		receiptBytes, err := workpacket.ReadFile(root, filepath.ToSlash(receiptRel), 4<<20)
+		if err != nil {
+			continue
+		}
+		logRel, err := filepath.Rel(root, filepath.Join(filepath.Dir(fact.OriginalReceipt.Path), "output.log"))
+		if err != nil || !filepath.IsLocal(logRel) {
+			continue
+		}
+		logBytes, err := workpacket.ReadFile(root, filepath.ToSlash(logRel), 4<<20)
+		if err != nil {
+			continue
+		}
+		for _, artifact := range []struct {
+			kind string
+			body []byte
+		}{
+			{kind: "receipt", body: receiptBytes},
+			{kind: "log", body: logBytes},
+		} {
+			rel := assignmentresult.WorkerCheckEvidenceArtifactPath(record, resultID, fact.Index, artifact.kind)
+			if rel == "" {
+				continue
+			}
+			created, err := workpacket.PublishNewBounded(root, rel, artifact.body, canonicalResultAssetLimit)
+			if err != nil {
+				return staged, fmt.Errorf("publish Worker check %s artifact: %w", artifact.kind, err)
+			}
+			if created {
+				staged = append(staged, stagedCanonicalResultArtifact{Path: rel, Bytes: append([]byte(nil), artifact.body...)})
+			}
+			resolved := &assignmentresult.ResolvedEvidence{Ref: assignmentresult.WorkerCheckEvidenceRef(fact.Index, artifact.kind), Path: rel}
+			if artifact.kind == "receipt" {
+				fact.ReceiptArtifact = resolved
+			} else {
+				fact.LogArtifact = resolved
+			}
+		}
+	}
+	return staged, nil
+}
+
+// bindWorkerCheckStageCoordinates records the stage coordinate of the fixed
+// native context that actually produced each durable Worker fact.
+//
+// The coordinate is copied from the original captured receipt row: that row is
+// the authority for which fixed context ran the check. It is a stage
+// coordinate, never a digest, fingerprint, checksum or any other content
+// proof, and it is never a reception gate. A fact that no receipt proved
+// keeps no coordinate at all, exactly like the checkout coordinate.
+func bindWorkerCheckStageCoordinates(state map[string]any, record assignmentrecord.Record, facts []assignmentresult.WorkerCheckFact) {
+	if len(facts) == 0 {
+		return
+	}
+	agent, found := findCompletionAgent(state, record.OwnerAgentID)
+	if !found {
+		return
+	}
+	data, err := json.Marshal(agent["owned_check_receipts"])
+	if err != nil {
+		return
+	}
+	var rows []NativeOwnedCheckReceipt
+	if err := json.Unmarshal(data, &rows); err != nil {
+		return
+	}
+	for i := range facts {
+		if facts[i].OriginalReceipt == nil {
+			continue
+		}
+		for j := len(rows) - 1; j >= 0; j-- {
+			row := rows[j]
+			if row.CheckIndex != facts[i].Index {
+				continue
+			}
+			if row.Record != record.Reference() || row.RuntimeID != record.RuntimeID || row.BaselineGeneration != record.BaselineGeneration || row.AssignmentID != record.AssignmentID || row.OwnerAgentID != record.OwnerAgentID {
+				break
+			}
+			facts[i].ContextGeneration = row.NativeContextGeneration
+			facts[i].ContextRef = row.NativeContextRef
+			facts[i].ActivationRef = row.ActivationRef
+			facts[i].SourceBranch = row.SourceBranch
+			facts[i].TargetBranch = row.TargetBranch
+			break
+		}
+	}
+}
+
+// sameActualWorkerCheckFacts compares original receipt relationships and
+// conclusions, never historical fingerprints or arbitrary author content.
+func sameActualWorkerCheckFacts(left, right []assignmentresult.WorkerCheckFact) bool {
+	if len(left) == 0 && len(right) != 0 {
+		// Old accepted answers may predate the optional check projection.
+		// Unknown or missing current checks do not force a second answer.
+		for _, fact := range right {
+			if fact.OriginalReceipt != nil || (fact.Status != "missing" && fact.Status != "unavailable") {
+				return false
+			}
+		}
+		return true
+	}
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		a, b := left[i], right[i]
+		if a.Index != b.Index || a.Command != b.Command || a.Status != b.Status || a.Record != b.Record || a.RuntimeID != b.RuntimeID || a.BaselineGeneration != b.BaselineGeneration || a.OwnerAgentID != b.OwnerAgentID || a.ExecutionGeneration != b.ExecutionGeneration {
+			return false
+		}
+		if (a.OriginalReceipt == nil) != (b.OriginalReceipt == nil) {
+			return false
+		}
+		if a.OriginalReceipt != nil && (a.OriginalReceipt.Path != b.OriginalReceipt.Path || a.OriginalReceipt.Binding != b.OriginalReceipt.Binding) {
+			return false
+		}
+	}
+	return true
+}
+
+func registerCanonicalResultAlias(store *loopruntime.Store, root string, snapshot loopruntime.Snapshot, record assignmentrecord.Record, target assignmentresult.AcceptedResult, key string, request CompletionRequest, read func(string) ([]byte, error)) (loopruntime.Snapshot, ResultAcceptanceReceipt, error) {
+	// Historical Runtime schema versions without the alias index can still
+	// reuse the original result directly; no author migration is required.
+	version, _ := snapshot.State["schema_version"].(string)
+	if version != "1.2.0" && version != "1.3.0" {
+		receipt, err := canonicalResultReceipt(snapshot.State, target, read, true)
+		return snapshot, receipt, err
+	}
+	lifecycle, _ := snapshot.State["lifecycle"].(map[string]any)
+	cursor := map[string]any{"state": lifecycle["state"], "phase": lifecycle["phase"]}
+	occurredAt := request.OccurredAt
+	if occurredAt.IsZero() {
+		occurredAt = time.Now().UTC()
+	}
+	mutation := loopruntime.Mutation{
+		EventID:      fmt.Sprintf("evt-s6-result-alias-%s-a%d-r%d-%s", record.AssignmentID, record.Revision, target.ResultRevision, key),
+		TransitionID: "BUILDER-RESULT", Event: "completion_reported", Actor: "orchestrator",
+		IdempotencyKey: fmt.Sprintf("runtime:s6-result-alias:%s:a%d:%s", record.AssignmentID, record.Revision, key),
+		RuntimeID:      record.RuntimeID, BaselineGeneration: record.BaselineGeneration,
+		From: cursor, To: cursor, OccurredAt: occurredAt,
+		Message: "Associated a repeated Builder answer with its original accepted Result",
+		Apply: func(state map[string]any) error {
+			current, found, err := assignmentrecord.ForOwner(state, record.OwnerAgentID)
+			if err != nil || !found || current.Reference() != record.Reference() {
+				return fmt.Errorf("original Assignment changed during Result replay")
+			}
+			history, err := assignmentresult.AcceptedHistory(state, current, read)
+			if err != nil {
+				return err
+			}
+			for _, item := range history {
+				if item.ResultRevision != target.ResultRevision {
+					continue
+				}
+				facts, _, _ := CollectWorkerCheckFacts(store.Context(), root, state, current)
+				if !reflect.DeepEqual(item.Answer, target.Answer) || !sameActualWorkerCheckFacts(item.WorkerCheckFacts, facts) {
+					return fmt.Errorf("original Result or check facts changed during replay")
+				}
+				agent, ok := findCompletionAgent(state, record.OwnerAgentID)
+				if !ok {
+					return fmt.Errorf("original Result owner is missing")
+				}
+				rows, _ := agent["result_submission_bindings"].([]any)
+				for _, row := range rows {
+					if r, ok := row.(map[string]any); ok && r["submission_key"] == key {
+						return nil
+					}
+				}
+				if len(rows) >= resultSubmissionBindingLimit {
+					return fmt.Errorf("Result alias index reached its existing limit")
+				}
+				agent["result_submission_bindings"] = append(rows, map[string]any{"record": record.Reference(), "submission_key": key, "result_ref": itemRef(state, item), "result_revision": item.ResultRevision})
+				return nil
+			}
+			return fmt.Errorf("original Result is unavailable during replay")
+		},
+	}
+	updated, err := store.Update(snapshot.Revision, mutation)
+	if err != nil {
+		return snapshot, ResultAcceptanceReceipt{}, err
+	}
+	receipt, err := canonicalResultReceipt(updated.State, target, read, true)
+	return updated, receipt, err
+}
+
+func itemRef(state map[string]any, item assignmentresult.AcceptedResult) string {
+	rows, _ := state["evidence"].([]any)
+	for _, row := range rows {
+		if r, ok := row.(map[string]any); ok && r["id"] == item.EvidenceID {
+			ref, _ := r["path"].(string)
+			return ref
+		}
+	}
+	return ""
 }
 
 func clearCanonicalCompletionAcknowledgement(state map[string]any, agentID string) error {
@@ -627,9 +746,7 @@ func clearCanonicalCompletionAcknowledgement(state map[string]any, agentID strin
 
 type canonicalResultBinding struct {
 	Record    assignmentrecord.Record
-	RecordSHA string
 	PlanRef   string
-	PlanSHA   string
 	Plan      canonicalResultPlan
 	View      resultExecutionView
 	Execution *workspace.Execution
@@ -654,14 +771,8 @@ func resolveCanonicalResultBinding(ctx context.Context, root string, snapshot lo
 	if record.Contract != assignmentrecord.AssignmentRecordContract && record.Contract != assignmentrecord.NativeDeliveryContract {
 		return binding, fmt.Errorf("canonical completion Result requires %s", assignmentrecord.AssignmentRecordContract)
 	}
-	if err := assignmentrecord.VerifySources(record, func(ref string) ([]byte, error) {
-		return assignmentinputs.Read(root, ref)
-	}); err != nil {
-		return binding, fmt.Errorf("canonical Assignment source drift: %w", err)
-	}
-	recordSHA, err := record.Digest()
-	if err != nil {
-		return binding, err
+	if err := assignmentrecord.ValidateRecord(record); err != nil {
+		return binding, fmt.Errorf("invalid Assignment responsibility: %w", err)
 	}
 	generation := workspace.Generation(snapshot.State)
 	runtimeID := workspace.RuntimeID(snapshot.State)
@@ -671,7 +782,7 @@ func resolveCanonicalResultBinding(ctx context.Context, root string, snapshot lo
 	}
 	if message.RuntimeID != record.RuntimeID || runtimeID != record.RuntimeID || message.BaselineGeneration != record.BaselineGeneration || generation != record.BaselineGeneration ||
 		message.AssignmentID != record.AssignmentID || message.AssignmentRevision != record.Revision ||
-		message.AssignmentRecordContract != record.Contract || message.AssignmentRecordSHA256 != recordSHA ||
+		message.AssignmentRecordContract != record.Contract ||
 		message.AgentID != record.OwnerAgentID || message.AgentDefinitionRef != record.AgentDefinition.Ref ||
 		message.TaskID != record.Task.ID || message.TeamID != record.TeamID || message.MessageID == "" {
 		return binding, fmt.Errorf("canonical completion message differs from the current Assignment Record binding")
@@ -697,22 +808,29 @@ func resolveCanonicalResultBinding(ctx context.Context, root string, snapshot lo
 	if record.Contract != assignmentrecord.NativeDeliveryContract && status != "working" && status != "reported" && status != "done" {
 		return binding, fmt.Errorf("canonical Result requires a working or previously reported Agent; got %s", status)
 	}
-	planRef, err := plancheckpoint.ActivatedRef(root, snapshot, agentID)
-	if record.Contract == assignmentrecord.NativeDeliveryContract {
-		if planRef != "" && nativePlanPath != "" && planRef != nativePlanPath {
-			return binding, fmt.Errorf("native professional plan changed after reception; Main must issue the original Assignment revision")
-		}
-		if planRef == "" {
-			planRef = nativePlanPath
-		}
-		if planRef == "" {
-			return binding, fmt.Errorf("native Result requires its actual professional plan")
-		}
-		err = plancheckpoint.Validate(root, snapshot, agentID, planRef)
-	} else if planRef == "" || agent["readback_ref"] != planRef || agent["plan_reported_ref"] != planRef {
-		return binding, fmt.Errorf("canonical Result requires the current accepted and activated PLAN_REPORT")
+	// The original responsibility owns two structural facts about its Plan:
+	// the Plan under reception must be the registered Plan of this owner, and
+	// it must bind the current Assignment identity while staying inside that
+	// Assignment's registered write domain. The registered reference is
+	// resolved by coordinate first, so a Plan owned by another responsibility
+	// can never pass as this one. These are structural facts about identity
+	// and write domain; no revision, hash, digest, fingerprint, checksum,
+	// round or CAS comparison decides any of them.
+	planRef, _ := agent["plan_reported_ref"].(string)
+	if planRef == "" {
+		planRef = nativePlanPath
 	}
+	if planRef == "" {
+		return binding, fmt.Errorf("Result requires the actual professional plan")
+	}
+	registeredPlanRef, err := plancheckpoint.ActivatedRef(root, snapshot, agentID)
 	if err != nil {
+		return binding, fmt.Errorf("resolve the registered professional Plan: %w", err)
+	}
+	if registeredPlanRef != "" && registeredPlanRef != planRef {
+		return binding, fmt.Errorf("the professional Plan is not the registered Plan of the original responsibility")
+	}
+	if err := plancheckpoint.Validate(root, snapshot, agentID, planRef); err != nil {
 		return binding, fmt.Errorf("validate professional PLAN: %w", err)
 	}
 	planBytes, err := workpacket.ReadFile(root, planRef, canonicalResultMessageLimit)
@@ -723,8 +841,7 @@ func resolveCanonicalResultBinding(ctx context.Context, root string, snapshot lo
 	if err := json.Unmarshal(planBytes, &plan); err != nil {
 		return binding, fmt.Errorf("decode accepted PLAN_REPORT: %w", err)
 	}
-	planSHA := sha256Of(planBytes)
-	if plan.MessageType != "plan_report" || plan.MessageID == "" || plan.RuntimeID != record.RuntimeID || plan.AgentID != record.OwnerAgentID || plan.AgentDefinitionRef != record.AgentDefinition.Ref || plan.TaskID != record.Task.ID || plan.TeamID != record.TeamID || plan.AssignmentID != record.AssignmentID || plan.AssignmentRevision != record.Revision || plan.RecordContract != record.Contract || plan.RecordSHA256 != recordSHA {
+	if plan.MessageType != "plan_report" || plan.MessageID == "" || plan.RuntimeID != record.RuntimeID || plan.AgentID != record.OwnerAgentID || plan.AgentDefinitionRef != record.AgentDefinition.Ref || plan.TaskID != record.Task.ID || plan.TeamID != record.TeamID || plan.AssignmentID != record.AssignmentID || plan.AssignmentRevision != record.Revision || plan.RecordContract != record.Contract {
 		return binding, fmt.Errorf("accepted PLAN_REPORT does not bind the current Assignment Record")
 	}
 	rootAbs, err := filepath.Abs(root)
@@ -736,346 +853,22 @@ func resolveCanonicalResultBinding(ctx context.Context, root string, snapshot lo
 		return binding, fmt.Errorf("resolve canonical Result Main root: %w", err)
 	}
 	view := resultExecutionView{MainRoot: rootReal, SourceRoot: rootReal, InputPaths: map[string]bool{}, OwnerPrefix: resultOwnerArtifactPrefix(record)}
-	return canonicalResultBinding{Record: record, RecordSHA: recordSHA, PlanRef: planRef, PlanSHA: planSHA, Plan: plan, View: view}, nil
-}
-
-func resolveResultExecutionView(ctx context.Context, root string, state map[string]any, record assignmentrecord.Record) (resultExecutionView, *workspace.Execution, error) {
-	var empty resultExecutionView
-	rootAbs, err := filepath.Abs(root)
-	if err != nil {
-		return empty, nil, err
-	}
-	rootReal, err := filepath.EvalSymlinks(rootAbs)
-	if err != nil {
-		return empty, nil, fmt.Errorf("resolve Main source root: %w", err)
-	}
-	registry, err := workspace.Decode(state)
-	if err != nil {
-		return empty, nil, fmt.Errorf("decode current workspace execution registry: %w", err)
-	}
-	view := resultExecutionView{MainRoot: rootReal, SourceRoot: rootReal, InputPaths: map[string]bool{}, OwnerPrefix: resultOwnerArtifactPrefix(record)}
-	if registry != nil {
-		mainRoot, err := filepath.EvalSymlinks(registry.MainRoot)
-		if err != nil || mainRoot != rootReal {
-			return empty, nil, fmt.Errorf("current Workspace authority root differs from CompleteTask Main root")
-		}
-		if err := registry.Validate(ctx, rootReal); err != nil {
-			return empty, nil, fmt.Errorf("validate current Workspace authority: %w", err)
-		}
-		if exec, found := registry.Execution(record.AssignmentID, record.RuntimeID, record.BaselineGeneration); found {
-			if exec.AgentID != record.OwnerAgentID || exec.AssignmentID != record.AssignmentID || exec.Status != "ready" || exec.AssignmentRecord == nil || *exec.AssignmentRecord != record.Reference() || exec.AssignmentRecordSHA256 != canonicalRecordDigest(record) {
-				return empty, nil, fmt.Errorf("current Workspace execution differs from its canonical Assignment Record")
-			}
-			if err := workspace.ValidateAssignmentRecord(state, exec); err != nil {
-				return empty, nil, fmt.Errorf("validate Workspace Assignment binding: %w", err)
-			}
-			if err := registry.ValidateExecution(ctx, exec, false); err != nil {
-				return empty, nil, fmt.Errorf("validate current Workspace checkout: %w", err)
-			}
-			if err := registry.ValidateInputs(exec); err != nil {
-				return empty, nil, fmt.Errorf("validate current Workspace frozen inputs: %w", err)
-			}
-			view.SourceRoot = exec.Path
-			view.Execution = &exec
-			for path := range exec.Inputs {
-				view.InputPaths[path] = true
-			}
-			return view, &exec, nil
-		}
-		if _, exists := registry.Executions[record.AssignmentID]; exists {
-			return empty, nil, fmt.Errorf("Workspace execution for this Assignment is stale or bound to another Runtime")
-		}
-		for _, old := range registry.History {
-			if old.AssignmentID == record.AssignmentID {
-				return empty, nil, fmt.Errorf("Workspace has only a historical execution for this Assignment")
-			}
-		}
-	}
-	if err := requireBoundMainRoot(state, rootReal); err != nil {
-		return empty, nil, err
-	}
-	coordinate, err := resolveLegacyWorktreeCoordinate(ctx, rootReal, state, record)
-	if err != nil {
-		return empty, nil, err
-	}
-	if coordinate != "" {
-		view.SourceRoot = coordinate
-	}
-	return view, nil, nil
-}
-
-func requireBoundMainRoot(state map[string]any, root string) error {
-	bound, _ := state["bound_req"].(map[string]any)
-	workspaceBinding, _ := bound["workspace"].(map[string]any)
-	projectRoot, _ := workspaceBinding["project_root"].(string)
-	if projectRoot == "" {
-		return fmt.Errorf("canonical Result requires the current REQ-bound project root")
-	}
-	projectAbs, err := filepath.Abs(projectRoot)
-	if err != nil {
-		return err
-	}
-	projectReal, err := filepath.EvalSymlinks(projectAbs)
-	if err != nil || projectReal != root {
-		return fmt.Errorf("canonical Result Main root differs from the REQ-bound project root")
-	}
-	return nil
-}
-
-type legacyWorktreeCoordinates struct {
-	AssignmentID string `json:"assignment_id"`
-	WorktreePath string `json:"worktree_path"`
-	Branch       string `json:"branch"`
-	TargetBranch string `json:"target_branch"`
-	BaseCommit   string `json:"base_commit"`
-}
-
-func resolveLegacyWorktreeCoordinate(ctx context.Context, root string, state map[string]any, record assignmentrecord.Record) (string, error) {
-	bound, _ := state["bound_req"].(map[string]any)
-	workspaceBinding, _ := bound["workspace"].(map[string]any)
-	devBranch, _ := workspaceBinding["dev_branch"].(string)
-	devBranch = strings.TrimPrefix(devBranch, "refs/heads/")
-	manifestBytes, err := assignmentinputs.Read(root, record.Manifest.Ref)
-	if err != nil {
-		return "", fmt.Errorf("read frozen assignment manifest for worktree coordinates: %w", err)
-	}
-	var manifest struct {
-		Assignments []struct {
-			AssignmentID string `json:"assignment_id"`
-			AgentID      string `json:"agent_id"`
-			WorktreePath string `json:"worktree_path"`
-			Branch       string `json:"branch"`
-			TargetBranch string `json:"target_branch"`
-			BaseCommit   string `json:"base_commit"`
-		} `json:"assignments"`
-	}
-	if err := json.Unmarshal(manifestBytes, &manifest); err != nil {
-		return "", fmt.Errorf("decode frozen assignment manifest coordinates: %w", err)
-	}
-	var manifestCoord legacyWorktreeCoordinates
-	found := false
-	for _, row := range manifest.Assignments {
-		if row.AssignmentID != record.AssignmentID {
-			continue
-		}
-		if found || row.AgentID != record.OwnerAgentID {
-			return "", fmt.Errorf("frozen manifest has duplicate or misowned worktree coordinates")
-		}
-		found = true
-		manifestCoord = legacyWorktreeCoordinates{AssignmentID: row.AssignmentID, WorktreePath: row.WorktreePath, Branch: row.Branch, TargetBranch: row.TargetBranch, BaseCommit: row.BaseCommit}
-	}
-	if !found {
-		return "", fmt.Errorf("frozen manifest omits the canonical Assignment")
-	}
-
-	sidecarPath := ".claude/assignments/" + record.AssignmentID + ".json"
-	var sidecar legacyWorktreeCoordinates
-	sidecarBytes, sidecarErr := workpacket.ReadFile(root, sidecarPath, 64<<10)
-	sidecarPresent := sidecarErr == nil
-	if sidecarErr != nil && !errors.Is(sidecarErr, os.ErrNotExist) {
-		return "", fmt.Errorf("read registered worktree coordinates: %w", sidecarErr)
-	}
-	if sidecarPresent {
-		if err := json.Unmarshal(sidecarBytes, &sidecar); err != nil {
-			return "", fmt.Errorf("decode registered worktree coordinates: %w", err)
-		}
-		if sidecar.AssignmentID != record.AssignmentID || sidecar.WorktreePath == "" || sidecar.Branch == "" || sidecar.TargetBranch == "" {
-			return "", fmt.Errorf("registered worktree coordinates do not identify this Assignment")
-		}
-	}
-	manifestHasPath, sidecarHasPath := manifestCoord.WorktreePath != "", sidecar.WorktreePath != ""
-	if !manifestHasPath && !sidecarHasPath {
-		return "", nil
-	}
-	if manifestHasPath && sidecarHasPath {
-		left, err := coordinateAbsolute(root, manifestCoord.WorktreePath)
-		if err != nil {
-			return "", err
-		}
-		right, err := coordinateAbsolute(root, sidecar.WorktreePath)
-		if err != nil {
-			return "", err
-		}
-		if left != right {
-			return "", fmt.Errorf("manifest and registered worktree coordinates disagree")
-		}
-		for field, values := range map[string][2]string{
-			"branch":        {manifestCoord.Branch, sidecar.Branch},
-			"target branch": {manifestCoord.TargetBranch, sidecar.TargetBranch},
-			"base commit":   {manifestCoord.BaseCommit, sidecar.BaseCommit},
-		} {
-			if values[0] != "" && values[1] != "" && values[0] != values[1] {
-				return "", fmt.Errorf("manifest and registered worktree %s coordinates disagree", field)
-			}
-		}
-	}
-	coordinates := sidecar
-	if !sidecarHasPath {
-		coordinates = manifestCoord
-	}
-	checkout, err := coordinateAbsolute(root, coordinates.WorktreePath)
-	if err != nil {
-		return "", err
-	}
-	if filepath.Clean(checkout) == filepath.Clean(root) {
-		return "", fmt.Errorf("Assignment worktree cannot be the Main checkout")
-	}
-	if err := workspace.ValidateCheckout(root, checkout); err != nil {
-		return "", fmt.Errorf("validate exact registered Assignment worktree: %w", err)
-	}
-	if coordinates.TargetBranch != "" && devBranch != "" && strings.TrimPrefix(coordinates.TargetBranch, "refs/heads/") != devBranch {
-		return "", fmt.Errorf("registered worktree target differs from the REQ development branch")
-	}
-	if sidecarHasPath && (strings.TrimPrefix(sidecar.TargetBranch, "refs/heads/") != devBranch || devBranch == "") {
-		return "", fmt.Errorf("registered worktree target is not the current REQ development branch")
-	}
-	branch, err := workspace.Git(ctx, checkout, "branch", "--show-current")
-	if err != nil {
-		return "", err
-	}
-	if coordinates.Branch != "" && branch != coordinates.Branch {
-		return "", fmt.Errorf("registered worktree branch differs from its stored coordinates")
-	}
-	if coordinates.BaseCommit != "" {
-		if _, err := workspace.Git(ctx, checkout, "merge-base", "--is-ancestor", coordinates.BaseCommit, "HEAD"); err != nil {
-			return "", fmt.Errorf("registered worktree history differs from its stored baseline")
-		}
-	}
-	return checkout, nil
-}
-
-func coordinateAbsolute(root, stored string) (string, error) {
-	if strings.TrimSpace(stored) == "" || strings.ContainsAny(stored, "\x00\r\n") {
-		return "", fmt.Errorf("worktree coordinate path is empty or invalid")
-	}
-	pathValue := stored
-	if !filepath.IsAbs(pathValue) {
-		pathValue = filepath.Join(root, filepath.FromSlash(pathValue))
-	}
-	abs, err := filepath.Abs(pathValue)
-	if err != nil {
-		return "", err
-	}
-	return filepath.Clean(abs), nil
-}
-
-func readCanonicalResultSources(view resultExecutionView, record assignmentrecord.Record, execution *workspace.Execution, answer assignmentresult.Answer) ([]canonicalResultSource, error) {
-	refs := map[string]bool{}
-	for _, assertion := range answer.AssertionEvidence {
-		for _, ref := range assertion.EvidenceRefs {
-			refs[ref] = true
-		}
-	}
-	ordered := make([]string, 0, len(refs))
-	for ref := range refs {
-		ordered = append(ordered, ref)
-	}
-	sort.Strings(ordered)
-	resolved := make([]canonicalResultSource, 0, len(ordered))
-	for _, ref := range ordered {
-		if err := validateResultEvidenceRef(record, execution, ref); err != nil {
-			return nil, resultEvidenceAnswerError(fmt.Sprintf("Result evidence ref %q", ref), err)
-		}
-		readRoot := view.SourceRoot
-		if isOwnerResultArtifact(view.OwnerPrefix, ref) || frozenResultContextPath(record, execution, ref) {
-			readRoot = view.MainRoot
-		}
-		body, err := workpacket.ReadFile(readRoot, ref, canonicalResultSourceLimit)
-		if err != nil {
-			if readRoot == view.SourceRoot && os.IsNotExist(err) {
-				return nil, resultEvidenceAnswerError("read actual Result evidence source "+ref, err)
-			}
-			return nil, fmt.Errorf("read actual Result evidence source %s: %w", ref, err)
-		}
-		resolved = append(resolved, canonicalResultSource{Resolved: assignmentresult.ResolvedEvidence{Ref: ref, SHA256: sha256Of(body)}, Bytes: body})
-	}
-	return resolved, nil
-}
-
-func resultEvidenceAnswerError(label string, cause error) error {
-	return &workpacket.AnswerError{Label: label, Cause: cause, Fields: []workpacket.FieldError{{
-		Pointer: "/assertion_evidence", Expected: "exact existing evidence files in the TASK write scope or listed Read paths", Observed: cause.Error(),
-		Repair: "evidence_refs must be exact existing worktree-relative files in the TASK write scope or listed Read paths; omit line numbers, descriptions and commands, and put command results in summary",
-	}}}
-}
-
-func validateResultEvidenceRef(record assignmentrecord.Record, execution *workspace.Execution, ref string) error {
-	if ref == "" || strings.TrimSpace(ref) != ref || strings.ContainsAny(ref, "\\\x00\r\n") || path.Clean(ref) != ref || strings.HasPrefix(ref, "/") {
-		return fmt.Errorf("must be a canonical authority-relative file path")
-	}
-	if strings.HasPrefix(ref, "../") || ref == ".." {
-		return fmt.Errorf("escapes the execution source")
-	}
-	if canonicalControlDataPath(ref) {
-		if !isOwnerResultArtifact(resultOwnerArtifactPrefix(record), ref) {
-			if frozenResultContextPath(record, execution, ref) {
-				return nil
-			}
-			return fmt.Errorf("references control data outside frozen inputs and this owner's evidence directory")
-		}
-		return nil
-	}
-	if assignmentrecord.AllowsPath(record, ref) {
-		return nil
-	}
-	for _, pattern := range record.ReadPaths {
-		if workspace.PathMatchesScope(ref, pattern) {
-			return nil
-		}
-	}
-	for _, source := range record.ContextSources {
-		if !strings.HasPrefix(source.Kind, "embedded_") && source.Ref == ref {
-			return nil
-		}
-	}
-	if execution != nil && execution.Inputs[ref] != "" {
-		return nil
-	}
-	return fmt.Errorf("is outside the Assignment's read, write, frozen-input and owner-artifact authority")
-}
-
-func canonicalControlDataPath(ref string) bool {
-	if workspace.ControlFile(ref) {
-		return true
-	}
-	return ref == ".claude/loop-workspace.json" || strings.HasPrefix(ref, ".claude/assignments/")
-}
-
-func frozenResultContextPath(record assignmentrecord.Record, execution *workspace.Execution, ref string) bool {
-	for _, source := range record.ContextSources {
-		if source.Ref == ref && !strings.HasPrefix(source.Kind, "embedded_") {
-			return true
-		}
-	}
-	if execution != nil && execution.Inputs[ref] != "" {
-		return true
-	}
-	return false
+	return canonicalResultBinding{Record: record, PlanRef: planRef, Plan: plan, View: view}, nil
 }
 
 func resultOwnerArtifactPrefix(record assignmentrecord.Record) string {
 	return fmt.Sprintf(".claude/evidence/%s/g%d/assignments/%s/", record.RuntimeID, record.BaselineGeneration, record.OwnerAgentID)
 }
 
-func isOwnerResultArtifact(prefix, ref string) bool {
-	return strings.HasPrefix(ref, prefix) && path.Clean(ref) == ref
-}
-
-func canonicalResultEvidenceArtifactPath(record assignmentrecord.Record, resultID, ref, sha string) string {
-	refHash := sha256Of([]byte(ref))[:16]
-	return path.Join(resultOwnerArtifactPrefix(record), resultID+"-sources", refHash+"-"+sha+".bin")
-}
-
-func canonicalResultArtifactPath(record assignmentrecord.Record, resultID, sha string) string {
-	return path.Join(resultOwnerArtifactPrefix(record), resultID+"-"+sha[:16]+".json")
+func canonicalResultArtifactPath(record assignmentrecord.Record, resultID string) string {
+	return path.Join(resultOwnerArtifactPrefix(record), resultID+".json")
 }
 
 func canonicalResultEvidenceID(record assignmentrecord.Record, revision int, submissionKey string) string {
-	keyHash := sha256Of([]byte(submissionKey))[:12]
-	return fmt.Sprintf("ev-completion-%s-g%d-a%d-s6-r%d-%s", record.Task.ID, record.BaselineGeneration, record.Revision, revision, keyHash)
+	return fmt.Sprintf("ev-completion-%s-g%d-a%d-s6-r%d", record.Task.ID, record.BaselineGeneration, record.Revision, revision)
 }
 
-func appendCanonicalResultEvidence(state map[string]any, result assignmentresult.AcceptedResult, path, digest string, occurredAt time.Time) error {
+func appendCanonicalResultEvidence(state map[string]any, result assignmentresult.AcceptedResult, path string, occurredAt time.Time) error {
 	items, ok := state["evidence"].([]any)
 	if !ok {
 		return fmt.Errorf("runtime evidence must be an array")
@@ -1087,8 +880,8 @@ func appendCanonicalResultEvidence(state map[string]any, result assignmentresult
 		}
 	}
 	items = append(items, map[string]any{
-		"id": result.EvidenceID, "kind": "completion_report", "path": path, "sha256": digest,
-		"status": "valid", "baseline_generation": result.BaselineGeneration, "review_round": nil,
+		"id": result.EvidenceID, "kind": "completion_report", "path": path,
+		"status": "valid", "baseline_generation": result.BaselineGeneration,
 		"produced_by": []any{result.ProducerAgentID}, "invalidated_by": nil,
 		"invalidation_rule": nil, "invalidation_reason": nil,
 		"responsibility_id": result.ProducerResponsibility, "scope_refs": []any{},
@@ -1116,10 +909,6 @@ func canonicalResultReceipt(state map[string]any, result assignmentresult.Accept
 		return receipt, fmt.Errorf("canonical Result has no original evidence index entry")
 	}
 	ref, _ := found["path"].(string)
-	data, err := read(ref)
-	if err != nil || sha256Of(data) != found["sha256"] {
-		return receipt, fmt.Errorf("canonical Result receipt bytes differ from the original evidence index")
-	}
 	var taskRef, agentRef string
 	if agent, ok := findCompletionAgent(state, result.ProducerAgentID); ok {
 		agentRef, _ = agent["completion_reported_ref"].(string)
@@ -1134,8 +923,7 @@ func canonicalResultReceipt(state map[string]any, result assignmentresult.Accept
 		}
 	}
 	return ResultAcceptanceReceipt{
-		ResultRef: ref, ResultSHA256: fmt.Sprint(found["sha256"]), ResultRevision: result.ResultRevision,
-		AnswerDigest: result.AnswerDigest, Replayed: replayed, Current: agentRef == ref && taskRef == ref,
+		ResultRef: ref, ResultRevision: result.ResultRevision, Replayed: replayed, Current: agentRef == ref && taskRef == ref,
 	}, nil
 }
 
@@ -1154,9 +942,4 @@ func findCompletionAgent(state map[string]any, agentID string) (map[string]any, 
 func asAnySlice(value any) []any {
 	values, _ := value.([]any)
 	return values
-}
-
-func canonicalRecordDigest(record assignmentrecord.Record) string {
-	digest, _ := record.Digest()
-	return digest
 }

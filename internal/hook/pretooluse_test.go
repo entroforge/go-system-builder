@@ -46,7 +46,7 @@ func TestPreToolUseNotReadyAllowsTool(t *testing.T) {
 			GateID:              "GATE-PLANNING-CONTRACTS-COMPLETE",
 			CandidateTransition: "PTR-PLAN-02",
 			ObservedRevision:    12,
-			Fingerprint:         "sha256:notreadyfp",
+
 			Missing:             []string{"contract traceability"},
 			EvidenceRefs:        []string{},
 			TransitionCommitted: false,
@@ -144,7 +144,7 @@ func TestPreToolUseAdvancedCommitsTransition(t *testing.T) {
 			GateID:              "GATE-PLANNING-DESIGN-COMPLETE",
 			CandidateTransition: "PTR-PLAN-01",
 			ObservedRevision:    13, // post-commit N+1
-			Fingerprint:         "sha256:advfp",
+
 			Missing:             []string{},
 			EvidenceRefs:        []string{"evidence-1"},
 			TransitionCommitted: true,
@@ -182,7 +182,7 @@ func TestPreToolUseReportsLegacyBlockWithoutDenyingTool(t *testing.T) {
 			GateID:              "GATE-FINAL-SAFETY",
 			CandidateTransition: "",
 			ObservedRevision:    5,
-			Fingerprint:         "sha256:blockedfp",
+
 			Missing:             []string{},
 			EvidenceRefs:        []string{},
 			TransitionCommitted: false,
@@ -223,7 +223,7 @@ func TestPreToolUseUnknownAllowsTool(t *testing.T) {
 			GateID:              "GATE-DOCUMENT-PASS",
 			CandidateTransition: "TR-003",
 			ObservedRevision:    8,
-			Fingerprint:         "sha256:unknownfp",
+
 			Missing:             []string{},
 			EvidenceRefs:        []string{},
 			Conflicts:           []string{"PTR-PLAN-01", "PTR-PLAN-02"},
@@ -256,7 +256,7 @@ func TestPreToolUseSatisfiedAllowsTool(t *testing.T) {
 			GateID:              "GATE-PLANNING-TASKS-COMPLETE",
 			CandidateTransition: "TR-002",
 			ObservedRevision:    20,
-			Fingerprint:         "sha256:satisfied",
+
 			Missing:             []string{},
 			EvidenceRefs:        []string{"ev-task-1"},
 			TransitionCommitted: false,

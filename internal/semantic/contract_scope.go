@@ -17,7 +17,7 @@ import (
 )
 
 // ContractsCheckBatch reads the original already-validated S3 delivery set.
-// Registration, source hashes and authority stay with its original consumers.
+// Registration and authority stay with its original consumers.
 func ContractsCheckBatch(root string, files fileview.Reader, requirement workpacket.Reference, paths []string) (ContractCheckResult, error) {
 	if requirement.ID == "" || requirement.Path == "" || len(paths) < 2 {
 		return ContractCheckResult{}, fmt.Errorf("current contract check requires its original requirement and delivery paths")

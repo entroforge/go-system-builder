@@ -130,11 +130,6 @@ type BrowserSpecCoverage struct {
 	PathPercentage float64 `json:"path_percentage"`
 }
 
-type OutputFingerprints struct {
-	Cases    string `json:"cases"`
-	Coverage string `json:"coverage"`
-}
-
 // Report is returned by all public scenario operations and is safe to encode
 // directly as JSON for QA and evidence records.
 type Report struct {
@@ -143,8 +138,7 @@ type Report struct {
 	Coverage            BranchCoverage      `json:"coverage"`
 	Ratio               Ratio               `json:"ratio"`
 	BrowserSpecCoverage BrowserSpecCoverage `json:"browser_spec_coverage"`
-	InputFingerprint    string              `json:"input_fingerprint"`
-	OutputFingerprints  OutputFingerprints  `json:"output_fingerprints"`
+	RecoveryNotes       []string            `json:"recovery_notes,omitempty"`
 }
 
 type ValidateOptions struct {

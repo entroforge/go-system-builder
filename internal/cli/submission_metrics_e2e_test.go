@@ -85,7 +85,7 @@ func TestSavedStageAnswerHookObservesCallsWithoutInventingFirstSubmit(t *testing
 func TestSubmissionMetricFailureCannotRejectDurableReception(t *testing.T) {
 	f := newStageAnswerFixture(t)
 	p := f.packets[0]
-	f.begin(t, p, nil)
+	f.startNative(t, p)
 	// Preserve existing telemetry. A file at the spool path makes every new
 	// metrics publication fail, without changing the business authority.
 	spool := filepath.Join(f.root, ".claude/hook-metrics")
@@ -95,7 +95,7 @@ func TestSubmissionMetricFailureCannotRejectDurableReception(t *testing.T) {
 	if err := os.WriteFile(spool, []byte("fault injection: spool unavailable\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	r := saveStageHook(t, f.root, f.root, p.Binding.Owner, p.AnswerPath, completedDraft(p, "pass"))
+	r := saveNativeStageStop(t, f.root, f.root, p.Binding.Owner, p.AnswerPath, completedDraft(p, "pass"))
 	if !r.Accepted || !r.WorkComplete {
 		t.Fatalf("telemetry failure changed original Hook receipt: %+v", r)
 	}

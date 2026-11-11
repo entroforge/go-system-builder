@@ -49,17 +49,19 @@ func CreateChange(root, statePath, journalPath string, request ChangeRequest) (S
 	}
 	runtimeID, _ := current["runtime_id"].(string)
 	lifecycle, _ := current["lifecycle"].(map[string]any)
-	commitRevision := snapshot.Revision
 	occurredAt := request.OccurredAt
 	if occurredAt.IsZero() {
 		occurredAt = time.Now().UTC()
 	}
 	return store.Update(request.ExpectedRevision, Mutation{
-		EventID:        fmt.Sprintf("evt-change-%s-r%d", request.Record.ID, commitRevision+1),
+		// G18: the Change Record id is the record's own identity. The Runtime
+		// already holds at most one active Change Record, so the id keeps one
+		// identity per record without a Runtime write count.
+		EventID:        fmt.Sprintf("evt-change-%s", request.Record.ID),
 		TransitionID:   "CHANGE-RECORD-CREATE",
 		Event:          "change_record_created",
 		Actor:          "orchestrator",
-		IdempotencyKey: fmt.Sprintf("runtime:change:%s:%d", request.Record.ID, commitRevision),
+		IdempotencyKey: fmt.Sprintf("runtime:change:%s", request.Record.ID),
 		RuntimeID:      runtimeID,
 		From:           map[string]any{"state": lifecycle["state"], "phase": lifecycle["phase"]},
 		To:             map[string]any{"state": lifecycle["state"], "phase": lifecycle["phase"]},
@@ -94,24 +96,18 @@ func legacyChangeMap(value map[string]any) {
 }
 
 // assertBoundREQConsistency enforces REQ-001 FR-001 at the Change Record
-// boundary: the record's req_ref and req_sha256 must match the Runtime's
-// currently bound REQ. Without this, a Change Record could claim lineage to a
-// REQ the Runtime is not bound to, creating a second state authority.
+// boundary: the record's req_ref must match the Runtime's currently bound REQ.
 func assertBoundREQConsistency(state map[string]any, record change.Record) error {
 	bound, ok := state["bound_req"].(map[string]any)
 	if !ok || bound == nil {
 		return fmt.Errorf("runtime has no bound REQ; cannot create Change Record")
 	}
 	boundID, _ := bound["id"].(string)
-	boundSHA, _ := bound["sha256"].(string)
-	if boundID == "" || boundSHA == "" {
-		return fmt.Errorf("bound REQ is missing id or sha256; cannot create Change Record")
+	if boundID == "" {
+		return fmt.Errorf("bound REQ is missing id; cannot create Change Record")
 	}
 	if record.REQRef != boundID {
 		return fmt.Errorf("change req_ref %q does not match bound REQ %q", record.REQRef, boundID)
-	}
-	if record.REQSHA != boundSHA {
-		return fmt.Errorf("change req_sha256 does not match bound REQ fingerprint")
 	}
 	return nil
 }

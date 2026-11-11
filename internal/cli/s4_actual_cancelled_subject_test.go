@@ -86,8 +86,20 @@ func TestTaskPlanningSaveKeepsActualCancelledTaskWithoutAuthorListProof(t *testi
 	if err := os.WriteFile(filepath.Join(root, cancelled), append(original, []byte("changed cancellation source\n")...), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := runtime.S5FormalInputs(root, snap.State, fileview.Disk{Root: root}); err == nil {
-		t.Fatal("cancelled history source drift was silently accepted")
+	// A changed cancelled-task source must not become an S5 refusal: the
+	// retired byte-diff gate is gone. L3-S1-bind.md:297 — "系统不以散列检测内容
+	// 漂移；坐标和版本相同不证明文件字节未变"; L3-S6-build.md:137 — "实际变化由
+	// Main 按专业影响处置，系统不以替代性的全文件对比认证历史". What the stage
+	// still owns is the business fact: a cancelled TASK never enters the active
+	// S5 subject denominator.
+	formal, err = runtime.S5FormalInputs(root, snap.State, fileview.Disk{Root: root})
+	if err != nil {
+		t.Fatalf("retired machine drift gate refused the S5 formal inputs: %v", err)
+	}
+	for _, ref := range formal.References {
+		if ref.Path == cancelled {
+			t.Fatal("cancelled TASK entered the active S5 subject denominator")
+		}
 	}
 	if err := os.WriteFile(filepath.Join(root, cancelled), original, 0600); err != nil {
 		t.Fatal(err)

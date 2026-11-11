@@ -3,12 +3,9 @@ package audit
 import (
 	"bufio"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"hash"
 	"io"
 	"os"
 	"path/filepath"
@@ -22,80 +19,66 @@ type decisionIndex struct {
 	Version   int             `json:"version"`
 	LogPath   string          `json:"log_path"`
 	Bytes     int64           `json:"bytes"`
-	SHA256    string          `json:"sha256"`
 	Decisions map[string]bool `json:"decisions"`
 	dirty     bool
 }
 type decisionIndexEnvelope struct {
 	Payload json.RawMessage `json:"payload"`
-	SHA256  string          `json:"sha256"`
 }
 
-func digestString(h hash.Hash) string { return hex.EncodeToString(h.Sum(nil)) }
-
-// Hashing the entire current log is intentional: size/mtime/inode alone cannot
-// prove an arbitrary prefix was not rewritten. Hot appends avoid decoding old
-// record bodies, but still do O(log bytes) sequential I/O. Writers cooperate via
-// the original OS lock. The checksums detect stale/accidentally corrupt caches;
-// this local, unsigned cache is not an authentication boundary against a writer
-// able to forge the index and its checksum. Such a writer can also edit the log.
-func loadDecisionIndex(ctx context.Context, path string, file *os.File) (decisionIndex, hash.Hash, error) {
+// The log is authoritative. The cache is only an optimization for cooperating
+// writers under the shared lock; size cannot prove external bytes unchanged.
+func loadDecisionIndex(ctx context.Context, path string, file *os.File) (decisionIndex, error) {
 	identity, err := filepath.EvalSymlinks(path)
 	if err != nil {
-		return decisionIndex{}, nil, err
+		return decisionIndex{}, err
 	}
 	identity, err = filepath.Abs(identity)
 	if err != nil {
-		return decisionIndex{}, nil, err
+		return decisionIndex{}, err
 	}
-	h := sha256.New()
-	var count int64
-	var last byte
-	buffer := make([]byte, 64<<10)
-	for {
-		if err := ctx.Err(); err != nil {
-			return decisionIndex{}, nil, err
+	stat, err := file.Stat()
+	if err != nil {
+		return decisionIndex{}, err
+	}
+	count := stat.Size()
+	if count > 0 {
+		var last [1]byte
+		if _, err := file.ReadAt(last[:], count-1); err != nil {
+			return decisionIndex{}, err
 		}
-		n, readErr := file.Read(buffer)
-		if n > 0 {
-			_, _ = h.Write(buffer[:n])
-			count += int64(n)
-			last = buffer[n-1]
-		}
-		if readErr == io.EOF {
-			break
-		}
-		if readErr != nil {
-			return decisionIndex{}, nil, fmt.Errorf("read audit outbox: %w", readErr)
+		if last[0] != '\n' {
+			return decisionIndex{}, errors.New("audit outbox has an incomplete trailing line")
 		}
 	}
-	// Appending after a truncated line would corrupt even an otherwise valid
-	// trailing JSON object. Fail closed without repairing authoritative events.
-	if count > 0 && last != '\n' {
-		return decisionIndex{}, nil, errors.New("audit outbox has an incomplete trailing line")
-	}
-	checksum := digestString(h)
-	if cached, ok := readDecisionIndex(path+".index", identity, count, checksum); ok {
+	if cached, ok := readDecisionIndex(path+".index", identity, count); ok {
 		defer metrics.Span(ctx, "audit/index_hit")()
-		return cached, h, nil
+		return cached, nil
 	}
 	defer metrics.Span(ctx, "audit/index_rebuild")()
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
-		return decisionIndex{}, nil, err
+		return decisionIndex{}, err
 	}
 	decisions, err := readDecisions(ctx, file)
 	if err != nil {
-		return decisionIndex{}, nil, err
+		return decisionIndex{}, err
 	}
-	return decisionIndex{Version: 1, LogPath: identity, Bytes: count, SHA256: checksum, Decisions: decisions, dirty: true}, h, nil
+	return decisionIndex{Version: 2, LogPath: identity, Bytes: count, Decisions: decisions, dirty: true}, nil
 }
 
-func readDecisionIndex(path, identity string, size int64, checksum string) (decisionIndex, bool) {
+func readDecisionIndex(path, identity string, size int64) (decisionIndex, bool) {
 	file, err := os.Open(path)
 	if err != nil {
 		return decisionIndex{}, false
 	}
 	defer file.Close()
+	// An index above the bounded cache budget can never be used, and reading it
+	// would only pay for bytes the reader then throws away. Decide from the
+	// size, so a damaged cache costs one stat instead of a full read that
+	// scales with the host's I/O load.
+	if info, statErr := file.Stat(); statErr != nil || info.Size() > decisionIndexLimit {
+		return decisionIndex{}, false
+	}
 	data, err := io.ReadAll(io.LimitReader(file, decisionIndexLimit+1))
 	if err != nil || len(data) > decisionIndexLimit {
 		return decisionIndex{}, false
@@ -104,12 +87,8 @@ func readDecisionIndex(path, identity string, size int64, checksum string) (deci
 	if json.Unmarshal(data, &envelope) != nil {
 		return decisionIndex{}, false
 	}
-	sum := sha256.Sum256(envelope.Payload)
-	if envelope.SHA256 != hex.EncodeToString(sum[:]) {
-		return decisionIndex{}, false
-	}
 	var index decisionIndex
-	if json.Unmarshal(envelope.Payload, &index) != nil || index.Version != 1 || index.LogPath != identity || index.Bytes != size || index.SHA256 != checksum || index.Decisions == nil {
+	if json.Unmarshal(envelope.Payload, &index) != nil || index.Version != 2 || index.LogPath != identity || index.Bytes != size || index.Decisions == nil {
 		return decisionIndex{}, false
 	}
 	for id, present := range index.Decisions {
@@ -163,8 +142,7 @@ func writeDecisionIndex(ctx context.Context, path string, index decisionIndex) e
 	if len(payload) > decisionIndexLimit/2 {
 		payload = []byte(`{"cache_disabled":"decision index exceeds bounded cache budget"}`)
 	}
-	sum := sha256.Sum256(payload)
-	data, err := json.Marshal(decisionIndexEnvelope{Payload: payload, SHA256: hex.EncodeToString(sum[:])})
+	data, err := json.Marshal(decisionIndexEnvelope{Payload: payload})
 	if err != nil {
 		return err
 	}

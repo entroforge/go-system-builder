@@ -13,19 +13,19 @@ func TestReceptionAdviceTextShowsOriginalRetryReworkAndPendingCommands(t *testin
 		Subject:        "assignment-build-TASK-002-g1",
 		Reason:         "required check failed",
 		Argv:           []string{"loop-harness", "runtime", "task-integrate", "--root", "/project", "--assignment-id", "assignment-build-TASK-002-g1", "--retry-preserved"},
-		ReworkCommand:  []string{"loop-harness", "runtime", "register-workgroup", "--root", "/project", "--manifest", "<fresh-manifest>", "--task-id", "TASK-002", "--task", "docs/dev/tasks/TASK-002.md", "--revise-assignment", "assignment-build-TASK-002-g1", "--revision-intent-key", "<new-key>"},
+		ReworkCommand:  []string{"loop-harness", "runtime", "register-workgroup", "--root", "/project", "--manifest", "<fresh-manifest>", "--task-id", "TASK-002", "--task", "docs/dev/tasks/TASK-002.md", "--revise-assignment", "assignment-build-TASK-002-g1"},
 		PendingCommand: []string{"loop-harness", "runtime", "workspace", "pending", "--root", "/project"},
 	}}
 	text := strings.Join(receptionAdviceText(advice), "\n")
 	for _, want := range []string{
 		"Original action argv: 'loop-harness' 'runtime' 'task-integrate'",
 		"--retry-preserved",
-		"Prepare this revision draft first: 'loop-harness' 's6' 'prepare' '--root' '/project' '--task' 'TASK-002' '--role' '<Builder-role>' '--agent-id' '<new-platform-Agent-ID>' '--platform-team-id' '<new-platform-Team-ID>' '--revise-assignment' 'assignment-build-TASK-002-g1' '--revision-intent-key' '<new-key>'",
+		"Prepare this revision draft first: 'loop-harness' 's6' 'prepare' '--root' '/project' '--task' 'TASK-002' '--role' '<Builder-role>' '--agent-id' '<new-platform-Agent-ID>' '--platform-team-id' '<new-platform-Team-ID>' '--revise-assignment' 'assignment-build-TASK-002-g1'",
 		"Original rework argv: 'loop-harness' 'runtime' 'register-workgroup'",
 		"--revise-assignment' 'assignment-build-TASK-002-g1'",
 		"--task' 'docs/dev/tasks/TASK-002.md'",
 		"Pending diagnostic argv: 'loop-harness' 'runtime' 'workspace' 'pending' '--root' '/project'",
-		"fixed manifest-s6-r<N>.json draft and returns the full register command to review and use",
+		"prepares its original revision draft and returns the register command",
 		"root, TASK ID/path and Assignment are carried from the original rework argv and current Record",
 	} {
 		if !strings.Contains(text, want) {

@@ -12,6 +12,9 @@ import (
 
 func TestTimeoutKillsDescendants(t *testing.T) {
 	root := t.TempDir()
+	// The timed-out check keeps its receipt and log as evidence; the attempt
+	// directory belongs to this test so it is reclaimed with it.
+	t.Setenv("TMPDIR", t.TempDir())
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 	err := CommandCheckRunner(ctx, root, "(sleep 0.4; echo leaked > marker) & wait")

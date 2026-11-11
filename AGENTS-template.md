@@ -36,11 +36,11 @@ the original consumers. Reception does not wait for a final message or returned
 reference and requires no extra submit, done or activation. Main owns actual
 dispatch, integration/checks, Impact and the fresh S7 handoff. First incomplete
 returns preserve rejection and exact gaps for Main without manufacturing completion.
-For a newly prepared native S9 completed no-change delivery, the system preserves the exact original inputs and required evidence at the natural reception boundary before original Plan reception. A successfully registered technical source can support the original consumers after worktree cleanup; preservation is not acceptance. Missing or failed preservation cannot recover lost bytes. Ready original answers use the same natural-event reception; unfinished drafts remain unreceived. Frozen executions keep their original contract. Platform 2.1.311 isolated runs verified files surviving through Stop and subsequent cleanup; full harness preservation/reception acceptance remains pending.
+S9 receives the original Plan and Result independently through natural events. Actual files and Git delivery support the Builder's work and Main's real integration; they are not a preservation proof required before answer reception. Accepted work remains accepted after private files disappear or change. Main continues pending integration/checks and successor preparation from the original accepted facts; cleanup does not revoke delivery. Existing frozen responsibilities retain their original paths and recovery.
 
 ## Native S5 / S7 / S8 professional work
 
-Main carries the exact original view and answer references into Claude Code native Agent. Read its actual frozen subjects, perform only your independent professional responsibility and save the original answer. S7 PreToolUse listens for ready original answers; successful PostToolUse and Stop/SubagentStop provide fallback through the original consumer, without waiting for a final message or returned reference. S5/S8 retain their original exact-reference return and SubagentStop reception. Ordinary tools need no activation or receipt. No Team, opaque platform ID, workspace prepare/launch, generic readback/PLAN or begin is required for new work. Main retains professional division, ReviewPlan waves, Case routing and stage closure; real approval modes and actual independence remain. Frozen registered workspaces keep their original sources and recovery; never fall back to Main for a lost frozen execution. S5 checks the independent document responsibility; S7 answers its Claims/lens; S8 investigates its Hypothesis without product writes.
+Main carries the exact original view and answer references into Claude Code native Agent. Read the actual materials and assigned professional questions, perform your independent responsibility and save the original answer. S7/S8 PreToolUse listens for ready original answers; successful PostToolUse and Stop/SubagentStop provide fallback through the original consumer, without waiting for a final message or returned reference. S5 retains its original exact-reference return and SubagentStop reception. Ordinary tools need no activation or receipt. No Team, opaque platform ID, workspace prepare/launch, generic readback/PLAN or begin is required for new work. Main retains professional division, ReviewPlan waves, Case routing and stage closure; real approval modes and actual independence remain. Frozen registered workspaces keep their original sources and recovery; never fall back to Main for a lost frozen execution. S5 checks the independent document responsibility; S7 answers its Claims/lens; S8 investigates its Hypothesis without product writes.
 
 ## Work status
 
@@ -74,12 +74,12 @@ for the compatibility boundary.
 **For a dispatched Worker:** read the original view or brief and its actual
 input references. Apply the quality checks for your professional responsibility.
 S5/S7/S8 read-only Workers save their own professional answer. Native S6/S9
-Builders save their plan before implementation, perform actual self-checks,
-commit real product changes with ordinary Git and save the supplied Result;
-an allowed no-change result does not require a new commit. S7/S9 PreToolUse
+Builders save their plan before implementation, perform actual self-checks
+and save the supplied Result. Native S6 retains its actual Git delivery contract;
+S9 reception requires no commit or preservation proof. S7/S8/S9 PreToolUse
 receives ready original answers, with successful PostToolUse and Stop/SubagentStop
 fallback; report actual results and unfinished work to Main when finished.
-S5/S6/S8 retain their original return-reference and SubagentStop contract.
+S5/S6 retain their original return-reference and SubagentStop contract.
 Ordinary tools need no receipt, and you do not manually register a duplicate Result. Main owns its
 integration and necessary checks. Report a real blocker with its evidence,
 impact and unfinished work to Main; do not manufacture a conclusion to exit.
@@ -340,35 +340,38 @@ the whole-round outcome. Reissue after controlled Plan
 revision and after queued Assignments become dispatched. Never fill another
 Reviewer's verdict or select a producer from an answer body.
 
-For the S7→S10 clean path, final valid Result reception forms CleanRound and
-its original completion outlet evaluates the gate/TR-009 and prepares the exact
-S10 acceptance questionnaire in the same handoff. Read the accepted Result,
-transition and material facts separately. Follow the named original continuation
-(`loop-harness runtime review-continue --root <Main>`) or current S10 material
-recovery (`loop-harness runtime audit-prepare --root <Main>`) for a concrete failure, preserving accepted work
-and existing reports. An ordinary tool call is not required to trigger the exit;
-Main does not resubmit Reviewer answers or copy clean_round bindings. Main owns
-whole-round coverage; each Reviewer performs its assigned Claims/CASEs using the
-actual browser, API, command or state-based method.
+For the S7→S10 path, the original completion outlet uses the accepted answers
+and the original plan's necessary responsibilities. Completion without a Finding
+hands off to S10 and prepares its accurate questionnaire in that same response.
+An accepted Finding hands the received observations and unfinished work to S8
+through the original outlet, without another Main Pre or a new Batch/CleanRound
+proof. Already dispatched S7 responsibilities remain receivable after S8 begins;
+Main handles late Findings against the current investigation or later work,
+without automatically changing an existing approval. Main owns full-round
+coverage; each Reviewer performs only its assigned checks with the actual method.
 
-For the S7→S8 handoff, a sealed batch advances through TR-008 on the next Main
-PreToolUse. Main then reads the supplied Batch and Findings, fills the exact S8
-intake's grouping_rationale and saves it; the original consumer creates the Case.
-Main uses the supplied hypothesis questions to define actual investigation work
-and register its professional division, then dispatches each native Investigator
-with the prepared exact view/answer. The Investigator saves its professional
-causal result and returns the reference for SubagentStop reception, without a
-generic PLAN_REPORT. An explicit `plan_approval_required` assignment keeps its
-original approval. The original Case Writer records the result and receipt;
-new questions still require Main dispatch. Put experiment-specific scope,
-stopping and unresolved conditions in the original `discriminator`, and
-predictions in `expected_outcomes`. The first native return may hand unfinished
-work and diagnostics to Main without accepting the answer or advancing the Case.
-Main restores missing sources or resumes the author. Preserve the one active
-Case's source set; mixed causes do not imply arbitrary split/merge support.
-Follow the original Case route and actual contract approval: the designated
-Driver may be Main, while an undesignated Main organizes and faithfully records
-the review. An answer or saved Contract is not repair authorization.
+For S8, Main reads the accepted Findings or actual human report, fills the original
+intake and hypothesis questions and actually dispatches each Investigator with
+exact view/answer paths. Investigator saves its own professional result once;
+PreToolUse observes the current original, successful PostToolUse and
+Stop/SubagentStop provide fallback through the same original consumer. No returned
+reference, re-save or extra PLAN is needed. The receiver checks parsing, necessary
+fields and the direct conclusion once; it does not revalidate Git, historical
+sources, evidence or hashes. `new_hypotheses` remains a suggestion until Main
+adopts, registers and actually dispatches a question; it adds no exit requirement.
+Put experiment-specific scope, stopping and unresolved conditions in the original
+`discriminator`, with predictions in `expected_outcomes`. Main judges causal
+sufficiency, unknowns, scope and route, while actual approval remains with the
+real approver and the accurate Contract. A saved answer or Contract is not approval.
+A new question whose source form is unsupported remains a named preparation gap;
+do not invent source aliases or protocols to force issuance.
+
+For all three stages, drafts remain unreceived; blocked and unfinished work stays
+truthful and goes to the accurate next responsibility. Already accepted facts stay
+valid when private files change or disappear. If successor preparation fails,
+Main follows the original named continuation from the saved fact, without asking
+the author to resave or return again. Existing issued responsibilities retain their
+original paths and recovery, without reauthoring them in the new format.
 
 1. Read the Hook's current responsibility, exact questionnaire view/answer
    paths, missing duties and next action.
@@ -498,8 +501,9 @@ For a new bound REQ, an explicit finite human grant may delegate ordinary S8 con
 ## Approved repair policy at new requirement binding
 
 If installation recorded a human-approved project repair policy, include its
-unchanged path and SHA256 in the existing binding-policy facts. The compatibility/recovery CLI exposes these as `req bind --repair-policy` and
-`--repair-policy-sha256`; running that command is not an extra normal binding step. Do not create or enlarge a policy from an account name.
+actual path in the existing binding-policy facts. The compatibility/recovery CLI
+exposes `req bind --repair-policy`; do not compute or register a policy digest.
+Running that command is not an extra normal binding step. Do not create or enlarge a policy from an account name.
 See `docs/bounded-repair-autonomy.md`. In-scope technical RepairContract approvals
 then use the Driver's registered review and pinned policy, without another human
 approval. Missing authority, business changes and release keep their Gateway.
@@ -511,9 +515,9 @@ REQ 绑定必须显式提供 `--dev-branch <开发主分支>` 和 `--release-ups
 
 派发前将上游正式 Markdown、代码和测试产出整理提交；不要自动提交用户无关变更。新 worktree 不含主会话未提交或仅暂存的文件。新 S6 使用 Claude Code 原生 Agent/worktree 与 s6-native-v1 工程交付；旧 workspace prepare/launch 仅用于既有执行的原恢复。不要在它之前另跑 `worktree-create`，也不要依赖平台默认分支或复制目录。明确不入 Git 的 evidence 单独按依赖交接，不能复制整个控制面。
 
-子会话在子分支提交成果并报告，主会话在项目根目录执行 `runtime task-integrate --assignment-id <id>`，生成合并提交、校验、接收并及时清理。集成不是 release；临时 worktree 不是交付终点。未回收、分支偏离、积压只提醒，不新增 Stop 或普通工具硬门禁。
+S6 子会话在子分支提交成果并报告，主会话在项目根目录执行 `runtime task-integrate --assignment-id <id>`，生成合并提交、校验、接收并及时清理。集成不是 release；临时 worktree 不是交付终点。未回收、分支偏离、积压只提醒，不新增 Stop 或普通工具硬门禁。
 
-Gate 的输入来源由 loop-definition 的 file_sources 契约声明；正式交付读固定 Git tree，明确运行输入读磁盘，Runtime 读权威快照。未提交产出不能帮助阶段通过。允许汇总的 evidence 按 mutable_evidence_kinds 自动同步对应 SHA256；同步不改变结论或代际，也不抹除产品基线漂移。
+Gate 的输入来源由 loop-definition 的 file_sources 契约声明；正式交付读固定 Git tree，明确运行输入读磁盘，Runtime 读权威快照。这些 S0～S6 来源要求不扩为 S7～S9 答卷资格；S7～S9 只接收当前本人原答卷，不重验 Git、来源、证据或历史摘要。实际集成、证据适用性及专业判断由原责任人承担。
 
 ## Shared data and contract reading
 
@@ -534,11 +538,11 @@ questions supply read-only inputs. Save before/after actual work and report the
 results to Main when finished. Independent Targeted uses its original answer only,
 without a Builder PlanReport or product changes. PreToolUse observes ready original
 answers; successful PostToolUse and SubagentStop provide fallback through the
-original consumer, without an extra submission. Applicable no-change source
-preservation follows the Native S9 dispatch contract above and does not replace the
-original receipt. Main saves its ChangeImpact through its original consumer.
+original consumer, without an extra submission. Actual contributions and Main integration follow the Native S9 dispatch contract
+above and do not replace the original receipt. Main saves its ChangeImpact through its original consumer.
 
-Keep accepted Candidates, Final, Impact, Targeted and Handoff distinct. Resume only
+Keep contribution reception, Main integration/checks, Impact, Targeted and Handoff
+distinct; historical Final records remain readable without requiring a new Final. Resume only
 the unfinished original responsibility or completion outlet identified by feedback;
 do not repeat accepted observations or use ordinary status/Pre to run handoff.
 After successful TR-012, Main fills and saves the supplied original S7 ReviewPlan

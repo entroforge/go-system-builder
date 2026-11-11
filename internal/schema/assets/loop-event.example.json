@@ -15,7 +15,7 @@
   "after_revision": 1,
   "transition_id": "TR-001",
   "gate_id": "MANUAL",
-  "gate_fingerprint": "sha256:manual",
+
   "producer_responsibility": "user",
   "from": {
     "state": "inactive",

@@ -1,23 +1,22 @@
 {
-  "schema_version": "1.0.0",
+  "schema_version": "1.1.0",
   "review_plan_id": "review-plan-example-1",
-  "review_round": 1,
   "baseline_generation": 1,
   "frozen_subjects": [
     {
       "path": "internal/example/service.go",
-      "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
       "kind": "product_code"
     },
     {
       "path": "docs/dev/tasks/TASK-001.md",
-      "sha256": "2222222222222222222222222222222222222222222222222222222222222222",
       "kind": "task"
     }
   ],
   "change_impact": {
     "summary": "S6 delivered the example service update path",
-    "source_refs": ["docs/dev/tasks/TASK-001.md"]
+    "source_refs": [
+      "docs/dev/tasks/TASK-001.md"
+    ]
   },
   "claims": [
     {
@@ -28,7 +27,9 @@
       "oracle": "each AC maps to code and at least one executed check",
       "method": "requirement traceability review",
       "applicability": "required",
-      "source_refs": ["docs/requirements/REQ-001.md"],
+      "source_refs": [
+        "docs/requirements/REQ-001.md"
+      ],
       "focus_key": "requirement-traceability"
     },
     {
@@ -39,7 +40,9 @@
       "oracle": "no error return is dropped on any Update path",
       "method": "logic/state/error review",
       "applicability": "required",
-      "source_refs": ["docs/dev/contracts/CONTRACTS-001.md"],
+      "source_refs": [
+        "docs/dev/contracts/CONTRACTS-001.md"
+      ],
       "focus_key": "logic-state-error"
     },
     {
@@ -50,7 +53,9 @@
       "oracle": "every state has defined entry/exit and no orphan transition",
       "method": "state machine walk",
       "applicability": "required",
-      "source_refs": ["docs/design/ARCH-001.md"],
+      "source_refs": [
+        "docs/design/ARCH-001.md"
+      ],
       "focus_key": "logic-state-error"
     },
     {
@@ -63,23 +68,34 @@
       "applicability": "not_applicable",
       "na_rationale": "pure internal refactoring with no user-visible surface",
       "na_checklist_id": "docs/requirements/REQ-001.md#ui_impact",
-      "source_refs": ["docs/requirements/REQ-001.md#ui_impact"]
+      "source_refs": [
+        "docs/requirements/REQ-001.md#ui_impact"
+      ]
     }
   ],
   "assignments": [
     {
       "assignment_id": "assignment-dv-trace-1",
       "lens": "delivery",
-      "claim_ids": ["claim-dv-req-coverage-1"],
-      "focus_keys": ["requirement-traceability"],
+      "claim_ids": [
+        "claim-dv-req-coverage-1"
+      ],
+      "focus_keys": [
+        "requirement-traceability"
+      ],
       "non_overlap_boundary": "owns REQ/contract traceability; does not re-review code quality (QA lens owns it)",
       "execution_wave": "static"
     },
     {
       "assignment_id": "assignment-qa-logic-1",
       "lens": "qa",
-      "claim_ids": ["claim-qa-error-path-1", "claim-qa-state-machine-1"],
-      "focus_keys": ["logic-state-error"],
+      "claim_ids": [
+        "claim-qa-error-path-1",
+        "claim-qa-state-machine-1"
+      ],
+      "focus_keys": [
+        "logic-state-error"
+      ],
       "non_overlap_boundary": "owns logic/state/error for internal/example; does not duplicate the DV traceability pass",
       "execution_wave": "static"
     }

@@ -14,7 +14,7 @@ import (
 )
 
 func TestS5FrozenTaskAnalysisSurvivesRevisionAndRejectsLostBytes(t *testing.T) {
-	f := newStageAnswerFixture(t)
+	f := newHistoricalStageAnswerFixture(t)
 	p := f.packets[0]
 	if p.TaskAnalysis == nil {
 		t.Fatal("new S5 packet has no frozen analysis")
@@ -28,10 +28,24 @@ func TestS5FrozenTaskAnalysisSurvivesRevisionAndRejectsLostBytes(t *testing.T) {
 	}
 	e := f.prepare(t, p)
 	installed, err := os.ReadFile(filepath.Join(e.Path, ".claude/inputs", p.TaskAnalysis.Path))
-	if err != nil || workpacket.Digest(installed) != p.TaskAnalysis.SHA256 {
-		t.Fatal("analysis not installed as frozen Worker input", err)
+	if err != nil {
+		t.Fatalf("analysis not installed at its Worker input path: %v", err)
 	}
-	f.begin(t, p, &e)
+	var installedAnalysis workpacket.TaskAnalysisArtifact
+	if err := json.Unmarshal(installed, &installedAnalysis); err != nil {
+		t.Fatalf("installed analysis cannot be read: %v", err)
+	}
+	var originalContexts, installedContexts []semantic.TaskContextSummary
+	if err := json.Unmarshal(artifact.TaskContexts, &originalContexts); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(installedAnalysis.TaskContexts, &installedContexts); err != nil {
+		t.Fatal(err)
+	}
+	if installedAnalysis.ParserVersion != artifact.ParserVersion || !reflect.DeepEqual(installedAnalysis.Inputs, p.Inputs) || len(originalContexts) == 0 || !reflect.DeepEqual(installedContexts, originalContexts) {
+		t.Fatal("installed analysis lost its sources or professional TASK context")
+	}
+	f.startFrozenReviewWorker(t, e)
 	r := saveStageHook(t, f.root, e.Path, e.AgentID, workpacket.WorkerAnswerPath, completedDraft(p, "pass"))
 	if !r.WorkComplete {
 		t.Fatal("original S5 receiver failed", r)
@@ -54,11 +68,26 @@ func TestS5FrozenTaskAnalysisSurvivesRevisionAndRejectsLostBytes(t *testing.T) {
 	}
 	before := stageSnapshot(t, f.root)
 	var out, errOut bytes.Buffer
-	if code := cli.Run([]string{"runtime", "stage-answer", "issue", "--root", f.root}, nil, &out, &errOut); code == 0 {
-		t.Fatal("corrupt original analysis was silently regenerated")
+	if code := cli.Run([]string{"runtime", "stage-answer", "issue", "--root", f.root}, nil, &out, &errOut); code != 0 {
+		t.Fatalf("original analysis issue failed: %d %s %s", code, &out, &errOut)
+	}
+	// Blueprint L3-S5-document-verification.md:140: the old responsibility
+	// keeps using its original path and available original analysis; the
+	// system neither computes nor verifies an old digest and does not
+	// re-issue or demand a resubmission because a digest is missing. The
+	// issued packets must therefore keep pointing at the original analysis
+	// path and parser version, and re-issuing must not sign a new analysis.
+	var issued []workpacket.Packet
+	if err := json.Unmarshal(out.Bytes(), &issued); err != nil {
+		t.Fatalf("invalid issued packets: %v %s", err, &out)
+	}
+	for _, next := range issued {
+		if next.TaskAnalysis.Path != p.TaskAnalysis.Path || next.TaskAnalysis.ParserVersion != p.TaskAnalysis.ParserVersion {
+			t.Fatalf("issued packet changed the original analysis reference: %+v want %+v", next.TaskAnalysis, p.TaskAnalysis)
+		}
 	}
 	if stageSnapshot(t, f.root).Revision != before.Revision {
-		t.Fatal("failed source restoration wrote Runtime")
+		t.Fatal("immutable issue retry wrote Runtime")
 	}
 	if err := os.WriteFile(analysisPath, original, 0600); err != nil {
 		t.Fatal(err)

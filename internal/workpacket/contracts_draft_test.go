@@ -8,8 +8,8 @@ import (
 )
 
 func TestContractDraftPathsDoNotGrantReception(t *testing.T) {
-	binding := PlanningBinding{RuntimeID: "loop-draft", Generation: 1, StageEntry: 3, Stage: "S3", Owner: "Main", Requirement: Reference{ID: "REQ-001", Path: "docs/requirements/REQ-001.md", Version: "v1", SHA256: Digest([]byte("req"))}}
-	p, err := BuildContracts(binding, ContractInputs{Designs: []Reference{{ID: "ARCHITECTURE-001", Path: "docs/architecture/ARCHITECTURE-001.md", Version: "v1", SHA256: Digest([]byte("design"))}}})
+	binding := PlanningBinding{RuntimeID: "loop-draft", Generation: 1, StageEntry: 3, Stage: "S3", Owner: "Main", Requirement: Reference{ID: "REQ-001", Path: "docs/requirements/REQ-001.md", Version: "v1"}}
+	p, err := BuildContracts(binding, ContractInputs{Designs: []Reference{{ID: "ARCHITECTURE-001", Path: "docs/architecture/ARCHITECTURE-001.md", Version: "v1"}}})
 	if err != nil {
 		t.Fatal(err)
 	}

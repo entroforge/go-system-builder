@@ -20,13 +20,13 @@ func TestS9PublicStatusProjectsNativeResultAndCandidate(t *testing.T) {
 		t.Fatal(err)
 	}
 	var diagnostic bytes.Buffer
-	if err := importNativeS9PlanReport(t.Context(), root, worker, plan, service, &diagnostic); err != nil {
+	if err := receiveNativeS9ReadyPlan(t.Context(), root, worker, plan, service, &diagnostic, nil); err != nil {
 		t.Fatal(err)
 	}
 	if receipt, err := service.SaveRepairPlanReportFrom(t.Context(), plan.Binding.OwnerAgentID, filepath.Join(root, plan.AnswerPath), root, nil); err != nil || !receipt.Accepted {
 		t.Fatalf("original Plan: %+v %v", receipt, err)
 	}
-	if err := recordNativeS9Source(t.Context(), root, worker, repairLeadGit(t, root, "rev-parse", "HEAD"), plan); err != nil {
+	if err := recordNativeS9OriginalLocation(t.Context(), root, plan, worker); err != nil {
 		t.Fatal(err)
 	}
 	packets, err := service.IssueRepairResults(t.Context(), plan.Binding.OwnerAgentID)
@@ -61,7 +61,7 @@ func TestS9PublicStatusProjectsNativeResultAndCandidate(t *testing.T) {
 	if row["status"] != "issued" || !strings.Contains(stringValue(result["next"]), "PreToolUse") || !strings.Contains(stringValue(result["next"]), "PostToolUse") {
 		t.Fatalf("valid native Result falsely treated as stale: row=%#v next=%v", row, result["next"])
 	}
-	brief, _, _ := nativeS9Paths(plan)
+	brief := nativeS9BriefPath(plan)
 	_, resultPath, err := nativeS9AuthorPaths(root, plan)
 	if err != nil {
 		t.Fatal(err)
@@ -105,7 +105,7 @@ func TestS9PublicStatusProjectsNativeResultAndCandidate(t *testing.T) {
 		t.Fatalf("original candidate: %+v %v", receipt, err)
 	}
 	result, row = status()
-	if row["status"] != "worker_complete_main_pending" || !strings.Contains(stringValue(result["next"]), "runtime workspace integrate") || !strings.Contains(stringValue(result["next"]), packet.Binding.Sources.OwnerAgentID) ||
+	if row["status"] != "worker_complete_main_pending" || !strings.Contains(stringValue(result["next"]), "Main continues actual integration") || row["owner_agent_id"] != packet.Binding.Sources.OwnerAgentID ||
 		stringValue(row["view_path"]) != "" || stringValue(row["answer_path"]) != "" || strings.Contains(stringValue(result["next"]), resultPath) {
 		t.Fatalf("accepted native Candidate lacks Main integration handoff: row=%#v next=%v", row, result["next"])
 	}

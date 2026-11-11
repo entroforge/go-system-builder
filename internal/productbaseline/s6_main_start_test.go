@@ -12,13 +12,12 @@ func validStart() S6MainStart {
 		BaselineGeneration:      3,
 		ProjectRoot:             "/workspace/project",
 		DevelopmentBranch:       "main",
-		StartCommit:             strings.Repeat("a", 40),
 		TransitionEventID:       "evt-tr-003-r9",
 		TransitionAfterRevision: 9,
 		TransitionSequence:      8,
 		TaskSet: []Task{
-			{TaskID: "TASK-002", Path: "docs/dev/tasks/TASK-002.md", Version: "v1.0.0", SHA256: strings.Repeat("b", 64)},
-			{TaskID: "TASK-001", Path: "docs/dev/tasks/TASK-001.md", Version: "unversioned", SHA256: strings.Repeat("c", 64)},
+			{TaskID: "TASK-002", Path: "docs/dev/tasks/TASK-002.md", Version: "v1.0.0"},
+			{TaskID: "TASK-001", Path: "docs/dev/tasks/TASK-001.md", Version: "unversioned"},
 		},
 	})
 	if err != nil {
@@ -27,7 +26,7 @@ func validStart() S6MainStart {
 	return start
 }
 
-func TestSealSortsTaskSetAndValidatesBothDigests(t *testing.T) {
+func TestSealSortsTaskSetWithoutPersistingDigestOrGitOID(t *testing.T) {
 	start := validStart()
 	if start.TaskSet[0].TaskID != "TASK-001" || start.TaskSet[1].TaskID != "TASK-002" {
 		t.Fatalf("task_set was not normalized: %+v", start.TaskSet)
@@ -35,13 +34,17 @@ func TestSealSortsTaskSetAndValidatesBothDigests(t *testing.T) {
 	if err := start.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	start.TaskSet[0].Version = "v9"
-	if err := start.Validate(); err == nil || !strings.Contains(err.Error(), "task_set_sha256") {
-		t.Fatalf("changed task snapshot was accepted: %v", err)
+	data, err := json.Marshal(start)
+	if err != nil {
+		t.Fatal(err)
 	}
+	if strings.Contains(string(data), "sha256") || strings.Contains(string(data), "start_commit") {
+		t.Fatalf("new start contains digest or Git OID: %s", data)
+	}
+
 }
 
-func TestReadS6MainStartsRejectsUnknownFieldsAndDuplicateGeneration(t *testing.T) {
+func TestReadS6MainStartsIgnoresUnrelatedFieldsAndRejectsDuplicateGeneration(t *testing.T) {
 	start := validStart()
 	encoded, err := json.Marshal([]S6MainStart{start, start})
 	if err != nil {
@@ -55,10 +58,14 @@ func TestReadS6MainStartsRejectsUnknownFieldsAndDuplicateGeneration(t *testing.T
 	if _, err := ReadS6MainStarts(state); err == nil || !strings.Contains(err.Error(), "unique increasing generations") {
 		t.Fatalf("duplicate generation accepted: %v", err)
 	}
-	rows = []any{map[string]any{"unexpected": true}}
+	encoded, _ = json.Marshal([]S6MainStart{start})
+	if err := json.Unmarshal(encoded, &rows); err != nil {
+		t.Fatal(err)
+	}
+	rows[0].(map[string]any)["unrelated"] = "preserved outside this reader"
 	state["baseline"].(map[string]any)["s6_main_starts"] = rows
-	if _, err := ReadS6MainStarts(state); err == nil {
-		t.Fatal("unknown fields accepted")
+	if got, err := ReadS6MainStarts(state); err != nil || len(got) != 1 || got[0].TransitionEventID != start.TransitionEventID {
+		t.Fatalf("unrelated field blocked the original responsibility: %+v %v", got, err)
 	}
 }
 
@@ -76,13 +83,12 @@ func TestAppendS6MainStartPreservesPriorGenerationsAndRejectsCapacity(t *testing
 	second.TransitionEventID = "evt-tr-003-r10"
 	second.TransitionAfterRevision++
 	second.TransitionSequence++
-	second.StartCommit = strings.Repeat("d", 40)
 	second, _ = Seal(second)
 	if err := AppendS6MainStart(state, second); err != nil {
 		t.Fatal(err)
 	}
 	starts, err := ReadS6MainStarts(state)
-	if err != nil || len(starts) != 2 || starts[0].StartCommit != first.StartCommit || starts[1].StartCommit != second.StartCommit {
+	if err != nil || len(starts) != 2 || starts[0].TransitionEventID != first.TransitionEventID || starts[1].TransitionEventID != second.TransitionEventID {
 		t.Fatalf("starts=%+v err=%v", starts, err)
 	}
 	baseline := state["baseline"].(map[string]any)

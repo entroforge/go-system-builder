@@ -11,6 +11,14 @@ import (
 	"github.com/entroforge/go-system-builder/internal/workspace"
 )
 
+// TestNativeS6SourceBranchesPrecedeActualInputReads pins that the retired
+// fixed-source preparation branches stay out of the Builder brief. Those
+// branches asked the Builder to decide its own execution source from Git state
+// before reading any input. L3-S6-build.md:320 — "Hook 不扫描 Git、登记或比对
+// HEAD／base／commit OID、检查祖先关系或逐文件散列作为接收资格"; L4-state-transition-core.md:138
+// — "Hook 所在的接收、Writer、事务恢复和后继均不计算、登记或校验散列". The
+// current brief points the Builder at the actual TASK inputs in its actual
+// worktree and leaves an unknown source to Main.
 func TestNativeS6SourceBranchesPrecedeActualInputReads(t *testing.T) {
 	root, _, r := nativeDeliveryFixture(t)
 	brief, _, _ := assignmentrecord.NativePaths(r)
@@ -23,14 +31,28 @@ func TestNativeS6SourceBranchesPrecedeActualInputReads(t *testing.T) {
 	if read < 0 {
 		t.Fatal("actual brief lacks TASK input")
 	}
-	for _, branch := range []string{"First start, before any responsibility work:", "Normal resume of this same responsibility:", "Unknown or mixed source:"} {
-		if pos := strings.Index(text, branch); pos < 0 || pos >= read {
-			t.Fatalf("%q must precede TASK reads: %s", branch, text)
+	for _, retired := range []string{
+		"First start, before any responsibility work:",
+		"Normal resume of this same responsibility:",
+		"Unknown or mixed source:",
+		"continue your existing Plan",
+		"even when HEAD no longer equals",
+		"do not infer normal resume from those alone",
+		"another source has been mixed in",
+		"git rev-parse HEAD",
+		"git switch -c",
+	} {
+		if strings.Contains(text, retired) {
+			t.Fatalf("retired fixed-source branch %q reappeared in the brief: %s", retired, text)
 		}
 	}
-	for _, want := range []string{"continue your existing Plan", "even when HEAD no longer equals", "do not infer normal resume from those alone", "another source has been mixed in"} {
-		if !strings.Contains(text[:read], want) {
-			t.Fatalf("missing source distinction %q", want)
+	for _, want := range []string{
+		"Read the actual TASK at worktree-relative path",
+		"Read TASK, specifications and product sources in your actual worktree",
+		"Preserve existing work; report missing inputs to Main",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("current brief missing %q: %s", want, text)
 		}
 	}
 }
@@ -87,7 +109,15 @@ func TestNativeS6OriginalSourceResumeWithOwnCommitAndDirtyWorkReceivesResult(t *
 	}
 }
 
-func TestNativeS6DifferentSourceCannotUseNormalResumeToReceive(t *testing.T) {
+// TestNativeS6DifferentSourceIsNotJudgedBySourceCommit pins that the retired
+// source-commit qualification no longer refuses a delivery. The recorded
+// responsibility, the issued paths and the professional content decide the
+// reception; where the source really came from is a Main/executor question.
+// L3-S6-build.md:320 — "Hook 不扫描 Git、登记或比对 HEAD／base／commit OID、检查
+// 祖先关系或逐文件散列作为接收资格；来源未知时保留原卷和已收事实，由 Main／系统
+// 处理"; L4-hook-platform-wiring.md:81 — "不另遍历 Git worktree、比对 HEAD／branch／pin
+// 或认证 actor 与来源根来授予答卷资格".
+func TestNativeS6DifferentSourceIsNotJudgedBySourceCommit(t *testing.T) {
 	root, worker, r := nativeDeliveryFixture(t)
 	brief, _, result := assignmentrecord.NativePaths(r)
 	// A real unrelated root retains the same visible files and author identity;
@@ -99,12 +129,18 @@ func TestNativeS6DifferentSourceCannotUseNormalResumeToReceive(t *testing.T) {
 	}
 	nativeCommit(t, worker)
 	nativeAnswer(t, worker, r)
-	before := stageSnapshot(t, root)
-	if code, out := nativeEvent(t, root, worker, "SubagentStop", filepath.Join(root, brief)+"\n"+filepath.Join(worker, result), false); code != 0 || !strings.Contains(out, "Native S6 reception incomplete") || !strings.Contains(out, "does not contain the declared source commit") {
-		t.Fatalf("wrong source accepted as resume: %d %s", code, out)
+	code, out := nativeEvent(t, root, worker, "SubagentStop", filepath.Join(root, brief)+"\n"+filepath.Join(worker, result), false)
+	if code != 0 {
+		t.Fatalf("retired source-commit qualification refused the delivery: %d %s", code, out)
 	}
-	if stageSnapshot(t, root).Revision != before.Revision {
-		t.Fatal("wrong source created completion")
+	if strings.Contains(out, "does not contain the declared source commit") {
+		t.Fatalf("retired source-commit qualification reappeared: %s", out)
+	}
+	// The delivery is received on the recorded responsibility and the
+	// professional content; where the work really came from stays a
+	// Main/executor question.
+	if text := mainNativeReturn(t, root, filepath.Join(root, brief)); !strings.Contains(text, "Result received") {
+		t.Fatalf("delivery was not received on the original responsibility: %s", text)
 	}
 	if _, err := os.Stat(filepath.Join(worker, result)); err != nil {
 		t.Fatal("wrong source handoff lost existing Result")

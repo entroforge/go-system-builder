@@ -66,7 +66,7 @@ func TestNativeS9MissingWorkerCleanupResumesOriginalCheckpoint(t *testing.T) {
 				t.Fatalf("original public cleanup retry: %s", &diagnostic)
 			}
 			recovered, found, err := integration.DefaultCheckpointStore().Load(workspaceExecutionCheckpointPath(root, e))
-			if err != nil || !found || recovered.State != integration.StateComplete || recovered.VerifiedAt != original.VerifiedAt || recovered.MergeCommit != original.MergeCommit {
+			if err != nil || !found || recovered.State != integration.StateComplete || recovered.VerifiedAt != original.VerifiedAt {
 				t.Fatalf("original verified facts changed: %+v %v", recovered, err)
 			}
 			if _, err := os.Lstat(filepath.Join(worker, ".git")); !os.IsNotExist(err) {
