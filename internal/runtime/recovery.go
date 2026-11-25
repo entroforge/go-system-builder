@@ -1263,12 +1263,10 @@ func writeImmutableJSON(path string, value any) error {
 
 func recoveryPlanParts(id string) []string {
 	encoded := base64.RawURLEncoding.EncodeToString([]byte(id))
-	parts := []string{"plan"}
-	for len(encoded) > 120 {
-		parts = append(parts, encoded[:120])
-		encoded = encoded[120:]
+	if len(encoded) > 200 {
+		return []string{"plan", "p", workpacket.BoundedPacketPathKey(encoded)}
 	}
-	return append(parts, encoded)
+	return []string{"plan", encoded}
 }
 
 func recoveryManifestPath(request RecoveryRequest) string {

@@ -134,15 +134,16 @@ func s5PacketID(binding Binding) string {
 	return fmt.Sprintf("packet-s5-%d-%s-g%d-e%d-%d-%s-%d-%s-a%d", len(binding.RuntimeID), binding.RuntimeID, binding.Generation, binding.StageEntry, len(binding.AssignmentID), binding.AssignmentID, len(binding.Owner), binding.Owner, binding.Attempt)
 }
 
-// s5PacketPaths preserves the full original responsibility identity without a
-// digest while keeping each generated component below filesystem name limits.
+// s5PacketPaths preserves the full original responsibility identity: short
+// ids stay verbatim under the "p" storage level, and a long id maps to one
+// deterministic bounded directory key. The Runtime registration and the
+// packet JSON carry the complete id.
 func s5PacketPaths(binding Binding, id string) (string, string) {
-	parts := []string{"p"}
-	for len(id) > 120 {
-		parts = append(parts, id[:120])
-		id = id[120:]
+	name := id
+	if len(id) > 200 {
+		name = BoundedPacketPathKey(id)
 	}
-	parts = append(parts, id)
+	parts := []string{"p", name}
 	base := filepath.Join(binding.RuntimeID, fmt.Sprintf("g%d", binding.Generation), binding.Responsibility)
 	viewParts := append([]string{".claude/work-packets", base}, parts...)
 	viewParts = append(viewParts, "view.json")

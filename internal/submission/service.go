@@ -247,14 +247,13 @@ func (s *Service) Save(ctx context.Context, owner, path string) (Receipt, error)
 	}
 	id := "ev-submission-" + p.ID
 	// The Writer publishes only after judging the current reception under its lock.
-	parts := []string{".claude/evidence/submissions"}
-	remaining := p.ID
-	for len(remaining) > 120 {
-		parts = append(parts, remaining[:120])
-		remaining = remaining[120:]
+	// Long reversible identities map to one deterministic bounded directory key;
+	// the Runtime registration carries the complete id.
+	dirName := p.ID
+	if len(dirName) > 200 {
+		dirName = "p/" + workpacket.BoundedPacketPathKey(dirName)
 	}
-	parts = append(parts, remaining, "document-review.json")
-	envelopePath := filepath.ToSlash(filepath.Join(parts...))
+	envelopePath := filepath.ToSlash(filepath.Join(".claude/evidence/submissions", dirName, "document-review.json"))
 	if accepted {
 		id = prior.EvidenceID
 	} else {

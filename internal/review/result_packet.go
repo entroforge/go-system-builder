@@ -514,7 +514,24 @@ func bindCurrentReviewMethods(root string, state map[string]any, a *PlanAssignme
 		return fail("owner has no original registered workgroup")
 	}
 	ref := stringField(registered["manifest_ref"])
-	if ref == "" || owner["prompt_ref"] != ref+"#"+a.AssignmentID {
+	if filepath.IsAbs(filepath.FromSlash(ref)) {
+		// A registration that carried a host-absolute manifest path recorded
+		// that form verbatim. Normalize it to the same repository-relative
+		// reference the plan ref normalization above already accepts, so an
+		// existing state recovers here instead of failing packet issuance
+		// with an opaque reader error.
+		ref = repositoryPath(root, ref)
+	}
+	promptRef := stringField(owner["prompt_ref"])
+	if promptRef != "" {
+		manifestPart, fragment, hasFragment := strings.Cut(promptRef, "#")
+		if hasFragment {
+			promptRef = repositoryPath(root, manifestPart) + "#" + fragment
+		} else {
+			promptRef = repositoryPath(root, manifestPart)
+		}
+	}
+	if ref == "" || owner["prompt_ref"] == "" || promptRef != ref+"#"+a.AssignmentID {
 		return fail("original manifest/Assignment source is missing or mismatched")
 	}
 	data, err := workpacket.ReadFile(root, ref, 4<<20)

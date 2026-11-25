@@ -250,7 +250,13 @@ func registerWithReceipt(root, statePath, journalPath string, request Request, r
 		}
 	}
 	manifestRef := repositoryPath(root, request.ManifestPath)
+	if err := ensureRepositoryRef("manifest", manifestRef); err != nil {
+		return loopruntime.Snapshot{}, err
+	}
 	taskRef := repositoryPath(root, request.TaskPath)
+	if err := ensureRepositoryRef("task", taskRef); err != nil {
+		return loopruntime.Snapshot{}, err
+	}
 	if request.Revision != nil {
 		if err := resolveRevisionRequest(current, request.Revision, manifestRef, value); err != nil {
 			return loopruntime.Snapshot{}, err
@@ -965,12 +971,38 @@ func investigationReentry(runtimeState map[string]any) bool {
 	return status == "investigating" && route == "investigate_more"
 }
 
+// repositoryPath normalizes a registered artifact reference to a clean
+// repository-relative slash path. An absolute path inside the root converts
+// regardless of how the caller spelled the root, so a registration carrying
+// host-absolute tool output records the same reference as a relative
+// invocation; a path outside the root stays verbatim and the caller rejects
+// it at the write boundary.
 func repositoryPath(root, path string) string {
+	if absRoot, err := filepath.Abs(root); err == nil {
+		if absPath, err := filepath.Abs(path); err == nil {
+			if relative, err := filepath.Rel(absRoot, absPath); err == nil && relative != ".." &&
+				!filepath.IsAbs(relative) && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+				return filepath.ToSlash(relative)
+			}
+		}
+	}
 	if relative, err := filepath.Rel(root, path); err == nil && relative != ".." &&
 		!filepath.IsAbs(relative) {
 		return filepath.ToSlash(relative)
 	}
 	return filepath.ToSlash(path)
+}
+
+// ensureRepositoryRef rejects the observed failure shape at the write
+// boundary: a host-absolute tool path stored verbatim, which the packet and
+// file readers reject with an opaque "invalid packet artifact path" several
+// stages later and without a recovery entry. Relative references outside the
+// root keep their existing accepted behavior.
+func ensureRepositoryRef(field, ref string) error {
+	if filepath.IsAbs(filepath.FromSlash(ref)) || strings.HasPrefix(ref, "/") || strings.ContainsRune(ref, '\\') {
+		return fmt.Errorf("registered %s reference must be a repository-relative path; got %q", field, ref)
+	}
+	return nil
 }
 
 func containsEntity(value any, id string) bool {

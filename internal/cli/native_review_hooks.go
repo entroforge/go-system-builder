@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -360,6 +361,13 @@ func nativeReviewHookStage(root string, in policy.Input, out, diagnostic io.Writ
 			// Main／系统"; L4-workflow-convergence.md:191 — a path or hint in the
 			// actor's own text cannot change this sub-session's owner.
 			fmt.Fprintln(diagnostic, stage+" lifecycle handoff contains an unresolved original responsibility; Main must inspect the original dispatch")
+			if stage == "S7" || stage == "S8" {
+				// The operator channel is per-process and reaches nobody by
+				// itself. Preserve the same fact in Main's durable planning
+				// diagnostics so an actor that keeps failing attribution is
+				// visible to Main's recovery instead of only to a log reader.
+				submission.RecordPlanningDiagnostic(root, snap.State, stage+" native stop attribution", stage+" lifecycle handoff contains an unresolved original responsibility: "+strconv.Itoa(len(candidates))+" issued candidates and no protocol dispatch identity parsed from this actor's original task. Main must inspect the original dispatch; the actor's saved answer stays at its exact registered path and is never resubmitted.")
+			}
 		}
 		return true, 0
 	}

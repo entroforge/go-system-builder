@@ -299,14 +299,14 @@ func PublishOriginal(ctx context.Context, root, packetID string, data []byte) (R
 	}
 	ref := Reference{Format: BodyFormat}
 	encoded := base64.RawURLEncoding.EncodeToString([]byte(packetID))
-	// Split the reversible identity into bounded path components; packet IDs
-	// do not have a schema length bound and must not become a filename gate.
-	parts := make([]string, 0, 1+len(encoded)/120)
-	for len(encoded) > 120 {
-		parts = append(parts, encoded[:120])
-		encoded = encoded[120:]
+	// Packet IDs do not have a schema length bound and must not become a
+	// filename gate; a long reversible identity maps to one deterministic
+	// bounded directory key under the same "p" storage level.
+	name := encoded + ".json"
+	if len(encoded) > 200 {
+		name = workpacket.BoundedPacketPathKey(encoded) + ".json"
 	}
-	parts = append(parts, encoded+".json")
+	parts := []string{name}
 	// An unregistered path, including one with identical bytes, is not proof
 	// that it belongs to this issuance. Only the Runtime Writer can publish
 	// the selected ref as the original responsibility. Leave any occupied
