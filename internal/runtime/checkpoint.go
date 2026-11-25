@@ -195,14 +195,12 @@ func (s *Store) publishCheckpointLocked() error {
 	}
 	// Runtime identity, revision and journal sequence are persisted before this
 	// point, so a retry selects the same checkpoint without hashing content.
+	// A long runtime id maps to one deterministic bounded directory key.
 	encoded := base64.RawURLEncoding.EncodeToString([]byte(stringValue(state["runtime_id"])))
-	parts := []string{"cp"}
-	for len(encoded) > 120 {
-		parts = append(parts, encoded[:120])
-		encoded = encoded[120:]
+	if len(encoded) > 200 {
+		encoded = "p/" + workpacket.BoundedPacketPathKey(encoded)
 	}
-	parts = append(parts, encoded, fmt.Sprintf("r%d-s%d", revision, journal.TailSequence))
-	baseDir := ".claude/runtime-checkpoints/" + strings.Join(parts, "/")
+	baseDir := ".claude/runtime-checkpoints/" + strings.Join([]string{"cp", encoded, fmt.Sprintf("r%d-s%d", revision, journal.TailSequence)}, "/")
 	// A previously indexed checkpoint for this exact Runtime event is the
 	// original Writer's completed publication. Reuse that fact; an unknown
 	// same-named directory is never read or claimed as proof of this event.

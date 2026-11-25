@@ -79,20 +79,20 @@ func fileRef(relative string, data []byte) ArtifactRef {
 	return ArtifactRef{Path: filepath.ToSlash(filepath.Clean(filepath.FromSlash(relative)))}
 }
 
-// responsibilityArtifactPath preserves legacy short paths and splits long
-// issued identifiers into reversible bounded components. No content digest is
-// needed and already issued paths remain readable.
+// responsibilityArtifactPath preserves legacy short paths and bounds long
+// issued identifiers to one deterministic directory key. The Runtime
+// registration and the packet JSON carry the complete id.
 // QuestionnaireRoot identifies the original Main questionnaire directory for
 // a newly issued repair responsibility without depending on content digests.
 func QuestionnaireRoot(runtimeID, sessionID string) string {
 	data, _ := json.Marshal([]string{runtimeID, sessionID})
 	encoded := base64.RawURLEncoding.EncodeToString(data)
 	parts := []string{".claude", "submissions", "s9", "p"}
-	for len(encoded) > 120 {
-		parts = append(parts, encoded[:120])
-		encoded = encoded[120:]
+	if len(encoded) > 200 {
+		parts = append(parts, workpacket.BoundedPacketPathKey(encoded))
+	} else {
+		parts = append(parts, encoded)
 	}
-	parts = append(parts, encoded)
 	return filepath.ToSlash(filepath.Join(parts...))
 }
 
@@ -103,13 +103,7 @@ func responsibilityArtifactPath(category, id string) string {
 	if len(id) <= 200 {
 		return filepath.ToSlash(filepath.Join(artifactRoot, category, id+".json"))
 	}
-	parts := []string{artifactRoot, category, "p"}
-	for len(id) > 120 {
-		parts = append(parts, id[:120])
-		id = id[120:]
-	}
-	parts = append(parts, id+".json")
-	return filepath.ToSlash(filepath.Join(parts...))
+	return filepath.ToSlash(filepath.Join(artifactRoot, category, "p", workpacket.BoundedPacketPathKey(id)+".json"))
 }
 
 func writeImmutable(root, relative, schemaName string, document any) (ArtifactRef, error) {

@@ -448,22 +448,19 @@ func (b TargetedAuthoring) AnswerRelativePath() (string, error) {
 		return base64.RawURLEncoding.EncodeToString(data)
 	}
 	appendParts := func(parts []string, value string) []string {
-		for len(value) > 120 {
-			parts = append(parts, value[:120])
-			value = value[120:]
+		if len(value) > 200 {
+			return append(parts, "p", workpacket.BoundedPacketPathKey(value))
 		}
 		return append(parts, value)
 	}
 	root = strings.TrimPrefix(filepath.ToSlash(root), ".claude/submissions/s9/")
 	parts := []string{".loop-submissions/s9", root, "plan"}
 	parts = appendParts(parts, encode(b.PlanRef))
+	// Keep the "targeted-reverification-" filename prefix recognizable to the
+	// original reception classifier; only the encoded tail is bounded.
 	name := "targeted-reverification-" + encode(b.PerformingAssignmentID) + ".json"
 	if len(name) > 200 {
-		parts = append(parts, "n")
-		for len(name) > 120 {
-			parts = append(parts, name[:120])
-			name = name[120:]
-		}
+		name = "targeted-reverification-" + workpacket.BoundedPacketPathKey(name) + ".json"
 	}
 	parts = append(parts, name)
 	for i, part := range parts {

@@ -426,13 +426,11 @@ func blockerRequestPathMatches(root, ref, supplied string) bool {
 }
 
 func s9PacketEvidenceDirectory(packetID string) string {
-	parts := []string{".claude", "evidence", "s9", "p"}
-	for len(packetID) > 120 {
-		parts = append(parts, packetID[:120])
-		packetID = packetID[120:]
+	name := packetID
+	if len(packetID) > 200 {
+		name = workpacket.BoundedPacketPathKey(packetID)
 	}
-	parts = append(parts, packetID)
-	return path.Join(parts...)
+	return path.Join(".claude", "evidence", "s9", "p", name)
 }
 
 func writeBlockerImmutable(root, directory, schemaName string, document any) (ArtifactRef, []byte, error) {

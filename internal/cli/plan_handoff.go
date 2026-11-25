@@ -21,6 +21,7 @@ import (
 	"github.com/entroforge/go-system-builder/internal/runtime"
 	"github.com/entroforge/go-system-builder/internal/schema"
 	"github.com/entroforge/go-system-builder/internal/team"
+	"github.com/entroforge/go-system-builder/internal/workpacket"
 	"github.com/entroforge/go-system-builder/internal/workspace"
 )
 
@@ -369,12 +370,14 @@ func importPlanReportBytes(root string, data []byte) (string, error) {
 		return "", err
 	}
 	encoded := base64.RawURLEncoding.EncodeToString(identity)
+	// A long encoded identity maps to one deterministic bounded directory key;
+	// the handoff JSON carries the complete identity fields.
 	parts := []string{planHandoffDir, "r"}
-	for len(encoded) > 120 {
-		parts = append(parts, encoded[:120])
-		encoded = encoded[120:]
+	if len(encoded) > 200 {
+		parts = append(parts, "p", workpacket.BoundedPacketPathKey(encoded))
+	} else {
+		parts = append(parts, encoded)
 	}
-	parts = append(parts, encoded)
 	dir := filepath.Join(append([]string{rootReal}, parts...)...)
 	if err := rejectSymlinkComponents(rootReal, dir); err != nil {
 		return "", fmt.Errorf("plan handoff store rejected: %w", err)

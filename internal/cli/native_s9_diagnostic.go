@@ -43,19 +43,16 @@ func (d nativeS9Diagnostic) historicalMessage() string {
 }
 
 func nativeS9DiagnosticPath(key string) string {
-	// Encode the existing responsibility reversibly; split long IDs to keep
-	// filesystem components bounded without truncating identity.
+	// Encode the existing responsibility reversibly; a long encoded id maps
+	// to one deterministic bounded directory key. The Runtime registration
+	// carries the complete identity.
 	encoded := base64.RawURLEncoding.EncodeToString([]byte(key))
-	parts := []string{".claude", "diagnostics", "native-s9", "responsibility"}
-	for len(encoded) > 120 {
-		parts = append(parts, encoded[:120])
-		encoded = encoded[120:]
-	}
-	if encoded == "" {
+	if len(encoded) > 200 {
+		encoded = "p/" + workpacket.BoundedPacketPathKey(encoded)
+	} else if encoded == "" {
 		encoded = "_"
 	}
-	parts = append(parts, encoded, "observation.json")
-	return filepath.ToSlash(filepath.Join(parts...))
+	return filepath.ToSlash(filepath.Join(".claude", "diagnostics", "native-s9", "responsibility", encoded, "observation.json"))
 }
 
 func nativeS9FileObservation(path string) string {

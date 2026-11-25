@@ -705,15 +705,14 @@ func investigationLeadPreparationEvent(event string) bool {
 }
 
 // s8OriginalSourceDir locates a responsibility from its actual Runtime and source.
-// Components are reversible and split so long original identifiers remain usable.
+// A long encoded identifier maps to one deterministic bounded directory key;
+// the Runtime registration carries the complete identity.
 func s8OriginalSourceDir(root, runtimeID string, generation int, source string) string {
 	value := base64.RawURLEncoding.EncodeToString([]byte(runtimeID + "\x00" + source))
 	parts := []string{root, ".claude", "submissions", "s8", fmt.Sprintf("g%d", generation), "source"}
-	for len(value) > 120 {
-		parts = append(parts, value[:120])
-		value = value[120:]
-	}
-	if value != "" {
+	if len(value) > 200 {
+		parts = append(parts, "p", workpacket.BoundedPacketPathKey(value))
+	} else if value != "" {
 		parts = append(parts, value)
 	}
 	return filepath.Join(parts...)

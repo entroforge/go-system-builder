@@ -63,7 +63,7 @@
         },
         "path": {
           "type": "string",
-          "pattern": "^\\.claude/packet-bodies(-alt-[1-9][0-9]*)?/([0-9a-f]{64}\\.json|(p|alternate-[0-9]+)/([A-Za-z0-9_-]{1,120}/)*[A-Za-z0-9_-]{1,120}\\.json)$"
+          "pattern": "^\\.claude/packet-bodies(-alt-[1-9][0-9]*)?/([0-9a-f]{64}\\.json|(p|alternate-[0-9]+)/([A-Za-z0-9_-]{1,120}/)*[A-Za-z0-9_.-]{1,200}\\.json)$"
         },
         "sha256": {},
         "size_bytes": {}

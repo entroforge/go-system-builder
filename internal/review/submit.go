@@ -1296,14 +1296,13 @@ func stateDocuments(state map[string]any) []any {
 }
 
 // Existing identifiers can be long after reversible responsibility encoding.
-// Splitting fixed-size components avoids an author-visible length restriction.
+// A long identity maps to one deterministic bounded directory key; the Runtime
+// registration and the review packet JSON carry the complete id.
 func boundedReviewIdentity(id string) []string {
-	var parts []string
-	for len(id) > 120 {
-		parts = append(parts, id[:120])
-		id = id[120:]
+	if len(id) <= 200 {
+		return []string{id}
 	}
-	return append(parts, id)
+	return []string{"p", workpacket.BoundedPacketPathKey(id)}
 }
 func boundedReviewArtifactPath(base []string, id string) string {
 	parts := boundedReviewIdentity(id)

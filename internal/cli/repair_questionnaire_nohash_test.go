@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -8,8 +9,38 @@ import (
 
 	"github.com/entroforge/go-system-builder/internal/repair"
 	"github.com/entroforge/go-system-builder/internal/runtime"
+	"github.com/entroforge/go-system-builder/internal/targetedauthoring"
 	"github.com/entroforge/go-system-builder/internal/workpacket"
 )
+
+func TestTargetedQuestionnaireAndReceiverPathsAgreeAtLengthBoundary(t *testing.T) {
+	root := t.TempDir()
+	questionnaireRoot := repair.QuestionnaireRoot("runtime-A", "session-A")
+	for _, length := range []int{1, 110, 125, 126, 127, 130, 145, 150, 400, 9000} {
+		t.Run(fmt.Sprint(length), func(t *testing.T) {
+			assignment := strings.Repeat("a", length)
+			state := map[string]any{"review": map[string]any{"repair": map[string]any{"questionnaire_root": questionnaireRoot, "plan_ref": "plan-A.json"}}}
+			legacy, err := repairLeadQuestionnairePath(root, state, repairTargetedQuestionnaireName(assignment))
+			if err != nil {
+				t.Fatal(err)
+			}
+			published, err := repair.TargetedSharedAnswerPath(root, legacy)
+			if err != nil {
+				t.Fatal(err)
+			}
+			received, err := (targetedauthoring.TargetedAuthoring{QuestionnaireRoot: questionnaireRoot, PlanRef: "plan-A.json", PerformingAssignmentID: assignment}).AnswerRelativePath()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if published != filepath.Join(root, filepath.FromSlash(received)) {
+				t.Fatalf("questionnaire path %q differs from receiver path %q", published, received)
+			}
+			if len(filepath.Base(published)) > 200 {
+				t.Fatalf("unbounded filename: %q", published)
+			}
+		})
+	}
+}
 
 func TestS9QuestionnaireUsesSavedOriginalPathWithoutDigest(t *testing.T) {
 	root := t.TempDir()

@@ -618,26 +618,31 @@ func repairLeadQuestionnairePath(root string, state map[string]any, name string)
 	}
 	// A genuine Plan revision is a different original responsibility. Use its
 	// saved path as a reversible location, without reopening/rehashing content.
+	// Long keys and names map to one deterministic bounded directory key.
 	planKey := repairResponsibilityKey(planPath)
 	parts := []string{root, clean, "plan"}
-	for len(planKey) > 120 {
-		parts = append(parts, planKey[:120])
-		planKey = planKey[120:]
+	if len(planKey) > 200 {
+		parts = append(parts, "p", workpacket.BoundedPacketPathKey(planKey))
+	} else {
+		parts = append(parts, planKey)
 	}
-	parts = append(parts, planKey)
 	if len(name) > 200 {
-		parts = append(parts, "n")
-		for len(name) > 120 {
-			parts = append(parts, name[:120])
-			name = name[120:]
-		}
+		parts = append(parts, "n", workpacket.BoundedPacketPathKey(name)+".json")
+	} else {
+		parts = append(parts, name)
 	}
-	parts = append(parts, name)
 	return filepath.Abs(filepath.Join(parts...))
 }
 
 func repairTargetedQuestionnaireName(assignmentID string) string {
-	return "targeted-reverification-" + repairResponsibilityKey(assignmentID) + ".json"
+	// Keep the "targeted-reverification-" filename prefix recognizable to the
+	// original reception classifier; only the encoded tail is bounded.
+	key := repairResponsibilityKey(assignmentID)
+	name := "targeted-reverification-" + key + ".json"
+	if len(name) > 200 {
+		return "targeted-reverification-" + workpacket.BoundedPacketPathKey(name) + ".json"
+	}
+	return name
 }
 
 func repairTargetedQuestionnairePath(root string, state map[string]any, assignmentID string, contexts ...context.Context) (string, error) {

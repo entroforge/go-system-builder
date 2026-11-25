@@ -395,6 +395,47 @@ func nativeReviewOriginalCandidateMatch(facts nativeReviewDispatchFacts, text, r
 	return matched, conflict
 }
 
+// nativeS7AssignmentNamed reports whether the exact registered assignment id
+// occurs as a whole identifier in prose, delimited by non-identifier
+// characters on both sides. A longer id that merely contains this id as a
+// prefix or infix does not match, and neither does an occurrence inside a
+// path: registered view/answer paths embed the assignment id as a component,
+// so an id adjacent to a path separator is a path reference, not a naming.
+// Selection uses it only as a subordinate rescue in nativeReviewSelect, never
+// as a standalone candidate match.
+func nativeS7AssignmentNamed(text, assignment string) bool {
+	if assignment == "" {
+		return false
+	}
+	for offset := 0; offset < len(text); {
+		index := strings.Index(text[offset:], assignment)
+		if index < 0 {
+			return false
+		}
+		index += offset
+		end := index + len(assignment)
+		before := index == 0 || pathDelimited(text[index-1])
+		after := end == len(text) || pathDelimited(text[end])
+		if before && after {
+			return true
+		}
+		offset = end
+	}
+	return false
+}
+
+// pathDelimited reports whether the byte beside an identifier occurrence
+// leaves it a standalone identifier: not an identifier rune itself and not a
+// path separator. A path separator would make the occurrence a component of
+// a referenced path rather than a name in prose.
+func pathDelimited(b byte) bool {
+	return !nativeAssignmentIDRune(rune(b)) && b != '/' && b != '\\'
+}
+
+func nativeAssignmentIDRune(r rune) bool {
+	return r == '-' || r == '_' || r == '.' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9'
+}
+
 // Selection consumes only issued Runtime coordinates. Plural dispatches are
 // resolved item by item, so an unknown item does not erase a proven sibling.
 func nativeReviewSelect(facts nativeReviewDispatchFacts, text, root string, candidates []nativeReviewCandidate) ([]nativeReviewCandidate, bool) {
@@ -422,33 +463,80 @@ func nativeReviewSelect(facts nativeReviewDispatchFacts, text, root string, cand
 		return matches
 	}
 	if !facts.multiple {
-		var selected []nativeReviewCandidate
-		current := false
-		for _, c := range candidates {
-			matched, conflict := nativeReviewOriginalCandidateMatch(facts, text, root, c.stage, c.owner, c.hypothesis, c.assignment, c.claims, c.refs)
-			if !eligible(c) {
-				matched = false
-				for _, ref := range c.refs {
-					matched = matched || nativeS7ExplicitPathMatches(text, root, ref)
+		run := func(assignmentRescue bool) ([]nativeReviewCandidate, bool) {
+			var selected []nativeReviewCandidate
+			current := false
+			unknown := facts.unknown
+			for _, c := range candidates {
+				matched, conflict := nativeReviewOriginalCandidateMatch(facts, text, root, c.stage, c.owner, c.hypothesis, c.assignment, c.claims, c.refs)
+				if !matched && assignmentRescue && len(facts.s7) == 0 && len(facts.s8) == 0 && c.stage == "S7" && c.assignment != "" && nativeS7AssignmentNamed(text, c.assignment) {
+					matched = true
 				}
-				conflict = matched
+				if !eligible(c) {
+					matched = false
+					for _, ref := range c.refs {
+						matched = matched || nativeS7ExplicitPathMatches(text, root, ref)
+					}
+					conflict = matched
+				}
+				if !matched || c.diagnosticOnly && current {
+					continue
+				}
+				if !c.diagnosticOnly && !current {
+					selected, current = nil, true
+				}
+				selected = append(selected, c)
+				unknown = unknown || conflict
 			}
-			if !matched || c.diagnosticOnly && current {
-				continue
+			if !unknown {
+				selected = narrowByOriginalPath(selected)
 			}
-			if !c.diagnosticOnly && !current {
-				selected, current = nil, true
+			if unknown || len(selected) != 1 {
+				return nil, unknown || len(selected) > 1
 			}
-			selected = append(selected, c)
-			unknown = unknown || conflict
+			return selected, false
 		}
-		if !unknown {
-			selected = narrowByOriginalPath(selected)
+		selected, unknown := run(false)
+		if len(selected) == 0 && !unknown {
+			// The registered assignment id is the task's own machine-minted
+			// name: short enough to survive ordinary dispatch prose verbatim,
+			// unlike the registered packet path strings beside it, which a
+			// model author retyping a several-hundred-character base64
+			// directory chain can corrupt by a character. Naming the id names
+			// the task, the same semantic class as naming its original
+			// questionnaire. The rescue stays subordinate to the explicit pass
+			// above and fail-closed: it runs only when nothing explicit
+			// selected anything, only one issued assignment is named, and the
+			// text does not also reference a different original's registered
+			// path — a text that names several originals still selects
+			// nothing.
+			named, namedIndex := 0, -1
+			for i := range candidates {
+				if candidates[i].assignment != "" && nativeS7AssignmentNamed(text, candidates[i].assignment) {
+					named++
+					namedIndex = i
+				}
+			}
+			foreign := false
+			for i := range candidates {
+				if named == 1 && i == namedIndex {
+					continue
+				}
+				for _, ref := range candidates[i].refs {
+					if nativeS8TaskPath(text, root, ref) {
+						foreign = true
+						break
+					}
+				}
+			}
+			if named > 1 || named == 1 && foreign {
+				return nil, true
+			}
+			if named == 1 {
+				selected, unknown = run(true)
+			}
 		}
-		if unknown || len(selected) != 1 {
-			return nil, unknown || len(selected) > 1
-		}
-		return selected, false
+		return selected, unknown
 	}
 	var selected []nativeReviewCandidate
 	seen := map[string]bool{}

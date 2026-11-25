@@ -2,7 +2,9 @@ package workpacket
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -216,29 +218,51 @@ func reviewResultAnswerPath(packetID, owner string) string {
 	return ".loop-submissions/s7/" + reviewResultPacketPath(packetID) + "/" + reviewResultIdentityPath(owner) + "/answer.json"
 }
 
-// Original responsibility names are unrestricted in length. Split only
-// long names into reversible fixed-size components, preserving prior short paths.
+// Original responsibility names are unrestricted in length. Bound long names
+// to deterministic directory keys; the packet retains the complete identity.
 func reviewResultIdentityPath(id string) string {
-	if len(id) <= 120 {
+	if len(id) <= 200 {
 		return id
 	}
-	parts := []string{"i"}
-	for len(id) > 120 {
-		parts = append(parts, id[:120])
-		id = id[120:]
-	}
-	return strings.Join(append(parts, id), "/")
+	return "i/" + BoundedPacketPathKey(id)
 }
 
-// Split the reversible ID into bounded filesystem components; IDs themselves
-// retain the whole original responsibility, never a truncated identifier.
-func reviewResultPacketPath(id string) string {
-	parts := []string{"p"}
-	for len(id) > 120 {
-		parts = append(parts, id[:120])
-		id = id[120:]
+// BoundedPacketPathKey bounds the filesystem encoding of a packet identity.
+// A packet id embeds its encoded binding chain, and repair chains stack their
+// parent chains: verbatim segment chopping keeps every component under the
+// per-name limit while letting the total path exceed the kernel PATH_MAX — a
+// real repair brief registered a 9,479-character path that no process could
+// open. The directory key needs determinism, not reversibility: the Runtime
+// registration and the packet JSON carry the complete id, so an id longer
+// than 200 bytes maps to a content hash with a readable filesystem-safe
+// prefix of the original. Shorter ids stay verbatim.
+func BoundedPacketPathKey(id string) string {
+	if len(id) <= 200 {
+		return id
 	}
-	return strings.Join(append(parts, id), "/")
+	sum := sha256.Sum256([]byte(id))
+	var prefix strings.Builder
+	for _, r := range id[:min(60, len(id))] {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_' || r == '.' {
+			prefix.WriteRune(r)
+			continue
+		}
+		break
+	}
+	key := "h" + hex.EncodeToString(sum[:8]) + "-" + prefix.String()
+	if prefix.Len() == 0 {
+		key = "h" + hex.EncodeToString(sum[:8]) + "-packet"
+	}
+	return key
+}
+
+// Split the packet id into bounded filesystem components without truncating
+// the identity it carries; the Runtime registration retains the whole id.
+func reviewResultPacketPath(id string) string {
+	if len(id) <= 200 {
+		return id
+	}
+	return "p/" + BoundedPacketPathKey(id)
 }
 
 // ReviewResultUsesNormalAuthoring identifies only a canonical current issuance.
